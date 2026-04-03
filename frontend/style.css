@@ -1,0 +1,334 @@
+/* Яндекс-стиль: минимализм, белый фон, синие акценты */
+
+:root {
+  --yandex-blue: #246bb3;
+  --yandex-blue-hover: #232fb4;
+  --yandex-gray-light: #f5f5f6;
+  --yandex-gray-border: #e6e6e6;
+  --yandex-text: #000000;
+  --yandex-text-secondary: #666666;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", Helvetica, Arial, sans-serif;
+  background-color: #ffffff;
+  color: var(--yandex-text);
+  line-height: 1.5;
+  margin: 0;
+  padding: 0;
+}
+
+/* Навигация в стиле Яндекса */
+.navbar {
+  background-color: #ffffff !important;
+  border-bottom: 1px solid var(--yandex-gray-border);
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.05);
+  padding: 0.75rem 0;
+}
+
+.navbar-brand {
+  color: var(--yandex-text) !important;
+  font-weight: 500;
+  font-size: 1.1rem;
+  letter-spacing: -0.01em;
+  text-decoration: none;
+}
+
+.navbar-brand:hover {
+  color: var(--yandex-blue) !important;
+}
+
+.navbar-nav .nav-link {
+  color: var(--yandex-text) !important;
+  font-size: 0.9375rem;
+  padding: 0.5rem 1rem !important;
+  transition: color 0.15s ease;
+}
+
+.navbar-nav .nav-link:hover,
+.navbar-nav .nav-link.active {
+  color: var(--yandex-blue) !important;
+}
+
+.navbar-toggler {
+  border: 1px solid var(--yandex-gray-border);
+}
+
+.navbar-toggler-icon {
+  background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 30 30'%3e%3cpath stroke='rgba%2833, 37, 41, 0.75%29' stroke-linecap='round' stroke-miterlimit='10' stroke-width='2' d='M4 7h22M4 15h22M4 23h22'/%3e%3c/svg%3e");
+}
+
+/* Хедер */
+header {
+  background-color: #ffffff !important;
+  border-bottom: 1px solid var(--yandex-gray-border);
+  padding: 1.5rem 0 !important;
+}
+
+header h1 {
+  font-size: 1.5rem;
+  font-weight: 500;
+  color: var(--yandex-text);
+  margin: 0;
+}
+
+header .text-secondary {
+  color: var(--yandex-text-secondary);
+  font-size: 0.875rem;
+}
+
+/* Бейдж результатов */
+#resultsCount {
+  background-color: var(--yandex-gray-light) !important;
+  color: var(--yandex-text) !important;
+  border: 1px solid var(--yandex-gray-border);
+  font-weight: 500;
+  padding: 0.375rem 0.75rem;
+}
+
+/* Кнопки в стиле Яндекса */
+.btn {
+  font-weight: 500;
+  border-radius: 4px;
+  transition: all 0.15s ease;
+}
+
+.btn-dark {
+  background-color: var(--yandex-blue);
+  border-color: var(--yandex-blue);
+  color: #ffffff;
+}
+
+.btn-dark:hover {
+  background-color: var(--yandex-blue-hover);
+  border-color: var(--yandex-blue-hover);
+  color: #ffffff;
+}
+
+.btn-outline-dark {
+  border-color: var(--yandex-gray-border);
+  color: var(--yandex-text);
+  background-color: #ffffff;
+}
+
+.btn-outline-dark:hover {
+  background-color: var(--yandex-gray-light);
+  border-color: var(--yandex-gray-border);
+  color: var(--yandex-text);
+}
+
+/* Карточка фильтров */
+.sidebar-card {
+  top: 1rem;
+  max-height: calc(100vh - 5rem);
+  overflow: auto;
+  background-color: #ffffff;
+  border: 1px solid var(--yandex-gray-border);
+  border-radius: 8px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+}
+
+.sidebar-card .card-body {
+  padding: 1.25rem;
+}
+
+.sidebar-card h2 {
+  font-size: 1rem;
+  font-weight: 500;
+  color: var(--yandex-text);
+  margin: 0;
+}
+
+/* Формы в стиле Яндекса */
+.form-label {
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--yandex-text);
+  margin-bottom: 0.375rem;
+}
+
+.form-control,
+.form-select {
+  border: 1px solid var(--yandex-gray-border);
+  border-radius: 4px;
+  padding: 0.5rem 0.75rem;
+  font-size: 0.9375rem;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.form-control:focus,
+.form-select:focus {
+  border-color: var(--yandex-blue);
+  box-shadow: 0 0 0 3px rgba(0, 102, 204, 0.1);
+  outline: none;
+}
+
+.form-text {
+  font-size: 0.8125rem;
+  color: var(--yandex-text-secondary);
+  margin-top: 0.25rem;
+}
+
+/* Карточки товаров */
+.product-card {
+  background-color: #ffffff;
+  border: 1px solid var(--yandex-gray-border);
+  border-radius: 8px;
+  transition: all 0.2s ease;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.product-card:hover {
+  border-color: var(--yandex-blue);
+  box-shadow: 0 2px 8px rgba(0, 102, 204, 0.12);
+  transform: translateY(-2px);
+}
+
+.product-card .card-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  padding: 1rem;
+}
+
+.product-card h2 {
+  font-size: 1rem;
+  font-weight: 500;
+  color: var(--yandex-text);
+  margin: 0 0 0.5rem 0;
+}
+
+.product-card .text-secondary {
+  font-size: 0.8125rem;
+  color: var(--yandex-text-secondary);
+}
+
+.product-card dl {
+  font-size: 0.8125rem;
+  margin: 0.75rem 0;
+}
+
+.product-card dt {
+  color: var(--yandex-text-secondary);
+  font-weight: 400;
+}
+
+.product-card dd {
+  color: var(--yandex-text);
+  font-weight: 500;
+  margin: 0;
+}
+
+.product-card .fw-semibold {
+  color: var(--yandex-blue);
+  font-weight: 600;
+}
+
+/* Ссылки */
+a {
+  color: var(--yandex-blue);
+  text-decoration: none;
+  transition: color 0.15s ease;
+}
+
+a:hover {
+  color: var(--yandex-blue-hover);
+  text-decoration: underline;
+}
+
+/* Алерты */
+.alert {
+  border-radius: 4px;
+  border: 1px solid;
+}
+
+.alert-danger {
+  background-color: #fff5f5;
+  border-color: #feb2b2;
+  color: #c53030;
+}
+
+/* Пустое состояние */
+#emptyState {
+  padding: 3rem 1rem;
+}
+
+#emptyState .h5 {
+  font-weight: 500;
+  color: var(--yandex-text);
+}
+
+#emptyState .text-secondary {
+  color: var(--yandex-text-secondary);
+}
+
+/* Основной контент */
+main {
+  background-color: #ffffff;
+}
+
+.container {
+  max-width: 1200px;
+}
+
+/* Адаптивность */
+@media (max-width: 991.98px) {
+  .sidebar-card {
+    position: static;
+    max-height: none;
+    margin-bottom: 1.5rem;
+  }
+}
+
+/* Убираем лишние тени Bootstrap */
+.card {
+  box-shadow: none;
+  border: 1px solid var(--yandex-gray-border);
+}
+
+.shadow-sm {
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08) !important;
+}
+
+/* Страница товара */
+.btn-link {
+  color: var(--yandex-blue);
+  text-decoration: none;
+  padding: 0.5rem 0;
+  font-weight: 500;
+}
+
+.btn-link:hover {
+  color: var(--yandex-blue-hover);
+  text-decoration: underline;
+}
+
+/* Таблица характеристик */
+.table {
+  font-size: 0.9375rem;
+}
+
+.table th {
+  font-weight: 500;
+  color: var(--yandex-text-secondary);
+  border-bottom: 1px solid var(--yandex-gray-border);
+  padding: 0.75rem 0.5rem;
+}
+
+.table td {
+  border-bottom: 1px solid var(--yandex-gray-border);
+  padding: 0.75rem 0.5rem;
+  color: var(--yandex-text);
+}
+
+.table tbody tr:last-child th,
+.table tbody tr:last-child td {
+  border-bottom: none;
+}
+
