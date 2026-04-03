@@ -2,6 +2,7 @@
 VENTMASH — REST API на FastAPI (OpenAPI: /docs, /redoc).
 Фронтенд обслуживается отдельно; CORS настраивается через CORS_ORIGINS.
 """
+import logging
 import re
 import traceback
 from contextlib import asynccontextmanager, contextmanager
@@ -12,11 +13,13 @@ from dotenv import load_dotenv
 
 load_dotenv(Path(__file__).resolve().parent / ".env")
 
+FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
+
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi import Path as PathParam
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 
 from api.schemas import ErrorOut, HealthOut, HTTPValidationErrorOut, ProductOut
 from config import CORS_ORIGINS, CSV_PATH, PORT
@@ -25,6 +28,9 @@ from db.connection import get_connection, put_connection
 from db.init_db import init_db
 from db.load_csv import load_csv_into_db
 from db.repository import count_products, get_by_id, get_by_model_or_slug, list_products
+from search.catalog_index import CatalogIndex, get_catalog_index, set_catalog_index
+
+logger = logging.getLogger(__name__)
 
 
 def normalize_whitespace(value: Any) -> str:
@@ -56,6 +62,11 @@ def _startup_db() -> None:
         init_db(conn)
         if count_products(conn) == 0 and CSV_PATH.exists():
             load_csv_into_db(conn, CSV_PATH)
+        try:
+            set_catalog_index(CatalogIndex.build(conn))
+        except Exception:
+            logger.exception("Не удалось построить поисковый индекс (Bloom + числовые оси), используется только SQL")
+            set_catalog_index(None)
     finally:
         put_connection(conn)
 
@@ -64,6 +75,7 @@ def _startup_db() -> None:
 async def lifespan(app: FastAPI):
     _startup_db()
     yield
+    set_catalog_index(None)
     shutdown_database()
 
 
@@ -125,9 +137,11 @@ COMMON_ERROR_RESPONSES = {
     response_model=List[ProductOut],
     summary="Список вентиляторов с фильтрами",
     description=(
-        "Возвращает массив товаров из каталога. Поддерживаются текстовый поиск по модели/типу/размеру "
-        "и числовые фильтры по характеристикам из CSV. Сортировка по цене: сначала дешёвые или дорогие; "
-        "позиции без цены в конце списка."
+        "Возвращает массив товаров из каталога. Поиск: предфильтрация категориальных полей (тип, серия/типоразмер) "
+        "через Bloom filter, затем отбор по числовым признакам через отсортированные индексы (bisect), "
+        "пересечение условий и точная проверка текста/диапазонов расхода и давления. "
+        "При сбое построения индекса используется запрос к PostgreSQL. "
+        "Сортировка по цене: сначала дешёвые или дорогие; позиции без цены в конце списка."
     ),
     responses={
         200: {"description": "Успешный ответ: массив объектов вентилятора (пустой каталог — `[]`)."},
@@ -143,6 +157,12 @@ def api_products(
     fan_type: Annotated[
         Optional[str],
         Query(alias="type", description="Точное совпадение поля type из CSV."),
+    ] = None,
+    series: Annotated[
+        Optional[str],
+        Query(
+            description="Точное совпадение типоразмера (поле size в БД): Bloom filter и точное множество id.",
+        ),
     ] = None,
     diameter: Annotated[Optional[float], Query(description="Диаметр, мм.")] = None,
     minPrice: Annotated[Optional[float], Query(description="Минимальная цена.")] = None,
@@ -166,11 +186,13 @@ def api_products(
 ):
     qn = normalize_whitespace(q).lower() or None
     tn = normalize_whitespace(fan_type) or None
-    with db_session() as conn:
-        rows = list_products(
-            conn,
+    sn = normalize_whitespace(series) or None
+    idx = get_catalog_index()
+    if idx is not None:
+        rows = idx.search(
             q=qn,
             type_=tn,
+            series=sn,
             diameter=diameter,
             min_price=minPrice,
             max_price=maxPrice,
@@ -186,6 +208,28 @@ def api_products(
             max_pressure=maxPressure,
             sort=sort,
         )
+    else:
+        with db_session() as conn:
+            rows = list_products(
+                conn,
+                q=qn,
+                type_=tn,
+                series=sn,
+                diameter=diameter,
+                min_price=minPrice,
+                max_price=maxPrice,
+                min_power=minPower,
+                max_power=maxPower,
+                min_noise=minNoise,
+                max_noise=maxNoise,
+                min_diameter=minDiameter,
+                max_diameter=maxDiameter,
+                min_airflow=minAirflow,
+                max_airflow=maxAirflow,
+                min_pressure=minPressure,
+                max_pressure=maxPressure,
+                sort=sort,
+            )
     return [ProductOut.model_validate(r) for r in rows]
 
 
@@ -239,6 +283,32 @@ def api_health():
     with db_session() as conn:
         n = count_products(conn)
     return HealthOut(ok=True, products=n)
+
+
+@app.get("/", include_in_schema=False)
+def serve_index():
+    """Каталог: фронтенд из ../frontend (тот же origin — API в config.js можно оставить пустым)."""
+    return FileResponse(FRONTEND_DIR / "index.html")
+
+
+@app.get("/product.html", include_in_schema=False)
+def serve_product_page():
+    return FileResponse(FRONTEND_DIR / "product.html")
+
+
+@app.get("/style.css", include_in_schema=False)
+def serve_style():
+    return FileResponse(FRONTEND_DIR / "style.css")
+
+
+@app.get("/script.js", include_in_schema=False)
+def serve_script():
+    return FileResponse(FRONTEND_DIR / "script.js")
+
+
+@app.get("/config.js", include_in_schema=False)
+def serve_config():
+    return FileResponse(FRONTEND_DIR / "config.js")
 
 
 if __name__ == "__main__":

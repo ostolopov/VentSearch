@@ -48,6 +48,7 @@ def list_products(
     *,
     q: Optional[str] = None,
     type_: Optional[str] = None,
+    series: Optional[str] = None,
     diameter: Optional[float] = None,
     min_price: Optional[float] = None,
     max_price: Optional[float] = None,
@@ -85,6 +86,8 @@ def list_products(
         params.extend([t, t, t])
     if type_:
         conditions.append("type = " + next_param(type_))
+    if series:
+        conditions.append("size = " + next_param(series))
     if diameter is not None:
         conditions.append("diameter = " + next_param(diameter))
     if min_price is not None:
@@ -190,3 +193,20 @@ def count_products(conn) -> int:
     with conn.cursor() as cur:
         cur.execute("SELECT COUNT(*) FROM products")
         return cur.fetchone()[0]
+
+
+def fetch_all_products_dicts(conn) -> List[Dict[str, Any]]:
+    """Все товары для in-memory индекса (Bloom + отсортированные оси)."""
+    sql = """
+        SELECT id, number, type, model, size, diameter,
+               airflow_min, airflow_max, airflow_raw,
+               pressure_min, pressure_max, pressure_raw,
+               power, noise_level, price,
+               raw_diameter, raw_efficiency, raw_pressure, raw_power, raw_noise_level, raw_price,
+               model_slug
+        FROM products
+    """
+    with conn.cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute(sql)
+        rows = cur.fetchall()
+    return [_row_to_product_dict(dict(r)) for r in rows]
