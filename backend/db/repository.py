@@ -1,7 +1,7 @@
 """
 Репозиторий продуктов: выборка списка с фильтрами и по id/модели/slug.
 """
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import psycopg2
 from psycopg2.extras import RealDictCursor
@@ -43,8 +43,7 @@ def _row_to_product_dict(row: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def list_products(
-    conn,
+def _products_filter_sql(
     *,
     q: Optional[str] = None,
     type_: Optional[str] = None,
@@ -63,11 +62,8 @@ def list_products(
     min_pressure: Optional[float] = None,
     max_pressure: Optional[float] = None,
     sort: str = "price_asc",
-) -> List[Dict[str, Any]]:
-    """
-    Выборка товаров с фильтрами. Сортировка по цене (price_asc / price_desc),
-    товары без цены в конце.
-    """
+) -> Tuple[str, List[Any], str]:
+    """Фрагмент WHERE, параметры и ORDER BY для списка и COUNT."""
     conditions = ["1=1"]
     params: List[Any] = []
     n = 0
@@ -76,7 +72,7 @@ def list_products(
         nonlocal n
         n += 1
         params.append(value)
-        return f"%s"
+        return "%s"
 
     if q and q.strip():
         conditions.append(
@@ -135,6 +131,56 @@ def list_products(
     if sort == "price_desc":
         order = "price DESC NULLS LAST, model ASC"
 
+    where_sql = " AND ".join(conditions)
+    return where_sql, params, order
+
+
+def list_products(
+    conn,
+    *,
+    q: Optional[str] = None,
+    type_: Optional[str] = None,
+    series: Optional[str] = None,
+    diameter: Optional[float] = None,
+    min_price: Optional[float] = None,
+    max_price: Optional[float] = None,
+    min_power: Optional[float] = None,
+    max_power: Optional[float] = None,
+    min_noise: Optional[float] = None,
+    max_noise: Optional[float] = None,
+    min_diameter: Optional[float] = None,
+    max_diameter: Optional[float] = None,
+    min_airflow: Optional[float] = None,
+    max_airflow: Optional[float] = None,
+    min_pressure: Optional[float] = None,
+    max_pressure: Optional[float] = None,
+    sort: str = "price_asc",
+    limit: Optional[int] = None,
+    offset: int = 0,
+) -> List[Dict[str, Any]]:
+    """
+    Выборка товаров с фильтрами. Сортировка по цене (price_asc / price_desc),
+    товары без цены в конце.
+    """
+    where_sql, params, order = _products_filter_sql(
+        q=q,
+        type_=type_,
+        series=series,
+        diameter=diameter,
+        min_price=min_price,
+        max_price=max_price,
+        min_power=min_power,
+        max_power=max_power,
+        min_noise=min_noise,
+        max_noise=max_noise,
+        min_diameter=min_diameter,
+        max_diameter=max_diameter,
+        min_airflow=min_airflow,
+        max_airflow=max_airflow,
+        min_pressure=min_pressure,
+        max_pressure=max_pressure,
+        sort=sort,
+    )
     sql_query = f"""
         SELECT id, number, type, model, size, diameter,
                airflow_min, airflow_max, airflow_raw,
@@ -143,13 +189,80 @@ def list_products(
                raw_diameter, raw_efficiency, raw_pressure, raw_power, raw_noise_level, raw_price,
                model_slug
         FROM products
-        WHERE {" AND ".join(conditions)}
+        WHERE {where_sql}
         ORDER BY {order}
     """
+    q_params = list(params)
+    if limit is not None:
+        sql_query += " LIMIT %s OFFSET %s"
+        q_params.extend([limit, offset])
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
-        cur.execute(sql_query, params)
+        cur.execute(sql_query, q_params)
         rows = cur.fetchall()
     return [_row_to_product_dict(dict(r)) for r in rows]
+
+
+def count_products_filtered(
+    conn,
+    *,
+    q: Optional[str] = None,
+    type_: Optional[str] = None,
+    series: Optional[str] = None,
+    diameter: Optional[float] = None,
+    min_price: Optional[float] = None,
+    max_price: Optional[float] = None,
+    min_power: Optional[float] = None,
+    max_power: Optional[float] = None,
+    min_noise: Optional[float] = None,
+    max_noise: Optional[float] = None,
+    min_diameter: Optional[float] = None,
+    max_diameter: Optional[float] = None,
+    min_airflow: Optional[float] = None,
+    max_airflow: Optional[float] = None,
+    min_pressure: Optional[float] = None,
+    max_pressure: Optional[float] = None,
+    sort: str = "price_asc",
+) -> int:
+    """Число строк, попадающих под те же фильтры, что и list_products."""
+    where_sql, params, _order = _products_filter_sql(
+        q=q,
+        type_=type_,
+        series=series,
+        diameter=diameter,
+        min_price=min_price,
+        max_price=max_price,
+        min_power=min_power,
+        max_power=max_power,
+        min_noise=min_noise,
+        max_noise=max_noise,
+        min_diameter=min_diameter,
+        max_diameter=max_diameter,
+        min_airflow=min_airflow,
+        max_airflow=max_airflow,
+        min_pressure=min_pressure,
+        max_pressure=max_pressure,
+        sort=sort,
+    )
+    sql = f"SELECT COUNT(*) FROM products WHERE {where_sql}"
+    with conn.cursor() as cur:
+        cur.execute(sql, params)
+        return int(cur.fetchone()[0])
+
+
+def list_distinct_types(conn) -> List[str]:
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT DISTINCT type FROM products WHERE type IS NOT NULL AND TRIM(type) <> '' ORDER BY type"
+        )
+        return [r[0] for r in cur.fetchall()]
+
+
+def list_distinct_diameters(conn) -> List[float]:
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT DISTINCT diameter FROM products WHERE diameter IS NOT NULL ORDER BY diameter"
+        )
+        return [float(r[0]) for r in cur.fetchall()]
 
 
 def get_by_id(conn, id_value: str) -> Optional[Dict[str, Any]]:

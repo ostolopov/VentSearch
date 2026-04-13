@@ -95,6 +95,15 @@ BEGIN
         EXECUTE FUNCTION set_updated_at();
     END IF;
 END $$;
+
+-- отпечаток CSV для авто-синхронизации (mtime + size в БД; SHA-256 при расхождении)
+CREATE TABLE IF NOT EXISTS catalog_csv_state (
+    id SMALLINT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+    csv_path TEXT NOT NULL,
+    mtime_ns BIGINT NOT NULL,
+    size_bytes BIGINT NOT NULL,
+    sha256_hex CHAR(64) NOT NULL
+);
 """
 
 

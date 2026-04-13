@@ -1,6 +1,8 @@
 """
 Pydantic-модели для OpenAPI: response_model и примеры ответов.
 """
+from __future__ import annotations
+
 from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -40,6 +42,30 @@ class ProductMetaOut(BaseModel):
     model_config = ConfigDict(json_schema_extra={"example": {"model_slug": "vo-30-160-040-1"}})
 
     model_slug: str = ""
+
+
+class ProductListPageOut(BaseModel):
+    """Страница списка вентиляторов с общим количеством по фильтрам."""
+
+    model_config = ConfigDict(
+        json_schema_extra={"example": {"items": [], "total": 0, "limit": 48, "offset": 0}}
+    )
+
+    items: List[ProductOut] = Field(default_factory=list, description="Строки текущей страницы")
+    total: int = Field(..., description="Число позиций по текущим фильтрам (все страницы)")
+    limit: int = Field(..., description="Запрошенный размер страницы")
+    offset: int = Field(..., description="Смещение от начала отсортированного списка")
+
+
+class CatalogFacetsOut(BaseModel):
+    """Уникальные значения для выпадающих фильтров (без загрузки всего каталога)."""
+
+    model_config = ConfigDict(
+        json_schema_extra={"example": {"types": ["ВО", "ВК"], "diameters": [315.0, 400.0]}}
+    )
+
+    types: List[str] = Field(default_factory=list)
+    diameters: List[float] = Field(default_factory=list)
 
 
 class ProductOut(BaseModel):
