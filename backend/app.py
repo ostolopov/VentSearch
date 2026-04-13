@@ -4,10 +4,11 @@ VENTMASH — REST API на FastAPI (OpenAPI: /docs, /redoc).
 """
 import logging
 import re
+import threading
 import traceback
 from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
-from typing import Annotated, Any, List, Literal, Optional
+from typing import Annotated, Any, Literal, Optional
 
 from dotenv import load_dotenv
 
@@ -21,16 +22,50 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 
-from api.schemas import ErrorOut, HealthOut, HTTPValidationErrorOut, ProductOut
+from api.schemas import (
+    CatalogFacetsOut,
+    ErrorOut,
+    HealthOut,
+    HTTPValidationErrorOut,
+    ProductListPageOut,
+    ProductOut,
+)
 from config import CORS_ORIGINS, CSV_PATH, PORT
 from database import init_database, shutdown_database
 from db.connection import get_connection, put_connection
 from db.init_db import init_db
-from db.load_csv import load_csv_into_db
-from db.repository import count_products, get_by_id, get_by_model_or_slug, list_products
-from search.catalog_index import CatalogIndex, get_catalog_index, set_catalog_index
+from db.csv_sync import sync_catalog_from_csv
+from db.repository import (
+    count_products,
+    count_products_filtered,
+    get_by_id,
+    get_by_model_or_slug,
+    list_distinct_diameters,
+    list_distinct_types,
+    list_products,
+)
+from search.catalog_index import CatalogIndex, set_catalog_index
 
 logger = logging.getLogger(__name__)
+
+_catalog_sync_lock = threading.Lock()
+
+
+def _ensure_catalog_sync_with_reindex() -> None:
+    """Проверка CSV (mtime/size, при смене — SHA-256) и пересборка поискового индекса при переимпорте."""
+    with _catalog_sync_lock:
+        conn = get_connection()
+        try:
+            if sync_catalog_from_csv(conn, CSV_PATH):
+                try:
+                    set_catalog_index(CatalogIndex.build(conn))
+                except Exception:
+                    logger.exception(
+                        "Не удалось пересобрать поисковый индекс после обновления CSV, используется только SQL"
+                    )
+                    set_catalog_index(None)
+        finally:
+            put_connection(conn)
 
 
 def normalize_whitespace(value: Any) -> str:
@@ -60,8 +95,7 @@ def _startup_db() -> None:
     conn = get_connection()
     try:
         init_db(conn)
-        if count_products(conn) == 0 and CSV_PATH.exists():
-            load_csv_into_db(conn, CSV_PATH)
+        sync_catalog_from_csv(conn, CSV_PATH)
         try:
             set_catalog_index(CatalogIndex.build(conn))
         except Exception:
@@ -83,7 +117,7 @@ app = FastAPI(
     title="VENTMASH API",
     description=(
         "B2B-каталог промышленных вентиляторов. "
-        "Данные в PostgreSQL, импорт из CSV при пустой БД."
+        "Данные в PostgreSQL; CSV синхронизируется по mtime/размеру и при смене содержимого (SHA-256)."
     ),
     version="0.2.0",
     lifespan=lifespan,
@@ -134,17 +168,15 @@ COMMON_ERROR_RESPONSES = {
 
 @app.get(
     "/api/products",
-    response_model=List[ProductOut],
-    summary="Список вентиляторов с фильтрами",
+    response_model=ProductListPageOut,
+    summary="Список вентиляторов с фильтрами (постранично)",
     description=(
-        "Возвращает массив товаров из каталога. Поиск: предфильтрация категориальных полей (тип, серия/типоразмер) "
-        "через Bloom filter, затем отбор по числовым признакам через отсортированные индексы (bisect), "
-        "пересечение условий и точная проверка текста/диапазонов расхода и давления. "
-        "При сбое построения индекса используется запрос к PostgreSQL. "
-        "Сортировка по цене: сначала дешёвые или дорогие; позиции без цены в конце списка."
+        "Возвращает страницу каталога: `items`, `total` по фильтрам, `limit`, `offset`. "
+        "Выборка из PostgreSQL (LIMIT/OFFSET); фильтры совпадают с прежней логикой. "
+        "Уникальные типы и диаметры — GET /api/products/facets."
     ),
     responses={
-        200: {"description": "Успешный ответ: массив объектов вентилятора (пустой каталог — `[]`)."},
+        200: {"description": "Страница списка и общее число записей по фильтрам.", "model": ProductListPageOut},
         **COMMON_ERROR_RESPONSES,
     },
     tags=["catalog"],
@@ -183,13 +215,19 @@ def api_products(
             description="Сортировка по цене: price_asc — сначала дешёвые, price_desc — сначала дорогие.",
         ),
     ] = "price_asc",
+    limit: Annotated[int, Query(description="Размер страницы (1–100).", ge=1, le=100)] = 48,
+    offset: Annotated[int, Query(description="Смещение от начала отсортированного списка.", ge=0)] = 0,
 ):
+    _ensure_catalog_sync_with_reindex()
+
     qn = normalize_whitespace(q).lower() or None
     tn = normalize_whitespace(fan_type) or None
     sn = normalize_whitespace(series) or None
-    idx = get_catalog_index()
-    if idx is not None:
-        rows = idx.search(
+    # Постраничный список всегда из БД: совпадает с COUNT и корректно обрабатывает NULL в числовых полях.
+    # In-memory индекс (Bloom + bisect) остаётся для возможного расширения, но здесь не используется.
+    with db_session() as conn:
+        total = count_products_filtered(
+            conn,
             q=qn,
             type_=tn,
             series=sn,
@@ -208,29 +246,49 @@ def api_products(
             max_pressure=maxPressure,
             sort=sort,
         )
-    else:
-        with db_session() as conn:
-            rows = list_products(
-                conn,
-                q=qn,
-                type_=tn,
-                series=sn,
-                diameter=diameter,
-                min_price=minPrice,
-                max_price=maxPrice,
-                min_power=minPower,
-                max_power=maxPower,
-                min_noise=minNoise,
-                max_noise=maxNoise,
-                min_diameter=minDiameter,
-                max_diameter=maxDiameter,
-                min_airflow=minAirflow,
-                max_airflow=maxAirflow,
-                min_pressure=minPressure,
-                max_pressure=maxPressure,
-                sort=sort,
-            )
-    return [ProductOut.model_validate(r) for r in rows]
+        rows = list_products(
+            conn,
+            q=qn,
+            type_=tn,
+            series=sn,
+            diameter=diameter,
+            min_price=minPrice,
+            max_price=maxPrice,
+            min_power=minPower,
+            max_power=maxPower,
+            min_noise=minNoise,
+            max_noise=maxNoise,
+            min_diameter=minDiameter,
+            max_diameter=maxDiameter,
+            min_airflow=minAirflow,
+            max_airflow=maxAirflow,
+            min_pressure=minPressure,
+            max_pressure=maxPressure,
+            sort=sort,
+            limit=limit,
+            offset=offset,
+        )
+    return ProductListPageOut(
+        items=[ProductOut.model_validate(r) for r in rows],
+        total=total,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@app.get(
+    "/api/products/facets",
+    response_model=CatalogFacetsOut,
+    summary="Значения для фильтров «тип» и «диаметр»",
+    description="DISTINCT по каталогу; без пагинации, для заполнения выпадающих списков.",
+    responses={200: {"description": "Списки уникальных типов и диаметров."}},
+    tags=["catalog"],
+)
+def api_products_facets():
+    with db_session() as conn:
+        types_ = list_distinct_types(conn)
+        diameters = list_distinct_diameters(conn)
+    return CatalogFacetsOut(types=types_, diameters=diameters)
 
 
 @app.get(
@@ -257,6 +315,8 @@ def api_product_detail(
         PathParam(description="Идентификатор из CSV, полное имя модели или slug (_meta.model_slug)."),
     ],
 ):
+    _ensure_catalog_sync_with_reindex()
+
     raw = normalize_whitespace(id_or_model)
     with db_session() as conn:
         p = get_by_id(conn, raw) or get_by_model_or_slug(conn, raw.lower(), slugify(raw))

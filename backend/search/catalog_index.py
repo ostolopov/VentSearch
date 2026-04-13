@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 from collections import defaultdict
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional, Set, Tuple
 
 from db.repository import fetch_all_products_dicts
 from search.bloom_filter import BloomFilter
@@ -177,52 +177,54 @@ class CatalogIndex:
         min_pressure: Optional[float],
         max_pressure: Optional[float],
         sort: str,
-    ) -> List[dict]:
+        limit: int,
+        offset: int,
+    ) -> Tuple[List[dict], int]:
         if not self._rows:
-            return []
+            return [], 0
 
         # --- Этап 1: категориальные признаки через Bloom + точное множество по типу ---
         if type_:
             if not self._type_bloom.might_contain(type_):
-                return []
+                return [], 0
             cur: Optional[Set[str]] = set(self._type_to_ids.get(type_, set()))
             if not cur:
-                return []
+                return [], 0
         else:
             cur = None
 
         if series:
             if not self._size_bloom.might_contain(series):
-                return []
+                return [], 0
             cur = self._intersect(cur, set(self._size_to_ids.get(series, set())))
             if not cur:
-                return []
+                return [], 0
 
         # --- Этап 2: числовые оси — отсортированные индексы (bisect) и пересечение ---
         if min_price is not None or max_price is not None:
             cur = self._intersect(cur, self._idx_price.ids_in_range(min_price, max_price))
             if not cur:
-                return []
+                return [], 0
 
         if min_power is not None or max_power is not None:
             cur = self._intersect(cur, self._idx_power.ids_in_range(min_power, max_power))
             if not cur:
-                return []
+                return [], 0
 
         if min_noise is not None or max_noise is not None:
             cur = self._intersect(cur, self._idx_noise.ids_in_range(min_noise, max_noise))
             if not cur:
-                return []
+                return [], 0
 
         if min_diameter is not None or max_diameter is not None:
             cur = self._intersect(cur, self._idx_diameter.ids_in_range(min_diameter, max_diameter))
             if not cur:
-                return []
+                return [], 0
 
         if diameter is not None:
             cur = self._intersect(cur, self._idx_diameter.ids_in_range(diameter, diameter))
             if not cur:
-                return []
+                return [], 0
 
         # --- Этап 3: материализация и точные условия (q, диапазоны расхода/давления) ---
         if cur is None:
@@ -258,4 +260,7 @@ class CatalogIndex:
                     r.get("model") or "",
                 )
             )
-        return out
+        total = len(out)
+        lo = max(0, offset)
+        page = out[lo : lo + limit] if limit > 0 else []
+        return page, total

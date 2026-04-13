@@ -35,6 +35,8 @@ async function fetchJson(url) {
 
 // ---- Каталог ----
 
+const PAGE_SIZE = 48;
+
 async function initCatalogPage() {
   const alertBox = $("#alertBox");
   const loading = $("#loading");
@@ -43,6 +45,14 @@ async function initCatalogPage() {
   const resultsCount = $("#resultsCount");
   const filtersForm = $("#filtersForm");
   const resetBtn = $("#resetBtn");
+  const paginationNav = $("#paginationNav");
+  const prevPageBtn = $("#prevPageBtn");
+  const nextPageBtn = $("#nextPageBtn");
+  const pageIndicator = $("#pageIndicator");
+
+  let currentPage = 1;
+  let lastTotal = 0;
+  let lastLimit = PAGE_SIZE;
 
   function showError(message) {
     if (!alertBox) return;
@@ -60,18 +70,54 @@ async function initCatalogPage() {
     loading.style.display = isLoading ? "block" : "none";
   }
 
-  function renderProducts(products) {
+  function renderProducts(products, meta) {
     if (!grid) return;
     grid.innerHTML = "";
 
+    const total = meta?.total ?? 0;
+    const page = meta?.page ?? 1;
+    const pageSize = meta?.limit ?? PAGE_SIZE;
+    lastTotal = total;
+    lastLimit = pageSize;
+
     if (!Array.isArray(products) || products.length === 0) {
       emptyState?.classList.remove("d-none");
-      if (resultsCount) resultsCount.textContent = "0";
+      if (resultsCount) {
+        if (total > 0) {
+          resultsCount.textContent = `На странице пусто · всего ${formatNumber(total)}`;
+        } else {
+          resultsCount.textContent = "0";
+        }
+      }
+      if (paginationNav) paginationNav.classList.add("d-none");
+      if (pageIndicator) pageIndicator.textContent = "";
       return;
     }
 
     emptyState?.classList.add("d-none");
-    if (resultsCount) resultsCount.textContent = String(products.length);
+    if (resultsCount) {
+      if (total > 0) {
+        const from = (page - 1) * pageSize + 1;
+        const to = Math.min(page * pageSize, total);
+        resultsCount.textContent = `${from}–${to} из ${formatNumber(total)}`;
+      } else {
+        resultsCount.textContent = String(products.length);
+      }
+    }
+
+    if (paginationNav) {
+      if (total > pageSize) {
+        paginationNav.classList.remove("d-none");
+        const totalPages = Math.max(1, Math.ceil(total / pageSize));
+        if (pageIndicator) {
+          pageIndicator.textContent = `Страница ${page} из ${totalPages}`;
+        }
+        if (prevPageBtn) prevPageBtn.disabled = page <= 1;
+        if (nextPageBtn) nextPageBtn.disabled = page >= totalPages;
+      } else {
+        paginationNav.classList.add("d-none");
+      }
+    }
 
     for (const p of products) {
       const col = document.createElement("div");
@@ -147,7 +193,7 @@ async function initCatalogPage() {
     }
   }
 
-  function buildQueryFromForm() {
+  function buildFilterQueryString() {
     const formData = new FormData(filtersForm);
     const params = new URLSearchParams();
     for (const [key, value] of formData.entries()) {
@@ -157,34 +203,13 @@ async function initCatalogPage() {
     return params.toString();
   }
 
-  async function loadAndRender(initialParams) {
-    hideError();
-    setLoading(true);
-    try {
-      const query = initialParams ?? buildQueryFromForm();
-      const path = query ? `/api/products?${query}` : "/api/products";
-      const url = apiUrl(path);
-      const data = await fetchJson(url);
-      renderProducts(data);
-      return data;
-    } catch (err) {
-      console.error(err);
-      showError("Не удалось загрузить каталог. Проверьте, что бэкенд запущен и VENTMASH_API_BASE в config.js указан верно.");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function initFiltersFromData() {
-    const data = await loadAndRender();
-    if (!Array.isArray(data)) return;
-
+  async function loadFacets() {
+    const data = await fetchJson(apiUrl("/api/products/facets"));
     const typeSelect = $("#type");
     const diameterSelect = $("#diameter");
 
-    if (typeSelect) {
-      const types = Array.from(new Set(data.map((p) => p.type).filter(Boolean))).sort();
-      for (const t of types) {
+    if (typeSelect && Array.isArray(data.types)) {
+      for (const t of data.types) {
         const opt = document.createElement("option");
         opt.value = t;
         opt.textContent = t;
@@ -192,32 +217,85 @@ async function initCatalogPage() {
       }
     }
 
-    if (diameterSelect) {
-      const diameters = Array.from(
-        new Set(data.map((p) => p.diameter).filter((d) => d !== null && d !== undefined)),
-      ).sort((a, b) => a - b);
-
-      for (const d of diameters) {
+    if (diameterSelect && Array.isArray(data.diameters)) {
+      for (const d of data.diameters) {
         const opt = document.createElement("option");
-        opt.value = d;
+        opt.value = String(d);
         opt.textContent = `${d} мм`;
         diameterSelect.appendChild(opt);
       }
     }
   }
 
+  async function loadPage(page) {
+    hideError();
+    setLoading(true);
+    currentPage = page;
+    try {
+      const filterQs = buildFilterQueryString();
+      const params = new URLSearchParams(filterQs);
+      params.set("limit", String(PAGE_SIZE));
+      params.set("offset", String((page - 1) * PAGE_SIZE));
+      const path = `/api/products?${params.toString()}`;
+      const data = await fetchJson(apiUrl(path));
+      const items = Array.isArray(data?.items)
+        ? data.items
+        : Array.isArray(data)
+          ? data
+          : [];
+      let total = 0;
+      if (data && typeof data === "object" && !Array.isArray(data) && data.total != null) {
+        const n = Number(data.total);
+        if (Number.isFinite(n) && n >= 0) total = Math.trunc(n);
+      } else if (Array.isArray(data)) {
+        total = data.length;
+      }
+      const limit =
+        typeof data?.limit === "number" && Number.isFinite(data.limit) ? data.limit : PAGE_SIZE;
+      renderProducts(items, { total, page, limit });
+      if (page > 1 && grid) {
+        grid.scrollIntoView({ behavior: "smooth", block: "start" });
+      }
+    } catch (err) {
+      console.error(err);
+      showError(
+        "Не удалось загрузить каталог. Проверьте, что бэкенд запущен и VENTMASH_API_BASE в config.js указан верно.",
+      );
+    } finally {
+      setLoading(false);
+    }
+  }
+
   filtersForm?.addEventListener("submit", (e) => {
     e.preventDefault();
-    const query = buildQueryFromForm();
-    loadAndRender(query);
+    loadPage(1);
   });
 
   resetBtn?.addEventListener("click", () => {
     filtersForm?.reset();
-    loadAndRender("");
+    loadPage(1);
   });
 
-  initFiltersFromData();
+  prevPageBtn?.addEventListener("click", () => {
+    if (currentPage > 1) loadPage(currentPage - 1);
+  });
+
+  nextPageBtn?.addEventListener("click", () => {
+    const totalPages = Math.max(1, Math.ceil(lastTotal / lastLimit));
+    if (currentPage < totalPages) loadPage(currentPage + 1);
+  });
+
+  try {
+    setLoading(true);
+    await loadFacets();
+    await loadPage(1);
+  } catch (err) {
+    console.error(err);
+    showError(
+      "Не удалось загрузить каталог. Проверьте, что бэкенд запущен и VENTMASH_API_BASE в config.js указан верно.",
+    );
+    setLoading(false);
+  }
 }
 
 // ---- Страница товара ----

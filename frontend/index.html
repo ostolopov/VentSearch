@@ -170,6 +170,16 @@
 
             <div id="productsGrid" class="row g-3"></div>
 
+            <nav
+              id="paginationNav"
+              class="d-none d-flex flex-wrap justify-content-center align-items-center gap-2 gap-md-3 py-4"
+              aria-label="Страницы каталога"
+            >
+              <button type="button" id="prevPageBtn" class="btn btn-outline-dark btn-sm">Назад</button>
+              <span id="pageIndicator" class="text-secondary small text-center px-2"></span>
+              <button type="button" id="nextPageBtn" class="btn btn-outline-dark btn-sm">Вперёд</button>
+            </nav>
+
             <div id="emptyState" class="text-center text-secondary py-5 d-none">
               <div class="h5 mb-2">Ничего не найдено</div>
               <div>Попробуйте изменить фильтры или сбросить их.</div>

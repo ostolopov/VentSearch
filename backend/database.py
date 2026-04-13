@@ -5,6 +5,8 @@
 import logging
 import os
 
+import psycopg2
+
 from config import DATABASE_URL
 from db.connection import close_pool, get_connection, init_pool, put_connection
 
@@ -19,11 +21,22 @@ def init_database() -> None:
     Создаёт пул соединений к PostgreSQL и проверяет доступность СУБД.
     При успехе пишет в лог версию сервера (результат SELECT version()).
     """
-    init_pool(
-        DATABASE_URL,
-        minconn=POOL_MIN_CONN,
-        maxconn=POOL_MAX_CONN,
-    )
+    try:
+        init_pool(
+            DATABASE_URL,
+            minconn=POOL_MIN_CONN,
+            maxconn=POOL_MAX_CONN,
+        )
+    except psycopg2.OperationalError as e:
+        err = str(e).lower()
+        if "password" in err or "fe_sendauth" in err:
+            logger.error(
+                "PostgreSQL: нет пароля или неверные учётные данные. В backend/.env укажите пароль: "
+                "либо postgresql://ПОЛЬЗОВАТЕЛЬ:ПАРОЛЬ@127.0.0.1:5432/БД, "
+                "либо DATABASE_URL=postgresql://ПОЛЬЗОВАТЕЛЬ@127.0.0.1:5432/БД и отдельно DATABASE_PASSWORD=… "
+                "(см. backend/.env.example)."
+            )
+        raise
     conn = get_connection()
     try:
         with conn.cursor() as cur:

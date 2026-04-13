@@ -1,14 +1,14 @@
 # PostgreSQL for local development (Windows / Mac / Linux).
 # From project root:  docker compose up -d
 # Then in backend/.env set:
-#   DATABASE_URL=postgresql://ventmash:ventmash@127.0.0.1:5432/ventmash
+#   DATABASE_URL=postgresql://ventmash:ventpass@127.0.0.1:5432/ventmash
 services:
   db:
     image: postgres:16-alpine
     container_name: ventsearch-postgres
     environment:
       POSTGRES_USER: ventmash
-      POSTGRES_PASSWORD: ventmash
+      POSTGRES_PASSWORD: ventpass
       POSTGRES_DB: ventmash
     ports:
       - "5432:5432"
