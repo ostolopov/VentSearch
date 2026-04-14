@@ -29,11 +29,16 @@ jobs:
           yc config set service-account-key key.json
           yc config set folder-id ${{ secrets.FOLDER_ID }}
           
-          # Явно указываем аккаунт и для yc, и для самого контейнера
+          # Передаём окружение приложения в ревизию контейнера.
+          # Важно: DATABASE_URL должен указывать на Managed PostgreSQL, не localhost.
           yc serverless container revision deploy \
             --container-name ventsearch-api \
             --image cr.yandex/${{ secrets.REGISTRY_ID }}/ventsearch-api:${{ github.sha }} \
             --cores 1 \
             --memory 512m \
             --concurrency 8 \
+            --environment PORT=8080 \
+            --environment DATABASE_URL='${{ secrets.DATABASE_URL }}' \
+            --environment DATABASE_PASSWORD='${{ secrets.DATABASE_PASSWORD }}' \
+            --environment CORS_ORIGINS='${{ secrets.CORS_ORIGINS }}' \
             --service-account-id ${{ secrets.SA_ID }}
