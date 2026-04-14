@@ -30,12 +30,12 @@ from backend.api.schemas import (
     ProductListPageOut,
     ProductOut,
 )
-from config import CORS_ORIGINS, CSV_PATH, PORT
-from database import init_database, shutdown_database
-from db.connection import get_connection, put_connection
-from db.init_db import init_db
-from db.csv_sync import sync_catalog_from_csv
-from db.repository import (
+from backend.config import CORS_ORIGINS, CSV_PATH, PORT
+from backend.database import init_database, shutdown_database
+from backend.db.connection import get_connection, put_connection
+from backend.db.init_db import init_db
+from backend.db.csv_sync import sync_catalog_from_csv
+from backend.db.repository import (
     count_products,
     count_products_filtered,
     get_by_id,
@@ -44,7 +44,7 @@ from db.repository import (
     list_distinct_types,
     list_products,
 )
-from search.catalog_index import CatalogIndex, set_catalog_index
+from backend.search.catalog_index import CatalogIndex, set_catalog_index
 
 logger = logging.getLogger(__name__)
 
@@ -374,4 +374,4 @@ def serve_config():
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run("app:app", host="0.0.0.0", port=PORT, reload=True)
+    uvicorn.run("backend.app:app", host="0.0.0.0", port=PORT, reload=True)

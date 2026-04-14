@@ -10,9 +10,9 @@ import logging
 from collections import defaultdict
 from typing import Dict, List, Optional, Set, Tuple
 
-from db.repository import fetch_all_products_dicts
-from search.bloom_filter import BloomFilter
-from search.numeric_index import SortedRangeIndex
+from backend.db.repository import fetch_all_products_dicts
+from backend.search.bloom_filter import BloomFilter
+from backend.search.numeric_index import SortedRangeIndex
 
 logger = logging.getLogger(__name__)
 
