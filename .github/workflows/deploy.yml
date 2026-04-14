@@ -66,6 +66,10 @@
 #             --delete \
 #             --endpoint-url "$YC_OBJECT_STORAGE_ENDPOINT"
 
+
+
+
+# Для yandex cloud 
 name: Deploy VentSearch
 on:
   push:
@@ -110,3 +114,4 @@ jobs:
             --memory 512M \
             --concurrency 8 \
             --execution-timeout 30s
+
