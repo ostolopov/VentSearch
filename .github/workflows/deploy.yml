@@ -1,5 +1,3 @@
-name: Deploy VentSearch
-
 on:
   push:
     branches: [ baranovegor ]
@@ -11,41 +9,16 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v3
 
-      # 1. Авторизация в реестре (этот шаг обычно работает без проблем)
       - name: Login to Yandex Container Registry
         uses: yc-actions/yc-cr-login@v1
         with:
           yc-sa-json-credentials: ${{ secrets.YC_SA_JSON_KEY }}
 
-      # 2. Сборка и отправка образа
       - name: Build and Push Docker Image
         run: |
           docker build -t cr.yandex/${{ secrets.REGISTRY_ID }}/ventsearch-api:${{ github.sha }} -f Dockerfile .
           docker push cr.yandex/${{ secrets.REGISTRY_ID }}/ventsearch-api:${{ github.sha }}
 
-      # # 3. Прямой деплой через Yandex Cloud CLI
-      # - name: Deploy via CLI
-      #   run: |
-      #     # Скачиваем и устанавливаем CLI вручную
-      #     curl -sSL https://storage.yandexcloud.net/yandexcloud-yc/install.sh | bash -s -- -n -i /home/runner/yandex-cloud
-      #     export PATH=$PATH:/home/runner/yandex-cloud/bin
-          
-      #     # Авторизация
-      #     echo '${{ secrets.YC_SA_JSON_KEY }}' > key.json
-      #     yc config profile create sa-profile
-      #     yc config set service-account-key key.json
-      #     yc config set folder-id ${{ secrets.FOLDER_ID }}
-          
-      #     # Сама команда деплоя
-      #     yc serverless container revision deploy \
-      #       --container-name ventsearch-api \
-      #       --image cr.yandex/${{ secrets.REGISTRY_ID }}/ventsearch-api:${{ github.sha }} \
-      #       --cores 1 \
-      #       --memory 512m \
-      #       --service-account-id ${{ secrets.SA_ID }} \
-      #       --concurrency 8
-
-# 3. Прямой деплой через Yandex Cloud CLI
       - name: Deploy via CLI
         run: |
           curl -sSL https://storage.yandexcloud.net/yandexcloud-yc/install.sh | bash -s -- -n -i /home/runner/yandex-cloud
@@ -56,7 +29,7 @@ jobs:
           yc config set service-account-key key.json
           yc config set folder-id ${{ secrets.FOLDER_ID }}
           
-          # Деплой с явным указанием аккаунта
+          # Явно указываем аккаунт и для yc, и для самого контейнера
           yc serverless container revision deploy \
             --container-name ventsearch-api \
             --image cr.yandex/${{ secrets.REGISTRY_ID }}/ventsearch-api:${{ github.sha }} \
