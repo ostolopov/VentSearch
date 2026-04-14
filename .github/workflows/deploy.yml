@@ -2,7 +2,7 @@
 name: Deploy VentSearch
 on:
   push:
-    branches: [ main ]
+    branches: [ baranovegor ]
 
 jobs:
   deploy:
