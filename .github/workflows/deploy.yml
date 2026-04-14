@@ -1,0 +1,112 @@
+# name: Deploy VentSearch
+
+# on:
+#   push:
+#     branches: [main]
+#   workflow_dispatch:
+
+# jobs:
+#   deploy:
+#     runs-on: ubuntu-latest
+#     env:
+#       IMAGE: cr.yandex/${{ secrets.REGISTRY_ID }}/ventsearch-backend:${{ github.sha }}
+#       YC_CLOUD_ID: ${{ secrets.YC_CLOUD_ID }}
+#       YC_FOLDER_ID: ${{ secrets.YC_FOLDER_ID }}
+#       YC_CONTAINER_NAME: ventsearch-api
+#       YC_BUCKET_NAME: ${{ secrets.YC_BUCKET_NAME }}
+#       YC_OBJECT_STORAGE_ENDPOINT: https://storage.yandexcloud.net
+
+#     steps:
+#       - name: Checkout repository
+#         uses: actions/checkout@v4
+
+#       - name: Login to Yandex Container Registry
+#         uses: yc-actions/yc-cr-login@v3
+#         with:
+#           yc-sa-json-credentials: ${{ secrets.YC_SA_JSON_KEY }}
+
+#       - name: Build backend image
+#         run: docker build -t "$IMAGE" .
+
+#       - name: Push backend image
+#         run: docker push "$IMAGE"
+
+#       - name: Install Yandex Cloud CLI
+#         run: |
+#           curl -sSL https://storage.yandexcloud.net/yandexcloud-yc/install.sh | bash -s -- -i /opt/yc -n
+#           echo "/opt/yc/bin" >> "$GITHUB_PATH"
+
+#       - name: Authenticate Yandex Cloud CLI
+#         run: |
+#           printf '%s' '${{ secrets.YC_SA_JSON_KEY }}' > key.json
+#           yc config profile create ci || true
+#           yc config set service-account-key key.json
+#           yc config set cloud-id "$YC_CLOUD_ID"
+#           yc config set folder-id "$YC_FOLDER_ID"
+
+#       - name: Deploy Serverless Container revision
+#         run: |
+#           yc serverless container revision deploy \
+#             --container-name "$YC_CONTAINER_NAME" \
+#             --image "$IMAGE" \
+#             --cores 1 \
+#             --memory 512M \
+#             --concurrency 8
+
+#       - name: Configure Object Storage credentials
+#         uses: aws-actions/configure-aws-credentials@v4
+#         with:
+#           aws-access-key-id: ${{ secrets.YC_OBJECT_STORAGE_ACCESS_KEY_ID }}
+#           aws-secret-access-key: ${{ secrets.YC_OBJECT_STORAGE_SECRET_ACCESS_KEY }}
+#           aws-region: ru-central1
+
+#       - name: Upload frontend to Object Storage
+#         run: |
+#           aws s3 sync ./frontend "s3://$YC_BUCKET_NAME" \
+#             --delete \
+#             --endpoint-url "$YC_OBJECT_STORAGE_ENDPOINT"
+
+name: Deploy VentSearch
+on:
+  push:
+    branches: [ main ] # Сработает при пуше в ветку main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      # Авторизация в облаке через твой секретный ключ
+      - name: Login to Yandex Container Registry
+        uses: yc-actions/yc-cr-login@v1
+        with:
+          yc-sa-json-credentials: ${{ secrets.YC_SA_JSON_KEY }}
+
+      # Сборка Docker-образа бэкенда
+      - name: Build and Push Docker Image
+        run: |
+          docker build -t cr.yandex/${{ secrets.REGISTRY_ID }}/ventsearch-api:latest -f Dockerfile .
+          docker push cr.yandex/${{ secrets.REGISTRY_ID }}/ventsearch-api:latest
+
+      # Обновление контейнера в Serverless Containers
+      - name: Deploy Revision
+        run: |
+          # Установка CLI Yandex Cloud на сервер GitHub
+          curl -sSL https://storage.yandexcloud.net/yandexcloud-designers/install.sh | bash
+          export PATH=$PATH:/home/runner/yandex-cloud/bin
+          
+          # Авторизация CLI
+          echo '${{ secrets.YC_SA_JSON_KEY }}' > key.json
+          yc config profile create sa-profile
+          yc config set service-account-key key.json
+          
+          # Сама команда деплоя
+          yc serverless container revision deploy \
+            --container-name ventsearch-api \
+            --image cr.yandex/${{ secrets.REGISTRY_ID }}/ventsearch-api:latest \
+            --cores 1 \
+            --memory 512M \
+            --concurrency 8 \
+            --execution-timeout 30s
