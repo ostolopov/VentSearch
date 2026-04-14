@@ -1,5 +1,3 @@
-# Для yandex cloud 
-name: Deploy VentSearch
 on:
   push:
     branches: [ baranovegor ]
@@ -21,14 +19,21 @@ jobs:
           docker build -t cr.yandex/${{ secrets.REGISTRY_ID }}/ventsearch-api:${{ github.sha }} -f Dockerfile .
           docker push cr.yandex/${{ secrets.REGISTRY_ID }}/ventsearch-api:${{ github.sha }}
 
-      # Используем официальный экшен для деплоя
-      - name: Deploy Serverless Container
-        uses: yc-actions/deploy-serverless-container@v1
-        with:
-          yc-sa-json-credentials: ${{ secrets.YC_SA_JSON_KEY }}
-          container-name: ventsearch-api
-          folder-id: ${{ secrets.FOLDER_ID }}
-          revision-image: cr.yandex/${{ secrets.REGISTRY_ID }}/ventsearch-api:${{ github.sha }}
-          revision-cores: 1
-          revision-memory: 512Mb
-          revision-concurrency: 8
+      - name: Deploy via CLI
+        run: |
+          curl -sSL https://storage.yandexcloud.net/yandexcloud-yc/install.sh | bash -s -- -n -i /home/runner/yandex-cloud
+          export PATH=$PATH:/home/runner/yandex-cloud/bin
+          
+          echo '${{ secrets.YC_SA_JSON_KEY }}' > key.json
+          yc config profile create sa-profile
+          yc config set service-account-key key.json
+          yc config set folder-id ${{ secrets.FOLDER_ID }}
+          
+          # Явно указываем аккаунт и для yc, и для самого контейнера
+          yc serverless container revision deploy \
+            --container-name ventsearch-api \
+            --image cr.yandex/${{ secrets.REGISTRY_ID }}/ventsearch-api:${{ github.sha }} \
+            --cores 1 \
+            --memory 512m \
+            --concurrency 8 \
+            --service-account-id ${{ secrets.SA_ID }}
