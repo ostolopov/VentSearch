@@ -23,24 +23,44 @@ jobs:
           docker build -t cr.yandex/${{ secrets.REGISTRY_ID }}/ventsearch-api:${{ github.sha }} -f Dockerfile .
           docker push cr.yandex/${{ secrets.REGISTRY_ID }}/ventsearch-api:${{ github.sha }}
 
-      # 3. Прямой деплой через Yandex Cloud CLI
+      # # 3. Прямой деплой через Yandex Cloud CLI
+      # - name: Deploy via CLI
+      #   run: |
+      #     # Скачиваем и устанавливаем CLI вручную
+      #     curl -sSL https://storage.yandexcloud.net/yandexcloud-yc/install.sh | bash -s -- -n -i /home/runner/yandex-cloud
+      #     export PATH=$PATH:/home/runner/yandex-cloud/bin
+          
+      #     # Авторизация
+      #     echo '${{ secrets.YC_SA_JSON_KEY }}' > key.json
+      #     yc config profile create sa-profile
+      #     yc config set service-account-key key.json
+      #     yc config set folder-id ${{ secrets.FOLDER_ID }}
+          
+      #     # Сама команда деплоя
+      #     yc serverless container revision deploy \
+      #       --container-name ventsearch-api \
+      #       --image cr.yandex/${{ secrets.REGISTRY_ID }}/ventsearch-api:${{ github.sha }} \
+      #       --cores 1 \
+      #       --memory 512m \
+      #       --service-account-id ${{ secrets.SA_ID }} \
+      #       --concurrency 8
+
+# 3. Прямой деплой через Yandex Cloud CLI
       - name: Deploy via CLI
         run: |
-          # Скачиваем и устанавливаем CLI вручную
           curl -sSL https://storage.yandexcloud.net/yandexcloud-yc/install.sh | bash -s -- -n -i /home/runner/yandex-cloud
           export PATH=$PATH:/home/runner/yandex-cloud/bin
           
-          # Авторизация
           echo '${{ secrets.YC_SA_JSON_KEY }}' > key.json
           yc config profile create sa-profile
           yc config set service-account-key key.json
           yc config set folder-id ${{ secrets.FOLDER_ID }}
           
-          # Сама команда деплоя
+          # Деплой с явным указанием аккаунта
           yc serverless container revision deploy \
             --container-name ventsearch-api \
             --image cr.yandex/${{ secrets.REGISTRY_ID }}/ventsearch-api:${{ github.sha }} \
             --cores 1 \
             --memory 512m \
-            --service-account-id ${{ secrets.SA_ID }} \
-            --concurrency 8
+            --concurrency 8 \
+            --service-account-id ${{ secrets.SA_ID }}
