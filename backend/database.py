@@ -7,8 +7,8 @@ import os
 
 import psycopg2
 
-from config import DATABASE_URL
-from db.connection import close_pool, get_connection, init_pool, put_connection
+from backend.config import DATABASE_URL
+from backend.db.connection import close_pool, get_connection, init_pool, put_connection
 
 logger = logging.getLogger(__name__)
 

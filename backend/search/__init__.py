@@ -1,4 +1,4 @@
-from search.catalog_index import CatalogIndex, get_catalog_index, set_catalog_index
+from backend.search.catalog_index import CatalogIndex, get_catalog_index, set_catalog_index
 
 __all__ = [
     "CatalogIndex",
