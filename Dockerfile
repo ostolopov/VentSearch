@@ -8,6 +8,7 @@ RUN pip install --no-cache-dir -r /app/requirements.txt
 
 # Copy application source and data files.
 COPY backend/ /app/backend/
+COPY frontend/ /app/frontend/
 COPY data/ /app/data/
 
 ENV PYTHONPATH=/app
