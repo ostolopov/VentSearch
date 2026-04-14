@@ -2,7 +2,7 @@
 name: Deploy VentSearch
 on:
   push:
-    branches: [ main ] # Сработает при пуше в ветку main
+    branches: [ main ]
 
 jobs:
   deploy:
@@ -11,36 +11,24 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v3
 
-      # Авторизация в облаке через твой секретный ключ
       - name: Login to Yandex Container Registry
         uses: yc-actions/yc-cr-login@v1
         with:
           yc-sa-json-credentials: ${{ secrets.YC_SA_JSON_KEY }}
 
-      # Сборка Docker-образа бэкенда
       - name: Build and Push Docker Image
         run: |
-          docker build -t cr.yandex/${{ secrets.REGISTRY_ID }}/ventsearch-api:latest -f Dockerfile .
-          docker push cr.yandex/${{ secrets.REGISTRY_ID }}/ventsearch-api:latest
+          docker build -t cr.yandex/${{ secrets.REGISTRY_ID }}/ventsearch-api:${{ github.sha }} -f Dockerfile .
+          docker push cr.yandex/${{ secrets.REGISTRY_ID }}/ventsearch-api:${{ github.sha }}
 
-      # Обновление контейнера в Serverless Containers
-      - name: Deploy Revision
-        run: |
-          # Установка CLI Yandex Cloud на сервер GitHub
-          curl -sSL https://storage.yandexcloud.net/yandexcloud-designers/install.sh | bash
-          export PATH=$PATH:/home/runner/yandex-cloud/bin
-          
-          # Авторизация CLI
-          echo '${{ secrets.YC_SA_JSON_KEY }}' > key.json
-          yc config profile create sa-profile
-          yc config set service-account-key key.json
-          
-          # Сама команда деплоя
-          yc serverless container revision deploy \
-            --container-name ventsearch-api \
-            --image cr.yandex/${{ secrets.REGISTRY_ID }}/ventsearch-api:latest \
-            --cores 1 \
-            --memory 512M \
-            --concurrency 8 \
-            --execution-timeout 30s
-
+      # Используем официальный экшен для деплоя
+      - name: Deploy Serverless Container
+        uses: yc-actions/deploy-serverless-container@v1
+        with:
+          yc-sa-json-credentials: ${{ secrets.YC_SA_JSON_KEY }}
+          container-name: ventsearch-api
+          folder-id: ${{ secrets.FOLDER_ID }}
+          revision-image: cr.yandex/${{ secrets.REGISTRY_ID }}/ventsearch-api:${{ github.sha }}
+          revision-cores: 1
+          revision-memory: 512Mb
+          revision-concurrency: 8
