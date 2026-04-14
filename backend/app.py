@@ -107,10 +107,10 @@ def _startup_db() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    _startup_db()
+    # _startup_db()
     yield
     set_catalog_index(None)
-    shutdown_database()
+    # shutdown_database()
 
 
 app = FastAPI(
