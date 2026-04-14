@@ -41,6 +41,6 @@ jobs:
             --container-name ventsearch-api \
             --image cr.yandex/${{ secrets.REGISTRY_ID }}/ventsearch-api:${{ github.sha }} \
             --cores 1 \
-            --memory 512Mi \
+            --memory 512m \
             --service-account-id ${{ secrets.SA_ID }} \
             --concurrency 8
