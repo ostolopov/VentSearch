@@ -1,0 +1,43 @@
+on:
+  push:
+    branches: [ baranovegor ]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Login to Yandex Container Registry
+        uses: yc-actions/yc-cr-login@v1
+        with:
+          yc-sa-json-credentials: ${{ secrets.YC_SA_JSON_KEY }}
+
+      - name: Build and Push Docker Image
+        run: |
+          docker build -t cr.yandex/${{ secrets.REGISTRY_ID }}/ventsearch-api:${{ github.sha }} -f Dockerfile .
+          docker push cr.yandex/${{ secrets.REGISTRY_ID }}/ventsearch-api:${{ github.sha }}
+
+      - name: Deploy via CLI
+        run: |
+          curl -sSL https://storage.yandexcloud.net/yandexcloud-yc/install.sh | bash -s -- -n -i /home/runner/yandex-cloud
+          export PATH=$PATH:/home/runner/yandex-cloud/bin
+          
+          echo '${{ secrets.YC_SA_JSON_KEY }}' > key.json
+          yc config profile create sa-profile
+          yc config set service-account-key key.json
+          yc config set folder-id ${{ secrets.FOLDER_ID }}
+          
+          # Передаём окружение приложения в ревизию контейнера.
+          # Важно: DATABASE_URL должен указывать на Managed PostgreSQL, не localhost.
+          yc serverless container revision deploy \
+            --container-name ventsearch-api \
+            --image cr.yandex/${{ secrets.REGISTRY_ID }}/ventsearch-api:${{ github.sha }} \
+            --cores 1 \
+            --memory 512m \
+            --concurrency 8 \
+            --environment DATABASE_URL='${{ secrets.DATABASE_URL }}' \
+            --environment DATABASE_PASSWORD='${{ secrets.DATABASE_PASSWORD }}' \
+            --environment CORS_ORIGINS='${{ secrets.CORS_ORIGINS }}' \
+            --service-account-id ${{ secrets.SA_ID }}
