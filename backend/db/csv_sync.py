@@ -6,8 +6,8 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from backend.db.load_csv import load_csv_into_db
-from backend.db.repository import count_products
+from db.load_csv import load_csv_into_db
+from db.repository import count_products
 
 logger = logging.getLogger(__name__)
 

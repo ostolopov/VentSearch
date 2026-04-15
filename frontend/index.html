@@ -10,12 +10,22 @@
       integrity="sha384-QWTKZyjpPEjISv5WaRU9OFeRpok6YctnYmDr5pNlyT2bRjXh0JMhjY6hW+ALEwIH"
       crossorigin="anonymous"
     />
-    <link rel="stylesheet" href="style.css" />
+    <link rel="stylesheet" href="style.css?v=20260415-2" />
   </head>
   <body data-page="catalog">
-    <nav class="navbar navbar-expand-lg navbar-light bg-white">
-      <div class="container">
+    <nav class="navbar navbar-expand-lg sticky-top">
+      <div class="container-fluid px-3 px-lg-4">
         <a class="navbar-brand fw-semibold" href="index.html">VENTMASH</a>
+        <form class="d-none d-md-flex align-items-center flex-grow-1 mx-3" role="search">
+          <input
+            id="headerSearchInput"
+            class="form-control form-control-sm"
+            type="search"
+            placeholder="Поиск по модели, типу, размеру"
+            aria-label="Поиск по каталогу"
+          />
+          <button id="headerSearchBtn" class="btn btn-sm btn-dark ms-2" type="button">Найти</button>
+        </form>
         <button
           class="navbar-toggler"
           type="button"
@@ -44,151 +54,184 @@
     </nav>
 
     <header class="bg-white border-bottom">
-      <div class="container py-4">
+      <div class="container-fluid px-3 px-lg-4 py-3">
         <div class="d-flex flex-column flex-md-row align-items-md-center justify-content-between gap-3">
           <div>
-            <h1 class="h3 mb-1">Каталог промышленных вентиляторов</h1>
-            <div class="text-secondary">
-              MVP B2B-магазина: фильтры, карточки товаров, страница модели. Данные через REST API.
-            </div>
+            <h1 class="h4 mb-1">Каталог промышленных вентиляторов</h1>
+            <div class="text-secondary">Современный B2B-подбор по параметрам с визуальным сравнением Q–P.</div>
           </div>
-          <div class="d-flex align-items-center gap-2">
-            <span id="resultsCount" class="badge text-bg-dark">—</span>
-            <button id="resetBtn" class="btn btn-outline-dark btn-sm" type="button">Сбросить</button>
-          </div>
+          <button
+            class="btn btn-outline-dark btn-sm d-lg-none"
+            type="button"
+            data-bs-toggle="offcanvas"
+            data-bs-target="#filtersOffcanvas"
+            aria-controls="filtersOffcanvas"
+          >
+            Фильтры
+          </button>
         </div>
       </div>
     </header>
 
-    <main class="container-fluid py-4">
-      <div class="container">
-        <div class="row g-4">
-          <aside class="col-12 col-lg-3">
-            <div class="card shadow-sm sticky-top sidebar-card">
+    <main class="container-fluid px-3 px-lg-4 py-4">
+      <div id="alertBox" class="alert alert-danger d-none mb-3" role="alert"></div>
+      <div class="catalog-layout">
+        <aside
+          id="filtersOffcanvas"
+          class="offcanvas-md offcanvas-start"
+          tabindex="-1"
+          aria-labelledby="filtersOffcanvasLabel"
+        >
+          <div class="offcanvas-header border-bottom">
+            <h2 id="filtersOffcanvasLabel" class="offcanvas-title h6 mb-0">Фильтры</h2>
+            <button type="button" class="btn-close" data-bs-dismiss="offcanvas" data-bs-target="#filtersOffcanvas"></button>
+          </div>
+          <div class="offcanvas-body">
+            <div class="filters-panel card">
               <div class="card-body">
                 <div class="d-flex align-items-center justify-content-between mb-2">
-                  <h2 class="h6 mb-0">Фильтры</h2>
+                  <h2 class="h6 mb-0">Фильтры подбора</h2>
                   <span class="text-secondary small">по CSV</span>
                 </div>
 
-                <form id="filtersForm" class="vstack gap-3">
+                <form id="filtersForm" class="vstack gap-2">
                   <div>
                     <label for="q" class="form-label mb-1">Поиск</label>
-                    <input id="q" name="q" class="form-control" placeholder="Модель, тип, размер..." />
+                    <input id="q" name="q" class="form-control form-control-sm" placeholder="Модель, тип, размер..." />
                   </div>
 
                   <div>
                     <label for="type" class="form-label mb-1">Тип</label>
-                    <select id="type" name="type" class="form-select">
-                      <option value="">Все</option>
-                    </select>
-                  </div>
-
-                  <div>
-                    <label for="diameter" class="form-label mb-1">Диаметр, мм</label>
-                    <select id="diameter" name="diameter" class="form-select">
+                    <select id="type" name="type" class="form-select form-select-sm">
                       <option value="">Любой</option>
                     </select>
-                    <div class="form-text">Можно оставить пустым и фильтровать диапазоном ниже.</div>
                   </div>
 
                   <div class="row g-2">
                     <div class="col-6">
-                      <label for="minDiameter" class="form-label mb-1">Ø мин</label>
-                      <input id="minDiameter" name="minDiameter" class="form-control" inputmode="numeric" placeholder="например 400" />
+                      <label for="minAirflow" class="form-label mb-1">Расход от</label>
+                      <input id="minAirflow" name="minAirflow" class="form-control form-control-sm" inputmode="numeric" placeholder="м³/ч" />
                     </div>
                     <div class="col-6">
-                      <label for="maxDiameter" class="form-label mb-1">Ø макс</label>
-                      <input id="maxDiameter" name="maxDiameter" class="form-control" inputmode="numeric" placeholder="например 1000" />
-                    </div>
-                  </div>
-
-                  <div class="row g-2">
-                    <div class="col-6">
-                      <label for="minPower" class="form-label mb-1">Мощность мин</label>
-                      <input id="minPower" name="minPower" class="form-control" inputmode="numeric" placeholder="Вт" />
-                    </div>
-                    <div class="col-6">
-                      <label for="maxPower" class="form-label mb-1">Мощность макс</label>
-                      <input id="maxPower" name="maxPower" class="form-control" inputmode="numeric" placeholder="Вт" />
+                      <label for="maxAirflow" class="form-label mb-1">Расход до</label>
+                      <input id="maxAirflow" name="maxAirflow" class="form-control form-control-sm" inputmode="numeric" placeholder="м³/ч" />
                     </div>
                   </div>
 
                   <div class="row g-2">
                     <div class="col-6">
-                      <label for="minAirflow" class="form-label mb-1">Расход мин</label>
-                      <input id="minAirflow" name="minAirflow" class="form-control" inputmode="numeric" placeholder="м³/ч" />
+                      <label for="minPressure" class="form-label mb-1">Давление от</label>
+                      <input id="minPressure" name="minPressure" class="form-control form-control-sm" inputmode="numeric" placeholder="Па" />
                     </div>
                     <div class="col-6">
-                      <label for="maxAirflow" class="form-label mb-1">Расход макс</label>
-                      <input id="maxAirflow" name="maxAirflow" class="form-control" inputmode="numeric" placeholder="м³/ч" />
+                      <label for="maxPressure" class="form-label mb-1">Давление до</label>
+                      <input id="maxPressure" name="maxPressure" class="form-control form-control-sm" inputmode="numeric" placeholder="Па" />
                     </div>
                   </div>
 
                   <div class="row g-2">
                     <div class="col-6">
-                      <label for="minPressure" class="form-label mb-1">Давление мин</label>
-                      <input id="minPressure" name="minPressure" class="form-control" inputmode="numeric" placeholder="Па" />
+                      <label for="minPrice" class="form-label mb-1">Цена от</label>
+                      <input id="minPrice" name="minPrice" class="form-control form-control-sm" inputmode="numeric" placeholder="₽" />
                     </div>
                     <div class="col-6">
-                      <label for="maxPressure" class="form-label mb-1">Давление макс</label>
-                      <input id="maxPressure" name="maxPressure" class="form-control" inputmode="numeric" placeholder="Па" />
+                      <label for="maxPrice" class="form-label mb-1">Цена до</label>
+                      <input id="maxPrice" name="maxPrice" class="form-control form-control-sm" inputmode="numeric" placeholder="₽" />
                     </div>
                   </div>
 
                   <div class="row g-2">
                     <div class="col-6">
-                      <label for="minPrice" class="form-label mb-1">Цена мин</label>
-                      <input id="minPrice" name="minPrice" class="form-control" inputmode="numeric" placeholder="₽" />
+                      <label for="diameter" class="form-label mb-1">Диаметр</label>
+                      <select id="diameter" name="diameter" class="form-select form-select-sm">
+                        <option value="">Любой</option>
+                      </select>
                     </div>
                     <div class="col-6">
-                      <label for="maxPrice" class="form-label mb-1">Цена макс</label>
-                      <input id="maxPrice" name="maxPrice" class="form-control" inputmode="numeric" placeholder="₽" />
+                      <label for="minPower" class="form-label mb-1">Мощн. от</label>
+                      <input id="minPower" name="minPower" class="form-control form-control-sm" inputmode="numeric" placeholder="Вт" />
                     </div>
                   </div>
 
-                  <div>
-                    <label for="sort" class="form-label mb-1">Сортировка по цене</label>
-                    <select id="sort" name="sort" class="form-select form-select-sm">
-                      <option value="price_asc">Сначала дешёвые</option>
-                      <option value="price_desc">Сначала дорогие</option>
-                    </select>
-                  </div>
+                  <input id="maxPower" name="maxPower" type="hidden" />
+                  <input id="minDiameter" name="minDiameter" type="hidden" />
+                  <input id="maxDiameter" name="maxDiameter" type="hidden" />
 
-                  <button class="btn btn-dark w-100" type="submit">Применить</button>
+                  <div class="d-grid gap-2 mt-2">
+                    <button class="btn btn-dark btn-sm" type="submit">Применить</button>
+                    <button id="resetBtn" class="btn btn-outline-dark btn-sm" type="button">Сбросить</button>
+                  </div>
                 </form>
               </div>
             </div>
-          </aside>
+          </div>
+        </aside>
 
-          <section class="col-12 col-lg-9">
-            <div id="alertBox" class="alert alert-danger d-none" role="alert"></div>
-
-            <div id="loading" class="py-4 text-center text-secondary">
-              Загрузка каталога...
+        <section>
+          <div class="results-toolbar">
+            <div>
+              <div id="querySummary" class="results-query-summary">Параметры запроса: не заданы</div>
+              <div class="d-flex align-items-center gap-2">
+                <span id="resultsCount" class="badge">—</span>
+                <span class="text-secondary small">результатов</span>
+              </div>
             </div>
-
-            <div id="productsGrid" class="row g-3"></div>
-
-            <nav
-              id="paginationNav"
-              class="d-none d-flex flex-wrap justify-content-center align-items-center gap-2 gap-md-3 py-4"
-              aria-label="Страницы каталога"
-            >
-              <button type="button" id="prevPageBtn" class="btn btn-outline-dark btn-sm">Назад</button>
-              <span id="pageIndicator" class="text-secondary small text-center px-2"></span>
-              <button type="button" id="nextPageBtn" class="btn btn-outline-dark btn-sm">Вперёд</button>
-            </nav>
-
-            <div id="emptyState" class="text-center text-secondary py-5 d-none">
-              <div class="h5 mb-2">Ничего не найдено</div>
-              <div>Попробуйте изменить фильтры или сбросить их.</div>
+            <div class="d-flex align-items-center gap-2">
+              <select id="sort" name="sort" class="form-select form-select-sm">
+                <option value="price_asc">Цена: по возрастанию</option>
+                <option value="price_desc">Цена: по убыванию</option>
+                <option value="airflow_desc">Расход: больше сначала</option>
+                <option value="pressure_desc">Давление: больше сначала</option>
+              </select>
             </div>
-          </section>
-        </div>
+          </div>
+
+          <div id="compareBar" class="compare-bar d-none">
+            <span>Выбрано:</span>
+            <span id="selectedCount" class="compare-bar-selected">0</span>
+            <button id="openCompareBtn" type="button" class="btn btn-sm btn-dark">Сравнить</button>
+            <button id="clearCompareBtn" type="button" class="btn btn-sm btn-outline-dark">Очистить</button>
+            <a class="btn btn-sm btn-outline-dark ms-auto" href="compare.html">Открыть страницу сравнения</a>
+          </div>
+
+          <div id="loading" class="py-4 text-center text-secondary">Загрузка каталога...</div>
+          <div id="productsGrid" class="row g-3"></div>
+
+          <nav
+            id="paginationNav"
+            class="d-none d-flex flex-wrap justify-content-center align-items-center gap-2 gap-md-3 py-4"
+            aria-label="Страницы каталога"
+          >
+            <button type="button" id="prevPageBtn" class="btn btn-outline-dark btn-sm">Назад</button>
+            <span id="pageIndicator" class="text-secondary small text-center px-2"></span>
+            <button type="button" id="nextPageBtn" class="btn btn-outline-dark btn-sm">Вперёд</button>
+          </nav>
+        </section>
       </div>
 
-      <div class="container mt-5">
+      <section id="emptyStateSection" class="d-none pt-3">
+        <div class="search-params-summary mb-3">
+          <div class="label">Параметры запроса:</div>
+          <div id="emptyQuerySummary" class="params"></div>
+        </div>
+
+        <div class="empty-state-card text-center mb-4">
+          <div class="h5 mb-2">Точного совпадения не найдено</div>
+          <p class="text-secondary mb-3">Показаны ближайшие модели по близости параметров.</p>
+          <button id="backToFiltersBtn" class="btn btn-outline-dark btn-sm" type="button">Изменить фильтры</button>
+        </div>
+
+        <div class="analogs-section">
+          <div class="analogs-title">
+            Ближайшие аналоги
+            <span class="badge-analog">F-07</span>
+          </div>
+          <div id="analogsList" class="vstack gap-2"></div>
+        </div>
+      </section>
+
+      <!-- Сравнение вынесено на отдельную страницу compare.html -->
+      <div class="container-fluid px-0 mt-5">
         <hr class="my-5" />
 
         <section id="about" class="mb-5">
@@ -213,7 +256,9 @@
       integrity="sha384-YvpcrYf0tY3lHB60NNkmXc5s9fDVZLESaAA55NDzOxhy9GkcIdslK1eN7N6jIeHz"
       crossorigin="anonymous"
     ></script>
-    <script src="config.js"></script>
-    <script src="script.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
+    <script src="config.js?v=20260415-2"></script>
+    <script src="script.js?v=20260415-2"></script>
   </body>
 </html>
