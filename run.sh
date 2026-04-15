@@ -36,4 +36,5 @@ if [ ! -f .env ]; then
 fi
 
 echo "Запуск API (порт см. PORT в backend/.env, по умолчанию 8000): http://127.0.0.1:8000/docs"
-exec python app.py
+cd "$ROOT"
+exec python -m backend.app
