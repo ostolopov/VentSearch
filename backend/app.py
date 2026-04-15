@@ -15,14 +15,17 @@ from dotenv import load_dotenv
 load_dotenv(Path(__file__).resolve().parent / ".env")
 
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
+PHOTOS_DIR = Path(__file__).resolve().parent.parent / "photos"
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi import Path as PathParam
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from backend.api.schemas import (
+from api.schemas import (
     CatalogFacetsOut,
     ErrorOut,
     HealthOut,
@@ -30,12 +33,12 @@ from backend.api.schemas import (
     ProductListPageOut,
     ProductOut,
 )
-from backend.config import CORS_ORIGINS, CSV_PATH, PORT
-from backend.database import init_database, shutdown_database
-from backend.db.connection import get_connection, put_connection
-from backend.db.init_db import init_db
-from backend.db.csv_sync import sync_catalog_from_csv
-from backend.db.repository import (
+from config import CORS_ORIGINS, CSV_PATH, PORT
+from database import init_database, shutdown_database
+from db.connection import get_connection, put_connection
+from db.init_db import init_db
+from db.csv_sync import sync_catalog_from_csv
+from db.repository import (
     count_products,
     count_products_filtered,
     get_by_id,
@@ -44,7 +47,7 @@ from backend.db.repository import (
     list_distinct_types,
     list_products,
 )
-from backend.search.catalog_index import CatalogIndex, set_catalog_index
+from search.catalog_index import CatalogIndex, set_catalog_index
 
 logger = logging.getLogger(__name__)
 
@@ -104,7 +107,7 @@ def _startup_db() -> None:
     finally:
         put_connection(conn)
 
-# тут надо комментить 
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     _startup_db()
@@ -134,10 +137,32 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+if PHOTOS_DIR.exists():
+    app.mount("/photos", StaticFiles(directory=str(PHOTOS_DIR)), name="photos")
+
 
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
     return JSONResponse(status_code=422, content={"detail": exc.errors()})
+
+
+def _wants_html(request: Request) -> bool:
+    accept = (request.headers.get("accept") or "").lower()
+    return "text/html" in accept or "*/*" in accept
+
+
+def _is_frontend_request(request: Request) -> bool:
+    path = request.url.path or ""
+    return not path.startswith("/api")
+
+
+@app.exception_handler(StarletteHTTPException)
+async def starlette_http_exception_handler(request: Request, exc: StarletteHTTPException):
+    if exc.status_code == 404 and _is_frontend_request(request) and _wants_html(request):
+        page = FRONTEND_DIR / "404.html"
+        if page.exists():
+            return FileResponse(page, status_code=404)
+    return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
 
 
 @app.exception_handler(Exception)
@@ -147,6 +172,10 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
             status_code=exc.status_code,
             content=exc.detail if isinstance(exc.detail, dict) else {"error": str(exc.detail)},
         )
+    if _is_frontend_request(request) and _wants_html(request):
+        page = FRONTEND_DIR / "500.html"
+        if page.exists():
+            return FileResponse(page, status_code=500)
     traceback.print_exc()
     return JSONResponse(
         status_code=500,
@@ -351,9 +380,19 @@ def serve_index():
     return FileResponse(FRONTEND_DIR / "index.html")
 
 
+@app.get("/index.html", include_in_schema=False)
+def serve_index_html():
+    return FileResponse(FRONTEND_DIR / "index.html")
+
+
 @app.get("/product.html", include_in_schema=False)
 def serve_product_page():
     return FileResponse(FRONTEND_DIR / "product.html")
+
+
+@app.get("/compare.html", include_in_schema=False)
+def serve_compare_page():
+    return FileResponse(FRONTEND_DIR / "compare.html")
 
 
 @app.get("/style.css", include_in_schema=False)
@@ -374,4 +413,4 @@ def serve_config():
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run("backend.app:app", host="0.0.0.0", port=PORT, reload=True)
+    uvicorn.run("app:app", host="0.0.0.0", port=PORT, reload=True)

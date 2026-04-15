@@ -39,6 +39,12 @@ VentSearch объединяет каталоги производителей в
 
 Открытие клиентской части в браузере по адресу localhost.
 
+Для сценария "backend в Yandex Cloud + PostgreSQL локально на вашем ПК (Docker)" смотрите:
+`docs/LOCAL_POSTGRES_VIA_SSH_TUNNEL.md`
+
+Для сценария "backend в Yandex Cloud Serverless Container + PostgreSQL локально" смотрите:
+`docs/SERVERLESS_CONTAINER_LOCAL_POSTGRES_NGROK.md`
+
 
 Команда
 
