@@ -16,6 +16,15 @@ class RangeOut(BaseModel):
     raw: str = ""
 
 
+class QPPointOut(BaseModel):
+    """Точка на графике Q–P (расход–давление)."""
+
+    model_config = ConfigDict(json_schema_extra={"example": {"q": 1000, "p": 250}})
+
+    q: float = Field(..., description="Расход воздуха (Q), м³/ч")
+    p: float = Field(..., description="Давление (P), Па")
+
+
 class ProductRawOut(BaseModel):
     model_config = ConfigDict(
         json_schema_extra={
