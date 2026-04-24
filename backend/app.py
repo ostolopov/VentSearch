@@ -32,6 +32,7 @@ from api.schemas import (
     HTTPValidationErrorOut,
     ProductListPageOut,
     ProductOut,
+    QPPointOut,
 )
 from config import CORS_ORIGINS, CSV_PATH, PORT
 from database import init_database, shutdown_database
@@ -355,6 +356,80 @@ def api_product_detail(
             detail=ErrorOut(error="Product not found").model_dump(),
         )
     return ProductOut.model_validate(p)
+
+
+@app.get(
+    "/api/products/{id_or_model}/qp",
+    response_model=list[QPPointOut],
+    summary="Точки Q–P для модели (из диапазонов CSV)",
+    description=(
+        "Возвращает массив точек для графика Q–P (расход–давление). "
+        "Точки строятся из диапазонов `airflow(min/max)` и `pressure(min/max)` в таблице products. "
+        "Это аппроксимация для UI (линейная интерполяция)."
+    ),
+    responses={
+        200: {"description": "Массив точек [{q,p}, ...].", "model": list[QPPointOut]},
+        404: {"description": "Вентилятор не найден.", "model": ErrorOut},
+        422: {"description": "Недостаточно данных для построения Q–P.", "model": HTTPValidationErrorOut},
+        **COMMON_ERROR_RESPONSES,
+    },
+    tags=["catalog"],
+)
+def api_product_qp(
+    id_or_model: Annotated[
+        str,
+        PathParam(description="Идентификатор из CSV, полное имя модели или slug (_meta.model_slug)."),
+    ],
+    points: Annotated[int, Query(description="Число точек на кривой (2–200).", ge=2, le=200)] = 25,
+):
+    _ensure_catalog_sync_with_reindex()
+
+    raw = normalize_whitespace(id_or_model)
+    with db_session() as conn:
+        p = get_by_id(conn, raw) or get_by_model_or_slug(conn, raw.lower(), slugify(raw))
+    if not p:
+        raise HTTPException(status_code=404, detail=ErrorOut(error="Product not found").model_dump())
+
+    q_min = p.get("airflow", {}).get("min")
+    q_max = p.get("airflow", {}).get("max")
+    p_min = p.get("pressure", {}).get("min")
+    p_max = p.get("pressure", {}).get("max")
+
+    # Требуем хотя бы один конец диапазона по каждой оси
+    if (q_min is None and q_max is None) or (p_min is None and p_max is None):
+        raise HTTPException(
+            status_code=422,
+            detail={"detail": [{"loc": ["path", "id_or_model"], "msg": "Not enough data for Q-P", "type": "value_error"}]},
+        )
+
+    if q_min is None:
+        q_min = q_max
+    if q_max is None:
+        q_max = q_min
+    if p_min is None:
+        p_min = p_max
+    if p_max is None:
+        p_max = p_min
+
+    q_min_f = float(q_min)
+    q_max_f = float(q_max)
+    p_min_f = float(p_min)
+    p_max_f = float(p_max)
+
+    # Для графика удобнее, когда P убывает при росте Q
+    p_start = max(p_min_f, p_max_f)
+    p_end = min(p_min_f, p_max_f)
+
+    if points < 2:
+        points = 2
+
+    out: list[QPPointOut] = []
+    for i in range(points):
+        t = i / (points - 1)
+        q = q_min_f + (q_max_f - q_min_f) * t
+        pp = p_start + (p_end - p_start) * t
+        out.append(QPPointOut(q=q, p=pp))
+    return out
 
 
 @app.get(
