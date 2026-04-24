@@ -21,7 +21,18 @@ if not exist ".venv\Scripts\python.exe" (
 set "VPY=%CD%\.venv\Scripts\python.exe"
 
 REM Do not use activate.bat — use venv python.exe directly (works with non-ASCII paths)
+"%VPY%" -m pip install -q --upgrade pip setuptools wheel
+if errorlevel 1 (
+  echo ERROR: Failed to upgrade pip/setuptools/wheel in .venv
+  exit /b 1
+)
+
 "%VPY%" -m pip install -q -r requirements.txt
+if errorlevel 1 (
+  echo ERROR: Failed to install Python dependencies from backend\requirements.txt
+  echo If psycopg2-binary fails to build, use Python 3.11/3.12 or install PostgreSQL tools (pg_config).
+  exit /b 1
+)
 
 if not exist .env (
   if exist .env.example (
