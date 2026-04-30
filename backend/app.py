@@ -3,10 +3,13 @@ VENTMASH — REST API на FastAPI (OpenAPI: /docs, /redoc).
 Фронтенд обслуживается отдельно; CORS настраивается через CORS_ORIGINS.
 """
 import logging
+import base64
 import re
 import threading
 import traceback
 from contextlib import asynccontextmanager, contextmanager
+from datetime import datetime
+from io import BytesIO
 from pathlib import Path
 from typing import Annotated, Any, Literal, Optional
 
@@ -21,8 +24,13 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi import Path as PathParam
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.units import mm
+from reportlab.lib.utils import ImageReader
+from reportlab.pdfgen import canvas
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from api.schemas import (
@@ -30,6 +38,7 @@ from api.schemas import (
     ErrorOut,
     HealthOut,
     HTTPValidationErrorOut,
+    PdfExportRequest,
     ProductListPageOut,
     ProductOut,
     QPPointOut,
@@ -107,6 +116,162 @@ def _startup_db() -> None:
             set_catalog_index(None)
     finally:
         put_connection(conn)
+
+
+def _safe_pdf_filename(name: Optional[str]) -> str:
+    base = normalize_whitespace(name or "ventmash-compare.pdf")
+    if not base.lower().endswith(".pdf"):
+        base = f"{base}.pdf"
+    cleaned = re.sub(r'[^A-Za-z0-9._-]+', "-", base).strip("-")
+    return cleaned or "ventmash-compare.pdf"
+
+
+def _to_float(value: Any) -> Optional[float]:
+    try:
+        if value is None:
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _extract_chart_png_bytes(chart_image_data_url: Optional[str]) -> Optional[bytes]:
+    if not chart_image_data_url:
+        return None
+    raw = chart_image_data_url.strip()
+    if not raw.startswith("data:image/png;base64,"):
+        return None
+    try:
+        return base64.b64decode(raw.split(",", 1)[1], validate=True)
+    except Exception:
+        return None
+
+
+def _build_compare_pdf(products: list[dict[str, Any]], chart_png: Optional[bytes] = None) -> bytes:
+    buf = BytesIO()
+    pdf = canvas.Canvas(buf, pagesize=A4)
+    page_w, page_h = A4
+    left = 16 * mm
+    y = page_h - 18 * mm
+
+    def new_page() -> None:
+        nonlocal y
+        pdf.showPage()
+        y = page_h - 18 * mm
+
+    def line(text: str, step: float = 5.6 * mm, bold: bool = False) -> None:
+        nonlocal y
+        if y < 20 * mm:
+            new_page()
+        pdf.setFont("Helvetica-Bold" if bold else "Helvetica", 10)
+        pdf.drawString(left, y, text)
+        y -= step
+
+    def draw_row(label: str, values: list[str], highlights: set[int]) -> None:
+        nonlocal y
+        row_h = 7 * mm
+        label_w = 42 * mm
+        model_count = max(1, len(values))
+        value_w = (page_w - left * 2 - label_w) / model_count
+        if y - row_h < 18 * mm:
+            new_page()
+        pdf.setStrokeColor(colors.HexColor("#D3D7DD"))
+        pdf.setFillColor(colors.white)
+        pdf.rect(left, y - row_h, label_w, row_h, stroke=1, fill=1)
+        pdf.setFillColor(colors.black)
+        pdf.setFont("Helvetica-Bold", 9)
+        pdf.drawString(left + 2 * mm, y - 4.8 * mm, label)
+        for idx, text in enumerate(values):
+            x = left + label_w + idx * value_w
+            fill = colors.HexColor("#E8F7E8") if idx in highlights else colors.white
+            pdf.setFillColor(fill)
+            pdf.rect(x, y - row_h, value_w, row_h, stroke=1, fill=1)
+            pdf.setFillColor(colors.black)
+            pdf.setFont("Helvetica", 8)
+            clipped = normalize_whitespace(text)[:36]
+            pdf.drawString(x + 1.5 * mm, y - 4.8 * mm, clipped or "-")
+        y -= row_h
+
+    pdf.setAuthor("VENTMASH API")
+    pdf.setTitle("VENTMASH Compare Export")
+    line("VENTMASH - compare export (server PDF)", step=7.0 * mm, bold=True)
+    line(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    line(f"Models selected: {len(products)}", step=7.5 * mm)
+
+    if chart_png:
+        try:
+            image = ImageReader(BytesIO(chart_png))
+            chart_w = page_w - left * 2
+            chart_h = 72 * mm
+            if y - chart_h < 20 * mm:
+                new_page()
+            pdf.drawImage(image, left, y - chart_h, width=chart_w, height=chart_h, preserveAspectRatio=True, mask="auto")
+            y -= chart_h + 6 * mm
+            line("Q-P chart captured from UI canvas.", step=6.5 * mm)
+        except Exception:
+            line("Q-P chart image was provided but could not be rendered.", step=6.5 * mm)
+
+    models = [normalize_whitespace(p.get("model") or p.get("id") or "Unknown") for p in products]
+    types = [normalize_whitespace(p.get("type") or "-") for p in products]
+    sizes = [normalize_whitespace(p.get("size") or "-") for p in products]
+    diameters = [normalize_whitespace(p.get("diameter")) or "-" for p in products]
+    airflows = [normalize_whitespace((p.get("airflow") or {}).get("raw") or "-") for p in products]
+    pressures = [normalize_whitespace((p.get("pressure") or {}).get("raw") or "-") for p in products]
+    powers = [normalize_whitespace(p.get("power")) or "-" for p in products]
+    noises = [normalize_whitespace(p.get("noise_level")) or "-" for p in products]
+    prices = [normalize_whitespace(p.get("price")) or "-" for p in products]
+
+    power_values = [_to_float(p.get("power")) for p in products]
+    noise_values = [_to_float(p.get("noise_level")) for p in products]
+    price_values = [_to_float(p.get("price")) for p in products]
+    airflow_max_values = [_to_float((p.get("airflow") or {}).get("max")) for p in products]
+    pressure_max_values = [_to_float((p.get("pressure") or {}).get("max")) for p in products]
+
+    def min_indexes(arr: list[Optional[float]]) -> set[int]:
+        valid = [(i, v) for i, v in enumerate(arr) if v is not None]
+        if not valid:
+            return set()
+        target = min(v for _, v in valid)
+        return {i for i, v in valid if v == target}
+
+    def max_indexes(arr: list[Optional[float]]) -> set[int]:
+        valid = [(i, v) for i, v in enumerate(arr) if v is not None]
+        if not valid:
+            return set()
+        target = max(v for _, v in valid)
+        return {i for i, v in valid if v == target}
+
+    line("Comparison table (best values are highlighted):", step=7.0 * mm, bold=True)
+    draw_row("Model", models, set())
+    draw_row("Type", types, set())
+    draw_row("Size", sizes, set())
+    draw_row("Diameter", diameters, set())
+    draw_row("Airflow", airflows, max_indexes(airflow_max_values))
+    draw_row("Pressure", pressures, max_indexes(pressure_max_values))
+    draw_row("Power", powers, min_indexes(power_values))
+    draw_row("Noise", noises, min_indexes(noise_values))
+    draw_row("Price", prices, min_indexes(price_values))
+
+    y -= 5 * mm
+    line("Full per-model details:", step=7.0 * mm, bold=True)
+    for idx, p in enumerate(products, start=1):
+        line(f"{idx}) {normalize_whitespace(p.get('model') or p.get('id') or 'Unknown')}", bold=True)
+        line(f"   id: {normalize_whitespace(p.get('id') or '-')}")
+        line(f"   number: {normalize_whitespace(p.get('number') or '-')}")
+        line(f"   type: {normalize_whitespace(p.get('type') or '-')}")
+        line(f"   size: {normalize_whitespace(p.get('size') or '-')}")
+        line(f"   diameter: {normalize_whitespace(p.get('diameter')) or '-'}")
+        line(f"   airflow: {normalize_whitespace((p.get('airflow') or {}).get('raw') or '-')}")
+        line(f"   pressure: {normalize_whitespace((p.get('pressure') or {}).get('raw') or '-')}")
+        line(f"   power: {normalize_whitespace(p.get('power')) or '-'}")
+        line(f"   noise_level: {normalize_whitespace(p.get('noise_level')) or '-'}")
+        line(f"   price: {normalize_whitespace(p.get('price')) or '-'}")
+        y -= 1.5 * mm
+
+    pdf.save()
+    data = buf.getvalue()
+    buf.close()
+    return data
 
 
 @asynccontextmanager
@@ -447,6 +612,47 @@ def api_health():
     with db_session() as conn:
         n = count_products(conn)
     return HealthOut(ok=True, products=n)
+
+
+@app.post(
+    "/api/export/pdf",
+    summary="Экспорт сравнения в PDF (server-side)",
+    description="Генерирует PDF через reportlab по списку id/моделей и отдает файл для скачивания.",
+    responses={
+        200: {"description": "PDF-файл сформирован и отправлен."},
+        404: {"description": "Одна или несколько моделей не найдены.", "model": ErrorOut},
+        422: {"description": "Некорректное тело запроса.", "model": HTTPValidationErrorOut},
+        **COMMON_ERROR_RESPONSES,
+    },
+    tags=["export"],
+)
+def api_export_pdf(payload: PdfExportRequest):
+    _ensure_catalog_sync_with_reindex()
+    ids = [normalize_whitespace(v) for v in payload.ids if normalize_whitespace(v)]
+    if not ids:
+        raise HTTPException(status_code=422, detail={"detail": [{"loc": ["body", "ids"], "msg": "ids must not be empty", "type": "value_error"}]})
+
+    products: list[dict[str, Any]] = []
+    missing: list[str] = []
+    with db_session() as conn:
+        for raw in ids:
+            item = get_by_id(conn, raw) or get_by_model_or_slug(conn, raw.lower(), slugify(raw))
+            if item:
+                products.append(item)
+            else:
+                missing.append(raw)
+
+    if missing:
+        raise HTTPException(
+            status_code=404,
+            detail=ErrorOut(error=f"Product not found: {', '.join(missing)}").model_dump(),
+        )
+
+    chart_png = _extract_chart_png_bytes(payload.chart_image_data_url)
+    pdf_bytes = _build_compare_pdf(products, chart_png=chart_png)
+    filename = _safe_pdf_filename(payload.filename)
+    headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
+    return StreamingResponse(BytesIO(pdf_bytes), media_type="application/pdf", headers=headers)
 
 
 @app.get("/", include_in_schema=False)

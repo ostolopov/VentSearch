@@ -672,73 +672,40 @@ async function initComparePage() {
     compareChart = renderQpChartShared(qpChartCanvas, compareChart, products);
   }
 
-  function exportCompareToPdf(products) {
+  async function exportCompareToPdf(products) {
     if (products.length < 2) {
       showError("Для экспорта выберите минимум 2 модели.");
       return;
     }
-    if (!window.jspdf?.jsPDF) {
-      showError("Библиотека PDF не загрузилась.");
-      return;
-    }
-
-    const { jsPDF } = window.jspdf;
-    const doc = new jsPDF({ unit: "pt", format: "a4" });
-    const margin = 40;
-    let y = margin;
-
-    const safeText = (s) => String(s || "").replace(/[•✓]/g, "-");
-
-    doc.setFont("helvetica", "bold");
-    doc.setFontSize(15);
-    doc.text("VENTMASH — сравнение моделей", margin, y);
-    y += 18;
-
-    doc.setFont("helvetica", "normal");
-    doc.setFontSize(10);
-    for (const p of products) {
-      doc.text(`- ${safeText(p.model || p.id)}   (${safeText(formatPrice(p.price))})`, margin, y, { maxWidth: 510 });
-      y += 14;
-      if (y > 160) break;
-    }
-
-    const imageData = qpChartCanvas?.toDataURL?.("image/png", 1.0);
-    if (imageData) {
-      y += 6;
-      doc.addImage(imageData, "PNG", margin, y, 510, 240);
-      y += 255;
-    }
-
-    doc.setFont("helvetica", "bold");
-    doc.text("Параметры", margin, y);
-    y += 14;
-    doc.setFont("helvetica", "normal");
-
-    const rows = [
-      ["Тип", ...products.map((p) => p.type || "—")],
-      ["Расход", ...products.map((p) => p.airflow?.raw || "—")],
-      ["Давление", ...products.map((p) => p.pressure?.raw || "—")],
-      ["Мощность", ...products.map((p) => (p.power != null ? `${p.power} Вт` : "—"))],
-      ["Шум", ...products.map((p) => (p.noise_level != null ? `${p.noise_level} дБ` : "—"))],
-      ["Цена", ...products.map((p) => formatPrice(p.price))],
-    ];
-
-    for (const row of rows) {
-      doc.text(`${safeText(row[0])}:`, margin, y);
-      y += 12;
-      const line = row
-        .slice(1)
-        .map((c) => safeText(c))
-        .join("   |   ");
-      doc.text(line, margin + 12, y, { maxWidth: 500 });
-      y += 16;
-      if (y > 780) {
-        doc.addPage();
-        y = margin;
+    hideError();
+    try {
+      const ids = products.map((p) => String(p.id)).filter(Boolean);
+      const chartImageDataUrl = qpChartCanvas?.toDataURL?.("image/png", 1.0) || null;
+      const response = await fetch(apiUrl("/api/export/pdf"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ids,
+          filename: "ventmash-compare.pdf",
+          chart_image_data_url: chartImageDataUrl,
+        }),
+      });
+      if (!response.ok) {
+        throw new Error(`PDF export failed: ${response.status}`);
       }
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "ventmash-compare.pdf";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error(err);
+      showError("Не удалось экспортировать PDF. Проверьте доступность API.");
     }
-
-    doc.save("ventmash-compare.pdf");
   }
 
   try {
@@ -758,7 +725,9 @@ async function initComparePage() {
       window.location.reload();
     });
 
-    exportPdfBtn?.addEventListener("click", () => exportCompareToPdf(products));
+    exportPdfBtn?.addEventListener("click", () => {
+      exportCompareToPdf(products);
+    });
   } catch (err) {
     console.error(err);
     showError("Не удалось загрузить сравнение. Проверьте доступность API.");
