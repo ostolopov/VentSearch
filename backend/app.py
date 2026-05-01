@@ -4,6 +4,7 @@ VENTMASH — REST API на FastAPI (OpenAPI: /docs, /redoc).
 """
 import logging
 import base64
+import os
 
 import socket
 import ipaddress
@@ -164,30 +165,53 @@ def _format_pdf_num(value: Any) -> str:
 
 def _pick_pdf_fonts() -> tuple[str, str]:
     """
-    Подбирает шрифт с поддержкой кириллицы.
-    Возвращает (regular, bold). Если системные TTF недоступны — fallback на Helvetica.
+    Шрифт с кириллицей для ReportLab. Встроенный Helvetica её не поддерживает (в PDF — «квадраты»).
+
+    Приоритет: `backend/fonts/DejaVu*.ttf` (идёт с репозиторием/Docker), затем системные TTF Windows/macOS/Linux.
+    Если ничего не найдено — fallback Helvetica (латиница/цифры).
     """
-    candidates = [
-        (
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-        ),
-        (
-            "/Library/Fonts/Arial Unicode.ttf",
-            "/Library/Fonts/Arial Bold.ttf",
-        ),
-        (
-            "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
-            "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
-        ),
+    backend_dir = Path(__file__).resolve().parent
+
+    candidates: list[tuple[Path, Path]] = [
+        (backend_dir / "fonts" / "DejaVuSans.ttf", backend_dir / "fonts" / "DejaVuSans-Bold.ttf"),
     ]
+
+    windir = os.environ.get("WINDIR") or os.environ.get("SystemRoot")
+    if windir:
+        wf = Path(windir) / "Fonts"
+        candidates.extend(
+            [
+                (wf / "arial.ttf", wf / "arialbd.ttf"),
+                (wf / "segoeui.ttf", wf / "segoeuib.ttf"),
+            ]
+        )
+
+    candidates.extend(
+        [
+            (
+                Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
+                Path("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"),
+            ),
+            (Path("/Library/Fonts/Arial Unicode.ttf"), Path("/Library/Fonts/Arial Bold.ttf")),
+            (
+                Path("/System/Library/Fonts/Supplemental/Arial.ttf"),
+                Path("/System/Library/Fonts/Supplemental/Arial Bold.ttf"),
+            ),
+            (
+                Path("/System/Library/Fonts/Supplemental/Arial Unicode.ttf"),
+                Path("/System/Library/Fonts/Supplemental/Arial Bold.ttf"),
+            ),
+        ]
+    )
+
     for regular_path, bold_path in candidates:
-        reg = Path(regular_path)
-        bold = Path(bold_path)
+        reg = regular_path
+        bold = bold_path
         if not reg.exists():
             continue
-        regular_name = f"VentPdfRegular-{reg.stem}"
-        bold_name = f"VentPdfBold-{bold.stem if bold.exists() else reg.stem}"
+        stem_safe = reg.stem.replace(" ", "_")
+        regular_name = f"VentPdfRegular-{stem_safe}"
+        bold_name = f"VentPdfBold-{bold.stem.replace(' ', '_')}" if bold.exists() else regular_name
         try:
             if regular_name not in pdfmetrics.getRegisteredFontNames():
                 pdfmetrics.registerFont(TTFont(regular_name, str(reg)))
@@ -196,9 +220,14 @@ def _pick_pdf_fonts() -> tuple[str, str]:
                     pdfmetrics.registerFont(TTFont(bold_name, str(bold)))
             else:
                 bold_name = regular_name
+            logger.info("PDF: зарегистрированы шрифты для кириллицы из %s", reg)
             return regular_name, bold_name
         except Exception:
-            logger.warning("Не удалось зарегистрировать PDF-шрифт %s", regular_path, exc_info=True)
+            logger.warning("Не удалось зарегистрировать PDF-шрифт %s", reg, exc_info=True)
+    logger.warning(
+        "PDF: не найдены TTF с кириллицей (%s/fonts/DejaVu*.ttf и системные пути); подставляется Helvetica",
+        backend_dir,
+    )
     return "Helvetica", "Helvetica-Bold"
 
 
