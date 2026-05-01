@@ -11,7 +11,7 @@ COPY backend/ /app/backend/
 COPY frontend/ /app/frontend/
 COPY data/ /app/data/
 
-ENV PYTHONPATH=/app
+ENV PYTHONPATH=/app/backend:/app
 ENV PORT=8080
 EXPOSE 8080
 
