@@ -2,6 +2,16 @@ function $(selector) {
   return document.querySelector(selector);
 }
 
+function escapeHtml(value) {
+  if (value === null || value === undefined) return "";
+  return String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
 function apiUrl(path) {
   const base = (typeof window !== "undefined" && window.VENTMASH_API_BASE
     ? String(window.VENTMASH_API_BASE)
@@ -385,17 +395,17 @@ async function initCatalogPage() {
       const body = document.createElement("div");
       body.className = "card-body d-flex flex-column";
       body.innerHTML = `
-        <h2 class="h6 card-title mb-1">${p.model || "Без названия"}</h2>
-        <div class="text-secondary small mb-2">${[p.type, p.size].filter(Boolean).join(" • ") || "—"}</div>
+        <h2 class="h6 card-title mb-1">${escapeHtml(p.model || "Без названия")}</h2>
+        <div class="text-secondary small mb-2">${escapeHtml([p.type, p.size].filter(Boolean).join(" • ") || "—")}</div>
         <dl class="row small mb-2">
-          <dt class="col-6 text-secondary">Расход</dt><dd class="col-6 mb-1">${p.airflow?.raw || "—"}</dd>
-          <dt class="col-6 text-secondary">Давление</dt><dd class="col-6 mb-1">${p.pressure?.raw || "—"}</dd>
-          <dt class="col-6 text-secondary">Мощность</dt><dd class="col-6 mb-1">${p.power != null ? `${p.power} Вт` : "—"}</dd>
-          <dt class="col-6 text-secondary">Шум</dt><dd class="col-6 mb-1">${p.noise_level != null ? `${p.noise_level} дБ` : "—"}</dd>
+          <dt class="col-6 text-secondary">Расход</dt><dd class="col-6 mb-1">${escapeHtml(p.airflow?.raw || "—")}</dd>
+          <dt class="col-6 text-secondary">Давление</dt><dd class="col-6 mb-1">${escapeHtml(p.pressure?.raw || "—")}</dd>
+          <dt class="col-6 text-secondary">Мощность</dt><dd class="col-6 mb-1">${p.power != null ? `${escapeHtml(p.power)} Вт` : "—"}</dd>
+          <dt class="col-6 text-secondary">Шум</dt><dd class="col-6 mb-1">${p.noise_level != null ? `${escapeHtml(p.noise_level)} дБ` : "—"}</dd>
         </dl>
         <div class="d-flex justify-content-between align-items-center mt-auto">
-          <span class="product-price">${formatPrice(p.price)}</span>
-          <button type="button" class="btn-compare-toggle ${selected ? "active" : ""}" data-id="${p.id}">
+          <span class="product-price">${escapeHtml(formatPrice(p.price))}</span>
+          <button type="button" class="btn-compare-toggle ${selected ? "active" : ""}" data-id="${escapeHtml(p.id)}">
             ${selected ? "✓ В сравнении" : "+ Сравнить"}
           </button>
         </div>
@@ -435,13 +445,13 @@ async function initCatalogPage() {
       const card = document.createElement("div");
       card.className = "analog-card";
       card.innerHTML = `
-        <span class="analog-match">${item.score}% совпадение</span>
+        <span class="analog-match">${escapeHtml(item.score)}% совпадение</span>
         <div class="analog-img"></div>
         <div class="analog-info">
-          <div class="analog-model">${item.model || "Без названия"}</div>
+          <div class="analog-model">${escapeHtml(item.model || "Без названия")}</div>
           <div class="analog-params">
-            ${item.type || "—"} · Расход: ${item.airflow?.raw || "—"} · Давление: ${item.pressure?.raw || "—"} ·
-            Мощность: ${item.power != null ? `${item.power} Вт` : "—"} · ${formatPrice(item.price)}
+            ${escapeHtml(item.type || "—")} · Расход: ${escapeHtml(item.airflow?.raw || "—")} · Давление: ${escapeHtml(item.pressure?.raw || "—")} ·
+            Мощность: ${item.power != null ? `${escapeHtml(item.power)} Вт` : "—"} · ${escapeHtml(formatPrice(item.price))}
           </div>
         </div>
         <a class="btn btn-sm btn-dark" href="product.html?id=${encodeURIComponent(item.id)}">Подробнее</a>
@@ -547,9 +557,36 @@ async function initCatalogPage() {
 
   // Экспорт PDF перенесён на compare.html
 
+  function validateRangeFilters() {
+    const pairs = [
+      ["minAirflow", "maxAirflow", "Расход"],
+      ["minPressure", "maxPressure", "Давление"],
+      ["minPower", "maxPower", "Мощность"],
+      ["minPrice", "maxPrice", "Цена"],
+    ];
+    for (const [minId, maxId, label] of pairs) {
+      const minVal = toNumber(filtersForm.elements[minId]?.value);
+      const maxVal = toNumber(filtersForm.elements[maxId]?.value);
+      if (minVal != null && maxVal != null && minVal > maxVal) {
+        showError(`${label}: минимум (${minVal}) больше максимума (${maxVal}). Проверьте значения.`);
+        return false;
+      }
+    }
+    return true;
+  }
+
+  function closeFiltersOffcanvasIfMobile() {
+    const el = document.getElementById("filtersOffcanvas");
+    if (!el || typeof bootstrap === "undefined" || !bootstrap.Offcanvas) return;
+    const instance = bootstrap.Offcanvas.getInstance(el);
+    if (instance) instance.hide();
+  }
+
   filtersForm.addEventListener("submit", (e) => {
     e.preventDefault();
+    if (!validateRangeFilters()) return;
     loadPage(1);
+    closeFiltersOffcanvasIfMobile();
   });
 
   sortSelect.addEventListener("change", () => loadPage(1));
@@ -636,7 +673,7 @@ async function initComparePage() {
     compareTableBody.innerHTML = "";
     const headerRow = document.createElement("tr");
     headerRow.innerHTML = `<th style="width:200px;">Параметр</th>${products
-      .map((p) => `<th>${p.model || p.id}</th>`)
+      .map((p) => `<th>${escapeHtml(p.model || p.id)}</th>`)
       .join("")}`;
     compareTableHead.appendChild(headerRow);
 
@@ -656,12 +693,12 @@ async function initComparePage() {
       if (row.best === "max" && valid.length) bestValue = Math.max(...valid);
       if (row.best === "min" && valid.length) bestValue = Math.min(...valid);
       const tr = document.createElement("tr");
-      tr.innerHTML = `<td class="param-name">${row.label}</td>${products
+      tr.innerHTML = `<td class="param-name">${escapeHtml(row.label)}</td>${products
         .map((p, idx) => {
           const raw = values[idx];
           const isBest = bestValue != null && raw === bestValue;
           const text = row.display ? row.display(p) : raw ?? "—";
-          return `<td class="${isBest ? "best" : ""}">${text}</td>`;
+          return `<td class="${isBest ? "best" : ""}">${escapeHtml(text)}</td>`;
         })
         .join("")}`;
       compareTableBody.appendChild(tr);
@@ -672,73 +709,40 @@ async function initComparePage() {
     compareChart = renderQpChartShared(qpChartCanvas, compareChart, products);
   }
 
-  function exportCompareToPdf(products) {
+  async function exportCompareToPdf(products) {
     if (products.length < 2) {
       showError("Для экспорта выберите минимум 2 модели.");
       return;
     }
-    if (!window.jspdf?.jsPDF) {
-      showError("Библиотека PDF не загрузилась.");
-      return;
-    }
-
-    const { jsPDF } = window.jspdf;
-    const doc = new jsPDF({ unit: "pt", format: "a4" });
-    const margin = 40;
-    let y = margin;
-
-    const safeText = (s) => String(s || "").replace(/[•✓]/g, "-");
-
-    doc.setFont("helvetica", "bold");
-    doc.setFontSize(15);
-    doc.text("VENTMASH — сравнение моделей", margin, y);
-    y += 18;
-
-    doc.setFont("helvetica", "normal");
-    doc.setFontSize(10);
-    for (const p of products) {
-      doc.text(`- ${safeText(p.model || p.id)}   (${safeText(formatPrice(p.price))})`, margin, y, { maxWidth: 510 });
-      y += 14;
-      if (y > 160) break;
-    }
-
-    const imageData = qpChartCanvas?.toDataURL?.("image/png", 1.0);
-    if (imageData) {
-      y += 6;
-      doc.addImage(imageData, "PNG", margin, y, 510, 240);
-      y += 255;
-    }
-
-    doc.setFont("helvetica", "bold");
-    doc.text("Параметры", margin, y);
-    y += 14;
-    doc.setFont("helvetica", "normal");
-
-    const rows = [
-      ["Тип", ...products.map((p) => p.type || "—")],
-      ["Расход", ...products.map((p) => p.airflow?.raw || "—")],
-      ["Давление", ...products.map((p) => p.pressure?.raw || "—")],
-      ["Мощность", ...products.map((p) => (p.power != null ? `${p.power} Вт` : "—"))],
-      ["Шум", ...products.map((p) => (p.noise_level != null ? `${p.noise_level} дБ` : "—"))],
-      ["Цена", ...products.map((p) => formatPrice(p.price))],
-    ];
-
-    for (const row of rows) {
-      doc.text(`${safeText(row[0])}:`, margin, y);
-      y += 12;
-      const line = row
-        .slice(1)
-        .map((c) => safeText(c))
-        .join("   |   ");
-      doc.text(line, margin + 12, y, { maxWidth: 500 });
-      y += 16;
-      if (y > 780) {
-        doc.addPage();
-        y = margin;
+    hideError();
+    try {
+      const ids = products.map((p) => String(p.id)).filter(Boolean);
+      const chartImageDataUrl = qpChartCanvas?.toDataURL?.("image/png", 1.0) || null;
+      const response = await fetch(apiUrl("/api/export/pdf"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ids,
+          filename: "ventmash-compare.pdf",
+          chart_image_data_url: chartImageDataUrl,
+        }),
+      });
+      if (!response.ok) {
+        throw new Error(`PDF export failed: ${response.status}`);
       }
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "ventmash-compare.pdf";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error(err);
+      showError("Не удалось экспортировать PDF. Проверьте доступность API.");
     }
-
-    doc.save("ventmash-compare.pdf");
   }
 
   try {
@@ -746,6 +750,12 @@ async function initComparePage() {
     const ids = loadCompareIds();
     if (ids.length < 2) {
       compareMeta.textContent = "Выберите минимум 2 модели в каталоге и вернитесь на страницу сравнения.";
+      const backBtn = document.createElement("a");
+      backBtn.href = "index.html";
+      backBtn.className = "btn btn-dark btn-sm mt-2";
+      backBtn.textContent = "← Вернуться в каталог";
+      compareMeta.appendChild(document.createElement("br"));
+      compareMeta.appendChild(backBtn);
       return;
     }
     compareMeta.textContent = `Выбрано моделей: ${ids.length}`;
@@ -758,7 +768,9 @@ async function initComparePage() {
       window.location.reload();
     });
 
-    exportPdfBtn?.addEventListener("click", () => exportCompareToPdf(products));
+    exportPdfBtn?.addEventListener("click", () => {
+      exportCompareToPdf(products);
+    });
   } catch (err) {
     console.error(err);
     showError("Не удалось загрузить сравнение. Проверьте доступность API.");
@@ -788,6 +800,12 @@ async function initProductPage() {
   if (!id) {
     setLoading(false);
     showError("Не передан идентификатор вентилятора в URL.");
+    const backBtn = document.createElement("a");
+    backBtn.href = "index.html";
+    backBtn.className = "btn btn-dark btn-sm mt-2";
+    backBtn.textContent = "← Вернуться в каталог";
+    alertBox.appendChild(document.createElement("br"));
+    alertBox.appendChild(backBtn);
     return;
   }
 
@@ -819,8 +837,7 @@ async function initProductPage() {
     ];
     for (const [label, value] of specs) {
       const tr = document.createElement("tr");
-      tr.innerHTML = `<th scope="row" class="w-50 text-secondary">${label}</th><td>${value ?? "—"}</td>`;
-      specBody.appendChild(tr);
+      tr.innerHTML = `<th scope="row" class="w-50 text-secondary">${escapeHtml(label)}</th><td>${escapeHtml(value ?? "—")}</td>`;
     }
     productChart = renderQpChartShared(chartCanvas, productChart, [data]);
     productCompareMeta.textContent = `Сейчас показана характеристика модели ${data.model || data.id}.`;

@@ -104,10 +104,13 @@ def load_csv_into_db(conn, csv_path: Path) -> int:
         reader = csv.DictReader(f, dialect=dialect)
 
         inserted = 0
+        seen_ids: set[str] = set()
         with conn.cursor() as cur:
             for i, row in enumerate(reader, start=1):
                 row = _canonical_row(row)
                 number = normalize_whitespace(row.get("number")) or str(i)
+                row_id = number if number not in seen_ids else f"{number}-{i}"
+                seen_ids.add(row_id)
                 type_ = normalize_whitespace(row.get("type"))
                 model = normalize_whitespace(row.get("model"))
                 size = normalize_whitespace(row.get("size"))
@@ -157,7 +160,7 @@ def load_csv_into_db(conn, csv_path: Path) -> int:
                         model_slug = EXCLUDED.model_slug
                     """,
                     (
-                        number, number, type_, model, size, diameter,
+                        row_id, number, type_, model, size, diameter,
                         af_min, af_max, af_raw, pr_min, pr_max, pr_raw,
                         power, noise_level, price,
                         raw_diameter, raw_efficiency, raw_pressure, raw_power, raw_noise_level, raw_price,
