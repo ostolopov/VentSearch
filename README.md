@@ -48,15 +48,12 @@ VentSearch объединяет каталоги производителей в
 
 Установка PostgreSQL и инициализация базы данных.
 
-Запуск серверной части: uvicorn main:app.
+Запуск серверной части: `uvicorn backend.app:app --host 0.0.0.0 --port 8000`.
 
 Открытие клиентской части в браузере по адресу localhost.
 
-Для сценария "backend в Yandex Cloud + PostgreSQL локально на вашем ПК (Docker)" смотрите:
-`docs/LOCAL_POSTGRES_VIA_SSH_TUNNEL.md`
-
-Для сценария "backend в Yandex Cloud Serverless Container + PostgreSQL локально" смотрите:
-`docs/SERVERLESS_CONTAINER_LOCAL_POSTGRES_NGROK.md`
+Для хостинга в Yandex Cloud VM с автодеплоем через GitHub Actions смотрите:
+`docs/DEPLOY_VM.md`
 
 
 Команда
