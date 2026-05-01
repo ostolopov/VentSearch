@@ -34,6 +34,8 @@ from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import mm
 from reportlab.lib.utils import ImageReader
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfgen import canvas
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
@@ -151,79 +153,157 @@ def _extract_chart_png_bytes(chart_image_data_url: Optional[str]) -> Optional[by
         return None
 
 
+def _format_pdf_num(value: Any) -> str:
+    num = _to_float(value)
+    if num is None:
+        return "—"
+    if float(num).is_integer():
+        return f"{int(num):,}".replace(",", " ")
+    return f"{num:,.2f}".replace(",", " ").replace(".", ",")
+
+
+def _pick_pdf_fonts() -> tuple[str, str]:
+    """
+    Подбирает шрифт с поддержкой кириллицы.
+    Возвращает (regular, bold). Если системные TTF недоступны — fallback на Helvetica.
+    """
+    candidates = [
+        (
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        ),
+        (
+            "/Library/Fonts/Arial Unicode.ttf",
+            "/Library/Fonts/Arial Bold.ttf",
+        ),
+        (
+            "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+            "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
+        ),
+    ]
+    for regular_path, bold_path in candidates:
+        reg = Path(regular_path)
+        bold = Path(bold_path)
+        if not reg.exists():
+            continue
+        regular_name = f"VentPdfRegular-{reg.stem}"
+        bold_name = f"VentPdfBold-{bold.stem if bold.exists() else reg.stem}"
+        try:
+            if regular_name not in pdfmetrics.getRegisteredFontNames():
+                pdfmetrics.registerFont(TTFont(regular_name, str(reg)))
+            if bold.exists():
+                if bold_name not in pdfmetrics.getRegisteredFontNames():
+                    pdfmetrics.registerFont(TTFont(bold_name, str(bold)))
+            else:
+                bold_name = regular_name
+            return regular_name, bold_name
+        except Exception:
+            logger.warning("Не удалось зарегистрировать PDF-шрифт %s", regular_path, exc_info=True)
+    return "Helvetica", "Helvetica-Bold"
+
+
 def _build_compare_pdf(products: list[dict[str, Any]], chart_png: Optional[bytes] = None) -> bytes:
     buf = BytesIO()
     pdf = canvas.Canvas(buf, pagesize=A4)
     page_w, page_h = A4
-    left = 16 * mm
-    y = page_h - 18 * mm
+    left = 14 * mm
+    right = page_w - 14 * mm
+    width = right - left
+    y = page_h - 14 * mm
+    font_regular, font_bold = _pick_pdf_fonts()
+    c_primary = colors.HexColor("#027bf3")
+    c_surface = colors.HexColor("#f6f8fa")
+    c_border = colors.HexColor("#e2e5e9")
+    c_text = colors.HexColor("#111111")
+    c_muted = colors.HexColor("#55595d")
+    c_best = colors.HexColor("#e8f7e8")
 
     def new_page() -> None:
         nonlocal y
         pdf.showPage()
-        y = page_h - 18 * mm
+        y = page_h - 14 * mm
 
-    def line(text: str, step: float = 5.6 * mm, bold: bool = False) -> None:
+    def line(text: str, step: float = 5.6 * mm, bold: bool = False, color: Any = None, size: int = 10) -> None:
         nonlocal y
         if y < 20 * mm:
             new_page()
-        pdf.setFont("Helvetica-Bold" if bold else "Helvetica", 10)
+        pdf.setFillColor(color or c_text)
+        pdf.setFont(font_bold if bold else font_regular, size)
         pdf.drawString(left, y, text)
         y -= step
 
+    def card_header(title: str, subtitle: Optional[str] = None) -> None:
+        nonlocal y
+        h = 18 * mm if subtitle else 13 * mm
+        if y - h < 18 * mm:
+            new_page()
+        pdf.setFillColor(c_primary)
+        pdf.roundRect(left, y - h, width, h, 3 * mm, stroke=0, fill=1)
+        pdf.setFillColor(colors.white)
+        pdf.setFont(font_bold, 13)
+        pdf.drawString(left + 4 * mm, y - 6.5 * mm, title)
+        if subtitle:
+            pdf.setFont(font_regular, 9)
+            pdf.drawString(left + 4 * mm, y - 12 * mm, subtitle)
+        y -= h + 4 * mm
+
     def draw_row(label: str, values: list[str], highlights: set[int]) -> None:
         nonlocal y
-        row_h = 7 * mm
+        row_h = 7.4 * mm
         label_w = 42 * mm
         model_count = max(1, len(values))
-        value_w = (page_w - left * 2 - label_w) / model_count
+        value_w = (width - label_w) / model_count
         if y - row_h < 18 * mm:
             new_page()
-        pdf.setStrokeColor(colors.HexColor("#D3D7DD"))
-        pdf.setFillColor(colors.white)
+        pdf.setStrokeColor(c_border)
+        pdf.setFillColor(c_surface)
         pdf.rect(left, y - row_h, label_w, row_h, stroke=1, fill=1)
-        pdf.setFillColor(colors.black)
-        pdf.setFont("Helvetica-Bold", 9)
-        pdf.drawString(left + 2 * mm, y - 4.8 * mm, label)
+        pdf.setFillColor(c_text)
+        pdf.setFont(font_bold, 8.5)
+        pdf.drawString(left + 1.8 * mm, y - 4.9 * mm, label)
         for idx, text in enumerate(values):
             x = left + label_w + idx * value_w
-            fill = colors.HexColor("#E8F7E8") if idx in highlights else colors.white
+            fill = c_best if idx in highlights else colors.white
             pdf.setFillColor(fill)
             pdf.rect(x, y - row_h, value_w, row_h, stroke=1, fill=1)
-            pdf.setFillColor(colors.black)
-            pdf.setFont("Helvetica", 8)
+            pdf.setFillColor(c_text)
+            pdf.setFont(font_regular, 8)
             clipped = normalize_whitespace(text)[:36]
-            pdf.drawString(x + 1.5 * mm, y - 4.8 * mm, clipped or "-")
+            pdf.drawString(x + 1.2 * mm, y - 4.9 * mm, clipped or "—")
         y -= row_h
 
     pdf.setAuthor("VENTMASH API")
-    pdf.setTitle("VENTMASH Compare Export")
-    line("VENTMASH - compare export (server PDF)", step=7.0 * mm, bold=True)
-    line(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    line(f"Models selected: {len(products)}", step=7.5 * mm)
+    pdf.setTitle("VENTMASH Сравнение моделей")
+    card_header(
+        "VENTMASH — отчет по сравнению",
+        f"Дата выгрузки: {datetime.now().strftime('%d.%m.%Y %H:%M')}   |   Выбрано моделей: {len(products)}",
+    )
 
     if chart_png:
         try:
             image = ImageReader(BytesIO(chart_png))
-            chart_w = page_w - left * 2
+            chart_w = width
             chart_h = 72 * mm
             if y - chart_h < 20 * mm:
                 new_page()
+            pdf.setStrokeColor(c_border)
+            pdf.setFillColor(colors.white)
+            pdf.roundRect(left, y - chart_h - 3 * mm, chart_w, chart_h + 3 * mm, 2 * mm, stroke=1, fill=1)
             pdf.drawImage(image, left, y - chart_h, width=chart_w, height=chart_h, preserveAspectRatio=True, mask="auto")
             y -= chart_h + 6 * mm
-            line("Q-P chart captured from UI canvas.", step=6.5 * mm)
+            line("График Q-P, полученный из интерфейса сравнения.", step=6.5 * mm, color=c_muted, size=9)
         except Exception:
-            line("Q-P chart image was provided but could not be rendered.", step=6.5 * mm)
+            line("Не удалось встроить график Q-P в отчет.", step=6.5 * mm, color=c_muted, size=9)
 
-    models = [normalize_whitespace(p.get("model") or p.get("id") or "Unknown") for p in products]
-    types = [normalize_whitespace(p.get("type") or "-") for p in products]
-    sizes = [normalize_whitespace(p.get("size") or "-") for p in products]
-    diameters = [normalize_whitespace(p.get("diameter")) or "-" for p in products]
-    airflows = [normalize_whitespace((p.get("airflow") or {}).get("raw") or "-") for p in products]
-    pressures = [normalize_whitespace((p.get("pressure") or {}).get("raw") or "-") for p in products]
-    powers = [normalize_whitespace(p.get("power")) or "-" for p in products]
-    noises = [normalize_whitespace(p.get("noise_level")) or "-" for p in products]
-    prices = [normalize_whitespace(p.get("price")) or "-" for p in products]
+    models = [normalize_whitespace(p.get("model") or p.get("id") or "Без названия") for p in products]
+    types = [normalize_whitespace(p.get("type") or "—") for p in products]
+    sizes = [normalize_whitespace(p.get("size") or "—") for p in products]
+    diameters = [f"{_format_pdf_num(p.get('diameter'))} мм" if p.get("diameter") is not None else "—" for p in products]
+    airflows = [normalize_whitespace((p.get("airflow") or {}).get("raw") or "—") for p in products]
+    pressures = [normalize_whitespace((p.get("pressure") or {}).get("raw") or "—") for p in products]
+    powers = [f"{_format_pdf_num(p.get('power'))} Вт" if p.get("power") is not None else "—" for p in products]
+    noises = [f"{_format_pdf_num(p.get('noise_level'))} дБ" if p.get("noise_level") is not None else "—" for p in products]
+    prices = [f"{_format_pdf_num(p.get('price'))} ₽" if p.get("price") is not None else "по запросу" for p in products]
 
     power_values = [_to_float(p.get("power")) for p in products]
     noise_values = [_to_float(p.get("noise_level")) for p in products]
@@ -245,32 +325,49 @@ def _build_compare_pdf(products: list[dict[str, Any]], chart_png: Optional[bytes
         target = max(v for _, v in valid)
         return {i for i, v in valid if v == target}
 
-    line("Comparison table (best values are highlighted):", step=7.0 * mm, bold=True)
-    draw_row("Model", models, set())
-    draw_row("Type", types, set())
-    draw_row("Size", sizes, set())
-    draw_row("Diameter", diameters, set())
-    draw_row("Airflow", airflows, max_indexes(airflow_max_values))
-    draw_row("Pressure", pressures, max_indexes(pressure_max_values))
-    draw_row("Power", powers, min_indexes(power_values))
-    draw_row("Noise", noises, min_indexes(noise_values))
-    draw_row("Price", prices, min_indexes(price_values))
+    line("Сравнительная таблица (лучшие значения выделены):", step=7.0 * mm, bold=True, size=10)
+    draw_row("Модель", models, set())
+    draw_row("Тип", types, set())
+    draw_row("Типоразмер", sizes, set())
+    draw_row("Диаметр", diameters, set())
+    draw_row("Расход", airflows, max_indexes(airflow_max_values))
+    draw_row("Давление", pressures, max_indexes(pressure_max_values))
+    draw_row("Мощность", powers, min_indexes(power_values))
+    draw_row("Шум", noises, min_indexes(noise_values))
+    draw_row("Цена", prices, min_indexes(price_values))
 
-    y -= 5 * mm
-    line("Full per-model details:", step=7.0 * mm, bold=True)
+    y -= 4 * mm
+    line("Подробно по моделям:", step=7.0 * mm, bold=True)
     for idx, p in enumerate(products, start=1):
-        line(f"{idx}) {normalize_whitespace(p.get('model') or p.get('id') or 'Unknown')}", bold=True)
-        line(f"   id: {normalize_whitespace(p.get('id') or '-')}")
-        line(f"   number: {normalize_whitespace(p.get('number') or '-')}")
-        line(f"   type: {normalize_whitespace(p.get('type') or '-')}")
-        line(f"   size: {normalize_whitespace(p.get('size') or '-')}")
-        line(f"   diameter: {normalize_whitespace(p.get('diameter')) or '-'}")
-        line(f"   airflow: {normalize_whitespace((p.get('airflow') or {}).get('raw') or '-')}")
-        line(f"   pressure: {normalize_whitespace((p.get('pressure') or {}).get('raw') or '-')}")
-        line(f"   power: {normalize_whitespace(p.get('power')) or '-'}")
-        line(f"   noise_level: {normalize_whitespace(p.get('noise_level')) or '-'}")
-        line(f"   price: {normalize_whitespace(p.get('price')) or '-'}")
-        y -= 1.5 * mm
+        if y < 36 * mm:
+            new_page()
+        card_h = 30 * mm
+        pdf.setStrokeColor(c_border)
+        pdf.setFillColor(colors.white)
+        pdf.roundRect(left, y - card_h, width, card_h, 2 * mm, stroke=1, fill=1)
+        pdf.setFillColor(c_text)
+        pdf.setFont(font_bold, 10)
+        title = normalize_whitespace(p.get("model") or p.get("id") or "Без названия")
+        pdf.drawString(left + 3 * mm, y - 6 * mm, f"{idx}. {title}"[:95])
+        pdf.setFillColor(c_muted)
+        pdf.setFont(font_regular, 8.5)
+        pdf.drawString(left + 3 * mm, y - 11 * mm, f"ID: {normalize_whitespace(p.get('id') or '—')}")
+        pdf.drawString(
+            left + 3 * mm,
+            y - 15.5 * mm,
+            f"Тип: {normalize_whitespace(p.get('type') or '—')}   |   Типоразмер: {normalize_whitespace(p.get('size') or '—')}",
+        )
+        pdf.drawString(
+            left + 3 * mm,
+            y - 20 * mm,
+            f"Расход: {normalize_whitespace((p.get('airflow') or {}).get('raw') or '—')}   |   Давление: {normalize_whitespace((p.get('pressure') or {}).get('raw') or '—')}",
+        )
+        pdf.drawString(
+            left + 3 * mm,
+            y - 24.5 * mm,
+            f"Мощность: {powers[idx - 1]}   |   Шум: {noises[idx - 1]}   |   Цена: {prices[idx - 1]}",
+        )
+        y -= card_h + 3.5 * mm
 
     pdf.save()
     data = buf.getvalue()

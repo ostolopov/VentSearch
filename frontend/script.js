@@ -38,6 +38,7 @@ const PAGE_SIZE = 48;
 let compareChart = null;
 let productChart = null;
 const COMPARE_STORAGE_KEY = "ventsearch.compare.ids";
+const PROJECT_STORAGE_KEY = "ventsearch.project.ids";
 
 function loadCompareIds() {
   try {
@@ -52,6 +53,24 @@ function loadCompareIds() {
 function saveCompareIds(ids) {
   try {
     localStorage.setItem(COMPARE_STORAGE_KEY, JSON.stringify([...ids].map(String)));
+  } catch {
+    // ignore
+  }
+}
+
+function loadProjectIds() {
+  try {
+    const raw = localStorage.getItem(PROJECT_STORAGE_KEY);
+    const arr = raw ? JSON.parse(raw) : [];
+    return Array.isArray(arr) ? arr.map(String) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveProjectIds(ids) {
+  try {
+    localStorage.setItem(PROJECT_STORAGE_KEY, JSON.stringify([...ids].map(String)));
   } catch {
     // ignore
   }
@@ -75,7 +94,7 @@ function formatNumber(n) {
 
 function formatPrice(price) {
   if (price === null || price === undefined || Number.isNaN(price)) return "по запросу";
-  return `${formatNumber(price)} ₽`;
+  return `${formatNumber(price)}\u00A0₽`;
 }
 
 function slugify(value) {
@@ -177,7 +196,7 @@ function buildQpDatasetsShared(products) {
     const qMax = getRangePeak(p.airflow) || 0;
     const pMax = getRangePeak(p.pressure) || 0;
     const points = [];
-    const steps = 16;
+    const steps = 300;
     for (let i = 0; i <= steps; i += 1) {
       const q = (qMax / steps) * i;
       const pressure = pMax * (1 - (q / Math.max(qMax, 1)) ** 2);
@@ -189,9 +208,11 @@ function buildQpDatasetsShared(products) {
       borderColor: colors[idx % colors.length],
       backgroundColor: colors[idx % colors.length],
       pointRadius: 0,
+      pointHoverRadius: 4,
+      pointHitRadius: 18,
       borderWidth: 2.5,
       fill: false,
-      tension: 0.25,
+      tension: 0.42,
     };
   });
 }
@@ -205,6 +226,11 @@ function renderQpChartShared(canvas, chartRef, products) {
     options: {
       responsive: true,
       maintainAspectRatio: false,
+      interaction: {
+        mode: "nearest",
+        axis: "xy",
+        intersect: false,
+      },
       scales: {
         x: {
           type: "linear",
@@ -217,6 +243,64 @@ function renderQpChartShared(canvas, chartRef, products) {
       },
       plugins: {
         legend: { position: "bottom" },
+        tooltip: {
+          enabled: true,
+          displayColors: true,
+          callbacks: {
+            title(items) {
+              if (!items?.length) return "";
+              if (items.length === 1) {
+                const item = items[0];
+                return item?.dataset?.label ? `Модель: ${item.dataset.label}` : "";
+              }
+              return "Пересечение кривых";
+            },
+            label(context) {
+              const model = context?.dataset?.label || "Модель";
+              const q = context?.parsed?.x;
+              const p = context?.parsed?.y;
+              return `${model}: P ${formatNumber(p)} Па (Q ${formatNumber(q)} м³/ч)`;
+            },
+          },
+        },
+      },
+      onHover(event, _active, chart) {
+        const nearest = chart.getElementsAtEventForMode(
+          event,
+          "nearest",
+          { intersect: false, axis: "xy" },
+          false,
+        );
+        if (!nearest.length) {
+          chart.setActiveElements([]);
+          chart.tooltip.setActiveElements([], { x: 0, y: 0 });
+          chart.update("none");
+          return;
+        }
+
+        const base = nearest[0];
+        const sameIndex = chart.getElementsAtEventForMode(
+          event,
+          "index",
+          { intersect: false, axis: "x" },
+          false,
+        );
+        const baseMeta = chart.getDatasetMeta(base.datasetIndex);
+        const basePoint = baseMeta?.data?.[base.index];
+        const baseY = basePoint?.y;
+        const thresholdPx = 8;
+
+        const active = sameIndex.filter((item) => {
+          const meta = chart.getDatasetMeta(item.datasetIndex);
+          const point = meta?.data?.[item.index];
+          if (!point || baseY == null) return false;
+          return Math.abs(point.y - baseY) <= thresholdPx;
+        });
+
+        const selected = active.length ? active : [base];
+        chart.setActiveElements(selected);
+        chart.tooltip.setActiveElements(selected, { x: event.x, y: event.y });
+        chart.update("none");
       },
     },
   });
@@ -311,6 +395,7 @@ async function initCatalogPage() {
     currentItems: [],
     cacheById: new Map(),
     selectedIds: new Set(loadCompareIds()),
+    projectIds: new Set(loadProjectIds()),
     analogs: [],
   };
 
@@ -344,8 +429,40 @@ async function initCatalogPage() {
   function updateCompareBar() {
     const n = state.selectedIds.size;
     selectedCount.textContent = `${n}`;
-    compareBar.classList.toggle("d-none", n === 0);
+    compareBar.classList.toggle("compare-bar-hidden", n === 0);
     openCompareBtn.disabled = n < 2;
+  }
+
+  function syncSelectionUi() {
+    const toggleButtons = grid.querySelectorAll(".btn-compare-toggle");
+    for (const button of toggleButtons) {
+      const id = String(button.dataset.id || "");
+      const selected = state.selectedIds.has(id);
+      button.classList.toggle("active", selected);
+      button.textContent = selected ? "✓ В сравнении" : "+ Сравнить";
+      button.title = selected ? "Уже добавлен в сравнение" : "Добавить в сравнение";
+      const card = button.closest(".product-card");
+      if (card) card.classList.toggle("selected", selected);
+    }
+    const projectButtons = grid.querySelectorAll(".btn-project-toggle");
+    for (const button of projectButtons) {
+      const id = String(button.dataset.id || "");
+      const inProject = state.projectIds.has(id);
+      button.classList.toggle("active", inProject);
+      button.textContent = inProject ? "✓ В проекте" : "В проект";
+      button.title = inProject ? "Уже добавлен в проект" : "Добавить в проект";
+    }
+  }
+
+  function toggleProjectSelection(id) {
+    if (state.projectIds.has(id)) {
+      state.projectIds.delete(id);
+    } else {
+      state.projectIds.add(id);
+    }
+    saveProjectIds(state.projectIds);
+    hideError();
+    syncSelectionUi();
   }
 
   function toggleSelection(id) {
@@ -357,7 +474,7 @@ async function initCatalogPage() {
     saveCompareIds(state.selectedIds);
     hideError();
     updateCompareBar();
-    renderProducts(state.currentItems, { total: state.lastTotal, page: state.currentPage, limit: state.lastLimit });
+    syncSelectionUi();
   }
 
   function renderProducts(products, meta) {
@@ -383,10 +500,11 @@ async function initCatalogPage() {
     for (const p of state.currentItems) {
       state.cacheById.set(p.id, p);
       const col = document.createElement("div");
-      col.className = "col-12 col-md-6 col-xl-4";
+      col.className = "col-6 col-md-6 col-xl-4";
 
       const card = document.createElement("article");
       const selected = state.selectedIds.has(p.id);
+      const inProject = state.projectIds.has(p.id);
       card.className = `card h-100 shadow-sm product-card${selected ? " selected" : ""}`;
 
       const imgWrap = document.createElement("div");
@@ -407,18 +525,28 @@ async function initCatalogPage() {
         <div class="d-flex justify-content-between align-items-center mt-auto">
           <span class="product-price">${escapeHtml(formatPrice(p.price))}</span>
           <button type="button" class="btn-compare-toggle ${selected ? "active" : ""}" data-id="${escapeHtml(p.id)}">
-            ${selected ? "✓ В сравнении" : "+ Сравнить"}
+            + Сравнить
           </button>
         </div>
-        <div class="mt-2 d-flex gap-2">
-          <button type="button" class="btn btn-outline-dark btn-sm flex-grow-1">В проект</button>
-          <a class="btn btn-sm btn-dark flex-grow-1" href="product.html?id=${encodeURIComponent(p.id)}">Открыть</a>
+        <div class="product-card-actions mt-2 d-flex gap-2">
+          <button type="button" class="btn btn-outline-dark btn-sm flex-grow-1 btn-project-toggle ${inProject ? "active" : ""}" data-id="${escapeHtml(
+        p.id
+      )}">
+            В проект
+          </button>
+          <a class="btn btn-sm btn-dark flex-grow-1 product-open-btn" href="product.html?id=${encodeURIComponent(p.id)}">Открыть</a>
         </div>
       `;
 
       const detailsLink = body.querySelector("a");
+      const projectToggleBtn = body.querySelector(".btn-project-toggle");
       const compareToggleBtn = body.querySelector(".btn-compare-toggle");
       detailsLink?.addEventListener("click", (event) => event.stopPropagation());
+      projectToggleBtn?.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        toggleProjectSelection(p.id);
+      });
       compareToggleBtn?.addEventListener("click", (event) => {
         event.preventDefault();
         event.stopPropagation();
@@ -430,6 +558,8 @@ async function initCatalogPage() {
       col.appendChild(card);
       grid.appendChild(col);
     }
+
+    syncSelectionUi();
 
     if (paginationNav) {
       const totalPages = Math.max(1, Math.ceil(total / limit));
@@ -613,7 +743,7 @@ async function initCatalogPage() {
     state.selectedIds.clear();
     saveCompareIds(state.selectedIds);
     updateCompareBar();
-    renderProducts(state.currentItems, { total: state.lastTotal, page: state.currentPage, limit: state.lastLimit });
+    syncSelectionUi();
   });
   backToFiltersBtn.addEventListener("click", () => {
     showCatalogResults();
@@ -662,6 +792,7 @@ async function initCatalogPage() {
     await loadPage(1);
     showCatalogResults();
     updateCompareBar();
+    syncSelectionUi();
   } catch (err) {
     console.error(err);
     showError("Ошибка инициализации каталога.");
