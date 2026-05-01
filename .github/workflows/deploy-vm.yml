@@ -1,0 +1,65 @@
+name: Deploy to YC VM
+
+on:
+  push:
+    branches: ["main"]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Copy project to VM
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.VM_HOST }}
+          username: ${{ secrets.VM_USER }}
+          key: ${{ secrets.VM_SSH_KEY }}
+          port: ${{ secrets.VM_SSH_PORT || '22' }}
+          source: "."
+          target: "~/apps/ventsearch"
+          overwrite: true
+          rm: false
+          strip_components: 0
+          exclude: ".git,.venv,.pytest_cache,__pycache__,.DS_Store"
+
+      - name: Run deploy commands on VM
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.VM_HOST }}
+          username: ${{ secrets.VM_USER }}
+          key: ${{ secrets.VM_SSH_KEY }}
+          port: ${{ secrets.VM_SSH_PORT || '22' }}
+          script_stop: true
+          script: |
+            set -eu
+            APP_DIR="$HOME/apps/ventsearch"
+            cd "$APP_DIR"
+
+            mkdir -p "$HOME/apps"
+            cat > "$APP_DIR/.env.prod" <<EOF
+            POSTGRES_DB=${{ secrets.POSTGRES_DB }}
+            POSTGRES_USER=${{ secrets.POSTGRES_USER }}
+            POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }}
+            CORS_ORIGINS=${{ secrets.CORS_ORIGINS }}
+            EOF
+
+            docker compose --env-file .env.prod -f compose.prod.yml up -d --build
+
+            for i in $(seq 1 20); do
+              if curl -fsS http://127.0.0.1:8080/api/health >/dev/null; then
+                echo "Healthcheck OK"
+                exit 0
+              fi
+              echo "Waiting for app..."
+              sleep 3
+            done
+
+            echo "Healthcheck failed"
+            docker compose --env-file .env.prod -f compose.prod.yml ps
+            docker compose --env-file .env.prod -f compose.prod.yml logs --tail=100
+            exit 1
