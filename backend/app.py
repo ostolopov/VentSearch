@@ -4,6 +4,8 @@ VENTMASH — REST API на FastAPI (OpenAPI: /docs, /redoc).
 """
 import logging
 import base64
+import socket
+import ipaddress
 import re
 import threading
 import traceback
@@ -322,6 +324,44 @@ def _is_frontend_request(request: Request) -> bool:
     return not path.startswith("/api")
 
 
+def _discover_local_ipv4_candidates() -> list[str]:
+    candidates: set[str] = set()
+    try:
+        # Primary address used for outbound traffic.
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("8.8.8.8", 80))
+            candidates.add(s.getsockname()[0])
+    except Exception:
+        pass
+    try:
+        host = socket.gethostname()
+        infos = socket.getaddrinfo(host, None, family=socket.AF_INET, type=socket.SOCK_STREAM)
+        for info in infos:
+            ip = info[4][0]
+            candidates.add(ip)
+    except Exception:
+        pass
+
+    out: list[str] = []
+    for raw in sorted(candidates):
+        try:
+            ip = ipaddress.ip_address(raw)
+        except ValueError:
+            continue
+        if ip.is_loopback:
+            continue
+        if ip.is_private or ip.is_link_local:
+            out.append(raw)
+    return out
+
+
+def _format_url(scheme: str, host: str, port: Optional[int], path: str = "/") -> str:
+    default_port = 80 if scheme == "http" else 443 if scheme == "https" else None
+    port_part = f":{port}" if port and port != default_port else ""
+    normalized_path = path if path.startswith("/") else f"/{path}"
+    return f"{scheme}://{host}{port_part}{normalized_path}"
+
+
 @app.exception_handler(StarletteHTTPException)
 async def starlette_http_exception_handler(request: Request, exc: StarletteHTTPException):
     if exc.status_code == 404 and _is_frontend_request(request) and _wants_html(request):
@@ -612,6 +652,34 @@ def api_health():
     with db_session() as conn:
         n = count_products(conn)
     return HealthOut(ok=True, products=n)
+
+
+@app.get(
+    "/api/share-links",
+    summary="Ссылки для открытия приложения в локальной сети",
+    description="Возвращает ссылки с доступными локальными IPv4-адресами хоста для быстрого шаринга.",
+    tags=["system"],
+)
+def api_share_links(request: Request):
+    scheme = request.url.scheme or "http"
+    port = request.url.port
+    base_path = "/"
+    urls: list[str] = []
+
+    # Always include the URL from current request host.
+    current_host = request.url.hostname or "localhost"
+    urls.append(_format_url(scheme, current_host, port, base_path))
+
+    # Add LAN candidates when accessed from localhost or single-IP host.
+    for ip in _discover_local_ipv4_candidates():
+        url = _format_url(scheme, ip, port, base_path)
+        if url not in urls:
+            urls.append(url)
+
+    return {
+        "urls": urls,
+        "hint": "Откройте одну из ссылок на другом устройстве в той же локальной сети.",
+    }
 
 
 @app.post(
