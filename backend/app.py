@@ -4,11 +4,10 @@ VENTMASH — REST API на FastAPI (OpenAPI: /docs, /redoc).
 """
 import logging
 import base64
-<<<<<<< HEAD
-=======
+
 import socket
 import ipaddress
->>>>>>> 8ad17dadb03d880405e60eecb58721d7ada7f561
+
 import re
 import threading
 import traceback
@@ -657,8 +656,7 @@ def api_health():
     return HealthOut(ok=True, products=n)
 
 
-<<<<<<< HEAD
-=======
+
 @app.get(
     "/api/share-links",
     summary="Ссылки для открытия приложения в локальной сети",
@@ -687,7 +685,7 @@ def api_share_links(request: Request):
     }
 
 
->>>>>>> 8ad17dadb03d880405e60eecb58721d7ada7f561
+
 @app.post(
     "/api/export/pdf",
     summary="Экспорт сравнения в PDF (server-side)",
