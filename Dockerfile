@@ -10,6 +10,7 @@ RUN pip install --no-cache-dir -r /app/requirements.txt
 COPY backend/ /app/backend/
 COPY frontend/ /app/frontend/
 COPY data/ /app/data/
+COPY photos/ /app/photos/
 
 ENV PYTHONPATH=/app/backend:/app
 ENV PORT=8080
