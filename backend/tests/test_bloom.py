@@ -1,5 +1,4 @@
 import pytest
-# Импорт класса, который написал Егор
 from search.bloom_filter import BloomFilter 
 
 def test_bloom_add_and_check():
