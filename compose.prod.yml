@@ -1,0 +1,46 @@
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: ventsearch-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-ventmash}
+      POSTGRES_USER: ${POSTGRES_USER:-ventmash}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ventpass}
+    volumes:
+      - ventsearch_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-ventmash} -d ${POSTGRES_DB:-ventmash}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ventsearch-app
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PORT: 8080
+      DATABASE_URL: postgresql://${POSTGRES_USER:-ventmash}:${POSTGRES_PASSWORD:-ventpass}@db:5432/${POSTGRES_DB:-ventmash}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost,http://127.0.0.1}
+    ports:
+      - "127.0.0.1:8080:8080"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/api/health', timeout=3)"
+        ]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  ventsearch_pgdata:

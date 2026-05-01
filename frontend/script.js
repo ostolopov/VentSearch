@@ -300,6 +300,7 @@ async function initCatalogPage() {
   const emptySection = $("#emptyStateSection");
   const backToFiltersBtn = $("#backToFiltersBtn");
   const analogsList = $("#analogsList");
+  const shareLinkBtn = $("#shareLinkBtn");
 
   const state = {
     currentPage: 1,
@@ -632,6 +633,26 @@ async function initCatalogPage() {
     if (event.key === "Enter") {
       event.preventDefault();
       headerSearchBtn?.click();
+    }
+  });
+
+  shareLinkBtn?.addEventListener("click", async () => {
+    try {
+      const data = await fetchJson(apiUrl("/api/share-links"));
+      const urls = Array.isArray(data?.urls) ? data.urls.filter(Boolean) : [];
+      if (!urls.length) {
+        showError("Не удалось сгенерировать ссылку для локальной сети.");
+        return;
+      }
+      const first = urls[0];
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(first);
+      }
+      const text = `Ссылка скопирована в буфер обмена:\n${first}\n\nДополнительно:\n${urls.join("\n")}`;
+      window.alert(text);
+    } catch (err) {
+      console.error(err);
+      showError("Не удалось сгенерировать ссылку. Проверьте доступность API.");
     }
   });
 
