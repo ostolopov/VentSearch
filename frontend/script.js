@@ -439,7 +439,7 @@ async function initCatalogPage() {
       const id = String(button.dataset.id || "");
       const selected = state.selectedIds.has(id);
       button.classList.toggle("active", selected);
-      button.textContent = selected ? "✓ В сравнении" : "+ Сравнить";
+      button.textContent = "Сравнить";
       button.title = selected ? "Уже добавлен в сравнение" : "Добавить в сравнение";
       const card = button.closest(".product-card");
       if (card) card.classList.toggle("selected", selected);
@@ -449,7 +449,7 @@ async function initCatalogPage() {
       const id = String(button.dataset.id || "");
       const inProject = state.projectIds.has(id);
       button.classList.toggle("active", inProject);
-      button.textContent = inProject ? "✓ В проекте" : "В проект";
+      button.textContent = "В проект";
       button.title = inProject ? "Уже добавлен в проект" : "Добавить в проект";
     }
   }
@@ -519,22 +519,22 @@ async function initCatalogPage() {
         <dl class="row small mb-2">
           <dt class="col-6 text-secondary">Расход</dt><dd class="col-6 mb-1">${escapeHtml(p.airflow?.raw || "—")}</dd>
           <dt class="col-6 text-secondary">Давление</dt><dd class="col-6 mb-1">${escapeHtml(p.pressure?.raw || "—")}</dd>
-          <dt class="col-6 text-secondary">Мощность</dt><dd class="col-6 mb-1">${p.power != null ? `${escapeHtml(p.power)} Вт` : "—"}</dd>
+          <dt class="col-6 text-secondary">Мощн.</dt><dd class="col-6 mb-1">${p.power != null ? `${escapeHtml(p.power)} Вт` : "—"}</dd>
           <dt class="col-6 text-secondary">Шум</dt><dd class="col-6 mb-1">${p.noise_level != null ? `${escapeHtml(p.noise_level)} дБ` : "—"}</dd>
         </dl>
-        <div class="d-flex justify-content-between align-items-center mt-auto">
-          <span class="product-price">${escapeHtml(formatPrice(p.price))}</span>
-          <button type="button" class="btn-compare-toggle ${selected ? "active" : ""}" data-id="${escapeHtml(p.id)}">
-            + Сравнить
-          </button>
+        <div class="mt-auto">
+          <div class="product-price">${escapeHtml(formatPrice(p.price))}</div>
+          <a class="btn btn-sm btn-dark product-open-btn mt-2" href="product.html?id=${encodeURIComponent(p.id)}">Открыть</a>
         </div>
         <div class="product-card-actions mt-2 d-flex gap-2">
           <button type="button" class="btn btn-outline-dark btn-sm flex-grow-1 btn-project-toggle ${inProject ? "active" : ""}" data-id="${escapeHtml(
         p.id
-      )}">
+      )}" title="${inProject ? "Уже добавлен в проект" : "Добавить в проект"}">
             В проект
           </button>
-          <a class="btn btn-sm btn-dark flex-grow-1 product-open-btn" href="product.html?id=${encodeURIComponent(p.id)}">Открыть</a>
+          <button type="button" class="btn-compare-toggle flex-grow-1 ${selected ? "active" : ""}" data-id="${escapeHtml(p.id)}">
+            Сравнить
+          </button>
         </div>
       `;
 
@@ -990,6 +990,7 @@ async function initProductPage() {
     for (const [label, value] of specs) {
       const tr = document.createElement("tr");
       tr.innerHTML = `<th scope="row" class="w-50 text-secondary">${escapeHtml(label)}</th><td>${escapeHtml(value ?? "—")}</td>`;
+      specBody.appendChild(tr);
     }
     productChart = renderQpChartShared(chartCanvas, productChart, [data]);
     productCompareMeta.textContent = `Сейчас показана характеристика модели ${data.model || data.id}.`;
