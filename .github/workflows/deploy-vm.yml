@@ -20,12 +20,11 @@ jobs:
           username: ${{ secrets.VM_USER }}
           key: ${{ secrets.VM_SSH_KEY }}
           port: ${{ secrets.VM_SSH_PORT || '22' }}
-          source: "."
+          source: "Dockerfile,compose.prod.yml,.dockerignore,backend/**,frontend/**,data/**"
           target: "~/apps/ventsearch"
           overwrite: true
-          rm: false
+          rm: true
           strip_components: 0
-          exclude: ".git,.venv,.pytest_cache,__pycache__,.DS_Store"
 
       - name: Run deploy commands on VM
         uses: appleboy/ssh-action@v1.2.0
