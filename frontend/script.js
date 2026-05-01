@@ -220,12 +220,24 @@ function buildQpDatasetsShared(products) {
 function renderQpChartShared(canvas, chartRef, products) {
   if (!canvas || typeof Chart === "undefined") return chartRef;
   if (chartRef) chartRef.destroy();
+  const qpChartFontFamily =
+    'system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", "Helvetica Neue", Arial, sans-serif';
+  const qpChartFontSize = 11;
+  const qpTicks = {
+    callback: (v) => formatNumber(v),
+    font: { family: qpChartFontFamily, size: qpChartFontSize - 1 },
+  };
+  const qpAxisTitleFont = {
+    display: true,
+    font: { family: qpChartFontFamily, size: qpChartFontSize, weight: "600" },
+  };
   return new Chart(canvas, {
     type: "line",
     data: { datasets: buildQpDatasetsShared(products) },
     options: {
       responsive: true,
       maintainAspectRatio: false,
+      font: { family: qpChartFontFamily, size: qpChartFontSize },
       interaction: {
         mode: "nearest",
         axis: "xy",
@@ -234,18 +246,26 @@ function renderQpChartShared(canvas, chartRef, products) {
       scales: {
         x: {
           type: "linear",
-          title: { display: true, text: "Расход воздуха, м³/ч" },
-          ticks: { callback: (v) => formatNumber(v) },
+          title: { ...qpAxisTitleFont, text: "Расход воздуха, м³/ч" },
+          ticks: qpTicks,
         },
         y: {
-          title: { display: true, text: "Давление, Па" },
+          title: { ...qpAxisTitleFont, text: "Давление, Па" },
+          ticks: { font: { family: qpChartFontFamily, size: qpChartFontSize - 1 } },
         },
       },
       plugins: {
-        legend: { position: "bottom" },
+        legend: {
+          position: "bottom",
+          labels: {
+            font: { family: qpChartFontFamily, size: qpChartFontSize },
+          },
+        },
         tooltip: {
           enabled: true,
           displayColors: true,
+          titleFont: { family: qpChartFontFamily, size: qpChartFontSize },
+          bodyFont: { family: qpChartFontFamily, size: qpChartFontSize - 1 },
           callbacks: {
             title(items) {
               if (!items?.length) return "";
