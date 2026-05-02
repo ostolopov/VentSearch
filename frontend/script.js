@@ -2,6 +2,16 @@ function $(selector) {
   return document.querySelector(selector);
 }
 
+function escapeHtml(value) {
+  if (value === null || value === undefined) return "";
+  return String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
 function apiUrl(path) {
   const base = (typeof window !== "undefined" && window.VENTMASH_API_BASE
     ? String(window.VENTMASH_API_BASE)
@@ -28,6 +38,7 @@ const PAGE_SIZE = 48;
 let compareChart = null;
 let productChart = null;
 const COMPARE_STORAGE_KEY = "ventsearch.compare.ids";
+const PROJECT_STORAGE_KEY = "ventsearch.project.ids";
 
 function loadCompareIds() {
   try {
@@ -42,6 +53,24 @@ function loadCompareIds() {
 function saveCompareIds(ids) {
   try {
     localStorage.setItem(COMPARE_STORAGE_KEY, JSON.stringify([...ids].map(String)));
+  } catch {
+    // ignore
+  }
+}
+
+function loadProjectIds() {
+  try {
+    const raw = localStorage.getItem(PROJECT_STORAGE_KEY);
+    const arr = raw ? JSON.parse(raw) : [];
+    return Array.isArray(arr) ? arr.map(String) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveProjectIds(ids) {
+  try {
+    localStorage.setItem(PROJECT_STORAGE_KEY, JSON.stringify([...ids].map(String)));
   } catch {
     // ignore
   }
@@ -65,7 +94,7 @@ function formatNumber(n) {
 
 function formatPrice(price) {
   if (price === null || price === undefined || Number.isNaN(price)) return "по запросу";
-  return `${formatNumber(price)} ₽`;
+  return `${formatNumber(price)}\u00A0₽`;
 }
 
 function slugify(value) {
@@ -167,7 +196,7 @@ function buildQpDatasetsShared(products) {
     const qMax = getRangePeak(p.airflow) || 0;
     const pMax = getRangePeak(p.pressure) || 0;
     const points = [];
-    const steps = 16;
+    const steps = 300;
     for (let i = 0; i <= steps; i += 1) {
       const q = (qMax / steps) * i;
       const pressure = pMax * (1 - (q / Math.max(qMax, 1)) ** 2);
@@ -179,9 +208,11 @@ function buildQpDatasetsShared(products) {
       borderColor: colors[idx % colors.length],
       backgroundColor: colors[idx % colors.length],
       pointRadius: 0,
+      pointHoverRadius: 4,
+      pointHitRadius: 18,
       borderWidth: 2.5,
       fill: false,
-      tension: 0.25,
+      tension: 0.42,
     };
   });
 }
@@ -189,24 +220,107 @@ function buildQpDatasetsShared(products) {
 function renderQpChartShared(canvas, chartRef, products) {
   if (!canvas || typeof Chart === "undefined") return chartRef;
   if (chartRef) chartRef.destroy();
+  const qpChartFontFamily =
+    'system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", "Helvetica Neue", Arial, sans-serif';
+  const qpChartFontSize = 11;
+  const qpTicks = {
+    callback: (v) => formatNumber(v),
+    font: { family: qpChartFontFamily, size: qpChartFontSize - 1 },
+  };
+  const qpAxisTitleFont = {
+    display: true,
+    font: { family: qpChartFontFamily, size: qpChartFontSize, weight: "600" },
+  };
   return new Chart(canvas, {
     type: "line",
     data: { datasets: buildQpDatasetsShared(products) },
     options: {
       responsive: true,
       maintainAspectRatio: false,
+      font: { family: qpChartFontFamily, size: qpChartFontSize },
+      interaction: {
+        mode: "nearest",
+        axis: "xy",
+        intersect: false,
+      },
       scales: {
         x: {
           type: "linear",
-          title: { display: true, text: "Расход воздуха, м³/ч" },
-          ticks: { callback: (v) => formatNumber(v) },
+          title: { ...qpAxisTitleFont, text: "Расход воздуха, м³/ч" },
+          ticks: qpTicks,
         },
         y: {
-          title: { display: true, text: "Давление, Па" },
+          title: { ...qpAxisTitleFont, text: "Давление, Па" },
+          ticks: { font: { family: qpChartFontFamily, size: qpChartFontSize - 1 } },
         },
       },
       plugins: {
-        legend: { position: "bottom" },
+        legend: {
+          position: "bottom",
+          labels: {
+            font: { family: qpChartFontFamily, size: qpChartFontSize },
+          },
+        },
+        tooltip: {
+          enabled: true,
+          displayColors: true,
+          titleFont: { family: qpChartFontFamily, size: qpChartFontSize },
+          bodyFont: { family: qpChartFontFamily, size: qpChartFontSize - 1 },
+          callbacks: {
+            title(items) {
+              if (!items?.length) return "";
+              if (items.length === 1) {
+                const item = items[0];
+                return item?.dataset?.label ? `Модель: ${item.dataset.label}` : "";
+              }
+              return "Пересечение кривых";
+            },
+            label(context) {
+              const model = context?.dataset?.label || "Модель";
+              const q = context?.parsed?.x;
+              const p = context?.parsed?.y;
+              return `${model}: P ${formatNumber(p)} Па (Q ${formatNumber(q)} м³/ч)`;
+            },
+          },
+        },
+      },
+      onHover(event, _active, chart) {
+        const nearest = chart.getElementsAtEventForMode(
+          event,
+          "nearest",
+          { intersect: false, axis: "xy" },
+          false,
+        );
+        if (!nearest.length) {
+          chart.setActiveElements([]);
+          chart.tooltip.setActiveElements([], { x: 0, y: 0 });
+          chart.update("none");
+          return;
+        }
+
+        const base = nearest[0];
+        const sameIndex = chart.getElementsAtEventForMode(
+          event,
+          "index",
+          { intersect: false, axis: "x" },
+          false,
+        );
+        const baseMeta = chart.getDatasetMeta(base.datasetIndex);
+        const basePoint = baseMeta?.data?.[base.index];
+        const baseY = basePoint?.y;
+        const thresholdPx = 8;
+
+        const active = sameIndex.filter((item) => {
+          const meta = chart.getDatasetMeta(item.datasetIndex);
+          const point = meta?.data?.[item.index];
+          if (!point || baseY == null) return false;
+          return Math.abs(point.y - baseY) <= thresholdPx;
+        });
+
+        const selected = active.length ? active : [base];
+        chart.setActiveElements(selected);
+        chart.tooltip.setActiveElements(selected, { x: event.x, y: event.y });
+        chart.update("none");
       },
     },
   });
@@ -290,6 +404,7 @@ async function initCatalogPage() {
   const emptySection = $("#emptyStateSection");
   const backToFiltersBtn = $("#backToFiltersBtn");
   const analogsList = $("#analogsList");
+  const shareLinkBtn = $("#shareLinkBtn");
 
   const state = {
     currentPage: 1,
@@ -300,6 +415,7 @@ async function initCatalogPage() {
     currentItems: [],
     cacheById: new Map(),
     selectedIds: new Set(loadCompareIds()),
+    projectIds: new Set(loadProjectIds()),
     analogs: [],
   };
 
@@ -333,8 +449,40 @@ async function initCatalogPage() {
   function updateCompareBar() {
     const n = state.selectedIds.size;
     selectedCount.textContent = `${n}`;
-    compareBar.classList.toggle("d-none", n === 0);
+    compareBar.classList.toggle("compare-bar-hidden", n === 0);
     openCompareBtn.disabled = n < 2;
+  }
+
+  function syncSelectionUi() {
+    const toggleButtons = grid.querySelectorAll(".btn-compare-toggle");
+    for (const button of toggleButtons) {
+      const id = String(button.dataset.id || "");
+      const selected = state.selectedIds.has(id);
+      button.classList.toggle("active", selected);
+      button.textContent = "Сравнить";
+      button.title = selected ? "Уже добавлен в сравнение" : "Добавить в сравнение";
+      const card = button.closest(".product-card");
+      if (card) card.classList.toggle("selected", selected);
+    }
+    const projectButtons = grid.querySelectorAll(".btn-project-toggle");
+    for (const button of projectButtons) {
+      const id = String(button.dataset.id || "");
+      const inProject = state.projectIds.has(id);
+      button.classList.toggle("active", inProject);
+      button.textContent = "В проект";
+      button.title = inProject ? "Уже добавлен в проект" : "Добавить в проект";
+    }
+  }
+
+  function toggleProjectSelection(id) {
+    if (state.projectIds.has(id)) {
+      state.projectIds.delete(id);
+    } else {
+      state.projectIds.add(id);
+    }
+    saveProjectIds(state.projectIds);
+    hideError();
+    syncSelectionUi();
   }
 
   function toggleSelection(id) {
@@ -346,7 +494,7 @@ async function initCatalogPage() {
     saveCompareIds(state.selectedIds);
     hideError();
     updateCompareBar();
-    renderProducts(state.currentItems, { total: state.lastTotal, page: state.currentPage, limit: state.lastLimit });
+    syncSelectionUi();
   }
 
   function renderProducts(products, meta) {
@@ -372,10 +520,11 @@ async function initCatalogPage() {
     for (const p of state.currentItems) {
       state.cacheById.set(p.id, p);
       const col = document.createElement("div");
-      col.className = "col-12 col-md-6 col-xl-4";
+      col.className = "col-6 col-md-6 col-xl-4";
 
       const card = document.createElement("article");
       const selected = state.selectedIds.has(p.id);
+      const inProject = state.projectIds.has(p.id);
       card.className = `card h-100 shadow-sm product-card${selected ? " selected" : ""}`;
 
       const imgWrap = document.createElement("div");
@@ -385,29 +534,39 @@ async function initCatalogPage() {
       const body = document.createElement("div");
       body.className = "card-body d-flex flex-column";
       body.innerHTML = `
-        <h2 class="h6 card-title mb-1">${p.model || "Без названия"}</h2>
-        <div class="text-secondary small mb-2">${[p.type, p.size].filter(Boolean).join(" • ") || "—"}</div>
+        <h2 class="h6 card-title mb-1">${escapeHtml(p.model || "Без названия")}</h2>
+        <div class="text-secondary small mb-2">${escapeHtml([p.type, p.size].filter(Boolean).join(" • ") || "—")}</div>
         <dl class="row small mb-2">
-          <dt class="col-6 text-secondary">Расход</dt><dd class="col-6 mb-1">${p.airflow?.raw || "—"}</dd>
-          <dt class="col-6 text-secondary">Давление</dt><dd class="col-6 mb-1">${p.pressure?.raw || "—"}</dd>
-          <dt class="col-6 text-secondary">Мощность</dt><dd class="col-6 mb-1">${p.power != null ? `${p.power} Вт` : "—"}</dd>
-          <dt class="col-6 text-secondary">Шум</dt><dd class="col-6 mb-1">${p.noise_level != null ? `${p.noise_level} дБ` : "—"}</dd>
+          <dt class="col-6 text-secondary">Расход</dt><dd class="col-6 mb-1">${escapeHtml(p.airflow?.raw || "—")}</dd>
+          <dt class="col-6 text-secondary">Давление</dt><dd class="col-6 mb-1">${escapeHtml(p.pressure?.raw || "—")}</dd>
+          <dt class="col-6 text-secondary">Мощн.</dt><dd class="col-6 mb-1">${p.power != null ? `${escapeHtml(p.power)} Вт` : "—"}</dd>
+          <dt class="col-6 text-secondary">Шум</dt><dd class="col-6 mb-1">${p.noise_level != null ? `${escapeHtml(p.noise_level)} дБ` : "—"}</dd>
         </dl>
-        <div class="d-flex justify-content-between align-items-center mt-auto">
-          <span class="product-price">${formatPrice(p.price)}</span>
-          <button type="button" class="btn-compare-toggle ${selected ? "active" : ""}" data-id="${p.id}">
-            ${selected ? "✓ В сравнении" : "+ Сравнить"}
-          </button>
+        <div class="mt-auto">
+          <div class="product-price">${escapeHtml(formatPrice(p.price))}</div>
+          <a class="btn btn-sm btn-dark product-open-btn mt-2" href="product.html?id=${encodeURIComponent(p.id)}">Открыть</a>
         </div>
-        <div class="mt-2 d-flex gap-2">
-          <button type="button" class="btn btn-outline-dark btn-sm flex-grow-1">В проект</button>
-          <a class="btn btn-sm btn-dark flex-grow-1" href="product.html?id=${encodeURIComponent(p.id)}">Открыть</a>
+        <div class="product-card-actions mt-2 d-flex gap-2">
+          <button type="button" class="btn btn-outline-dark btn-sm flex-grow-1 btn-project-toggle ${inProject ? "active" : ""}" data-id="${escapeHtml(
+        p.id
+      )}" title="${inProject ? "Уже добавлен в проект" : "Добавить в проект"}">
+            В проект
+          </button>
+          <button type="button" class="btn-compare-toggle flex-grow-1 ${selected ? "active" : ""}" data-id="${escapeHtml(p.id)}">
+            Сравнить
+          </button>
         </div>
       `;
 
       const detailsLink = body.querySelector("a");
+      const projectToggleBtn = body.querySelector(".btn-project-toggle");
       const compareToggleBtn = body.querySelector(".btn-compare-toggle");
       detailsLink?.addEventListener("click", (event) => event.stopPropagation());
+      projectToggleBtn?.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        toggleProjectSelection(p.id);
+      });
       compareToggleBtn?.addEventListener("click", (event) => {
         event.preventDefault();
         event.stopPropagation();
@@ -419,6 +578,8 @@ async function initCatalogPage() {
       col.appendChild(card);
       grid.appendChild(col);
     }
+
+    syncSelectionUi();
 
     if (paginationNav) {
       const totalPages = Math.max(1, Math.ceil(total / limit));
@@ -435,13 +596,13 @@ async function initCatalogPage() {
       const card = document.createElement("div");
       card.className = "analog-card";
       card.innerHTML = `
-        <span class="analog-match">${item.score}% совпадение</span>
+        <span class="analog-match">${escapeHtml(item.score)}% совпадение</span>
         <div class="analog-img"></div>
         <div class="analog-info">
-          <div class="analog-model">${item.model || "Без названия"}</div>
+          <div class="analog-model">${escapeHtml(item.model || "Без названия")}</div>
           <div class="analog-params">
-            ${item.type || "—"} · Расход: ${item.airflow?.raw || "—"} · Давление: ${item.pressure?.raw || "—"} ·
-            Мощность: ${item.power != null ? `${item.power} Вт` : "—"} · ${formatPrice(item.price)}
+            ${escapeHtml(item.type || "—")} · Расход: ${escapeHtml(item.airflow?.raw || "—")} · Давление: ${escapeHtml(item.pressure?.raw || "—")} ·
+            Мощность: ${item.power != null ? `${escapeHtml(item.power)} Вт` : "—"} · ${escapeHtml(formatPrice(item.price))}
           </div>
         </div>
         <a class="btn btn-sm btn-dark" href="product.html?id=${encodeURIComponent(item.id)}">Подробнее</a>
@@ -547,9 +708,36 @@ async function initCatalogPage() {
 
   // Экспорт PDF перенесён на compare.html
 
+  function validateRangeFilters() {
+    const pairs = [
+      ["minAirflow", "maxAirflow", "Расход"],
+      ["minPressure", "maxPressure", "Давление"],
+      ["minPower", "maxPower", "Мощность"],
+      ["minPrice", "maxPrice", "Цена"],
+    ];
+    for (const [minId, maxId, label] of pairs) {
+      const minVal = toNumber(filtersForm.elements[minId]?.value);
+      const maxVal = toNumber(filtersForm.elements[maxId]?.value);
+      if (minVal != null && maxVal != null && minVal > maxVal) {
+        showError(`${label}: минимум (${minVal}) больше максимума (${maxVal}). Проверьте значения.`);
+        return false;
+      }
+    }
+    return true;
+  }
+
+  function closeFiltersOffcanvasIfMobile() {
+    const el = document.getElementById("filtersOffcanvas");
+    if (!el || typeof bootstrap === "undefined" || !bootstrap.Offcanvas) return;
+    const instance = bootstrap.Offcanvas.getInstance(el);
+    if (instance) instance.hide();
+  }
+
   filtersForm.addEventListener("submit", (e) => {
     e.preventDefault();
+    if (!validateRangeFilters()) return;
     loadPage(1);
+    closeFiltersOffcanvasIfMobile();
   });
 
   sortSelect.addEventListener("change", () => loadPage(1));
@@ -575,7 +763,7 @@ async function initCatalogPage() {
     state.selectedIds.clear();
     saveCompareIds(state.selectedIds);
     updateCompareBar();
-    renderProducts(state.currentItems, { total: state.lastTotal, page: state.currentPage, limit: state.lastLimit });
+    syncSelectionUi();
   });
   backToFiltersBtn.addEventListener("click", () => {
     showCatalogResults();
@@ -598,12 +786,33 @@ async function initCatalogPage() {
     }
   });
 
+  shareLinkBtn?.addEventListener("click", async () => {
+    try {
+      const data = await fetchJson(apiUrl("/api/share-links"));
+      const urls = Array.isArray(data?.urls) ? data.urls.filter(Boolean) : [];
+      if (!urls.length) {
+        showError("Не удалось сгенерировать ссылку для локальной сети.");
+        return;
+      }
+      const first = urls[0];
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(first);
+      }
+      const text = `Ссылка скопирована в буфер обмена:\n${first}\n\nДополнительно:\n${urls.join("\n")}`;
+      window.alert(text);
+    } catch (err) {
+      console.error(err);
+      showError("Не удалось сгенерировать ссылку. Проверьте доступность API.");
+    }
+  });
+
   try {
     setLoading(true);
     await loadFacets();
     await loadPage(1);
     showCatalogResults();
     updateCompareBar();
+    syncSelectionUi();
   } catch (err) {
     console.error(err);
     showError("Ошибка инициализации каталога.");
@@ -636,7 +845,7 @@ async function initComparePage() {
     compareTableBody.innerHTML = "";
     const headerRow = document.createElement("tr");
     headerRow.innerHTML = `<th style="width:200px;">Параметр</th>${products
-      .map((p) => `<th>${p.model || p.id}</th>`)
+      .map((p) => `<th>${escapeHtml(p.model || p.id)}</th>`)
       .join("")}`;
     compareTableHead.appendChild(headerRow);
 
@@ -656,12 +865,12 @@ async function initComparePage() {
       if (row.best === "max" && valid.length) bestValue = Math.max(...valid);
       if (row.best === "min" && valid.length) bestValue = Math.min(...valid);
       const tr = document.createElement("tr");
-      tr.innerHTML = `<td class="param-name">${row.label}</td>${products
+      tr.innerHTML = `<td class="param-name">${escapeHtml(row.label)}</td>${products
         .map((p, idx) => {
           const raw = values[idx];
           const isBest = bestValue != null && raw === bestValue;
           const text = row.display ? row.display(p) : raw ?? "—";
-          return `<td class="${isBest ? "best" : ""}">${text}</td>`;
+          return `<td class="${isBest ? "best" : ""}">${escapeHtml(text)}</td>`;
         })
         .join("")}`;
       compareTableBody.appendChild(tr);
@@ -672,73 +881,40 @@ async function initComparePage() {
     compareChart = renderQpChartShared(qpChartCanvas, compareChart, products);
   }
 
-  function exportCompareToPdf(products) {
+  async function exportCompareToPdf(products) {
     if (products.length < 2) {
       showError("Для экспорта выберите минимум 2 модели.");
       return;
     }
-    if (!window.jspdf?.jsPDF) {
-      showError("Библиотека PDF не загрузилась.");
-      return;
-    }
-
-    const { jsPDF } = window.jspdf;
-    const doc = new jsPDF({ unit: "pt", format: "a4" });
-    const margin = 40;
-    let y = margin;
-
-    const safeText = (s) => String(s || "").replace(/[•✓]/g, "-");
-
-    doc.setFont("helvetica", "bold");
-    doc.setFontSize(15);
-    doc.text("VENTMASH — сравнение моделей", margin, y);
-    y += 18;
-
-    doc.setFont("helvetica", "normal");
-    doc.setFontSize(10);
-    for (const p of products) {
-      doc.text(`- ${safeText(p.model || p.id)}   (${safeText(formatPrice(p.price))})`, margin, y, { maxWidth: 510 });
-      y += 14;
-      if (y > 160) break;
-    }
-
-    const imageData = qpChartCanvas?.toDataURL?.("image/png", 1.0);
-    if (imageData) {
-      y += 6;
-      doc.addImage(imageData, "PNG", margin, y, 510, 240);
-      y += 255;
-    }
-
-    doc.setFont("helvetica", "bold");
-    doc.text("Параметры", margin, y);
-    y += 14;
-    doc.setFont("helvetica", "normal");
-
-    const rows = [
-      ["Тип", ...products.map((p) => p.type || "—")],
-      ["Расход", ...products.map((p) => p.airflow?.raw || "—")],
-      ["Давление", ...products.map((p) => p.pressure?.raw || "—")],
-      ["Мощность", ...products.map((p) => (p.power != null ? `${p.power} Вт` : "—"))],
-      ["Шум", ...products.map((p) => (p.noise_level != null ? `${p.noise_level} дБ` : "—"))],
-      ["Цена", ...products.map((p) => formatPrice(p.price))],
-    ];
-
-    for (const row of rows) {
-      doc.text(`${safeText(row[0])}:`, margin, y);
-      y += 12;
-      const line = row
-        .slice(1)
-        .map((c) => safeText(c))
-        .join("   |   ");
-      doc.text(line, margin + 12, y, { maxWidth: 500 });
-      y += 16;
-      if (y > 780) {
-        doc.addPage();
-        y = margin;
+    hideError();
+    try {
+      const ids = products.map((p) => String(p.id)).filter(Boolean);
+      const chartImageDataUrl = qpChartCanvas?.toDataURL?.("image/png", 1.0) || null;
+      const response = await fetch(apiUrl("/api/export/pdf"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ids,
+          filename: "ventmash-compare.pdf",
+          chart_image_data_url: chartImageDataUrl,
+        }),
+      });
+      if (!response.ok) {
+        throw new Error(`PDF export failed: ${response.status}`);
       }
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "ventmash-compare.pdf";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error(err);
+      showError("Не удалось экспортировать PDF. Проверьте доступность API.");
     }
-
-    doc.save("ventmash-compare.pdf");
   }
 
   try {
@@ -746,6 +922,12 @@ async function initComparePage() {
     const ids = loadCompareIds();
     if (ids.length < 2) {
       compareMeta.textContent = "Выберите минимум 2 модели в каталоге и вернитесь на страницу сравнения.";
+      const backBtn = document.createElement("a");
+      backBtn.href = "index.html";
+      backBtn.className = "btn btn-dark btn-sm mt-2";
+      backBtn.textContent = "← Вернуться в каталог";
+      compareMeta.appendChild(document.createElement("br"));
+      compareMeta.appendChild(backBtn);
       return;
     }
     compareMeta.textContent = `Выбрано моделей: ${ids.length}`;
@@ -758,7 +940,9 @@ async function initComparePage() {
       window.location.reload();
     });
 
-    exportPdfBtn?.addEventListener("click", () => exportCompareToPdf(products));
+    exportPdfBtn?.addEventListener("click", () => {
+      exportCompareToPdf(products);
+    });
   } catch (err) {
     console.error(err);
     showError("Не удалось загрузить сравнение. Проверьте доступность API.");
@@ -788,6 +972,12 @@ async function initProductPage() {
   if (!id) {
     setLoading(false);
     showError("Не передан идентификатор вентилятора в URL.");
+    const backBtn = document.createElement("a");
+    backBtn.href = "index.html";
+    backBtn.className = "btn btn-dark btn-sm mt-2";
+    backBtn.textContent = "← Вернуться в каталог";
+    alertBox.appendChild(document.createElement("br"));
+    alertBox.appendChild(backBtn);
     return;
   }
 
@@ -819,7 +1009,7 @@ async function initProductPage() {
     ];
     for (const [label, value] of specs) {
       const tr = document.createElement("tr");
-      tr.innerHTML = `<th scope="row" class="w-50 text-secondary">${label}</th><td>${value ?? "—"}</td>`;
+      tr.innerHTML = `<th scope="row" class="w-50 text-secondary">${escapeHtml(label)}</th><td>${escapeHtml(value ?? "—")}</td>`;
       specBody.appendChild(tr);
     }
     productChart = renderQpChartShared(chartCanvas, productChart, [data]);

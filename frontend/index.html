@@ -3,19 +3,19 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>VENTMASH — каталог промышленных вентиляторов</title>
+    <title>VENTSEARCH — каталог промышленных вентиляторов</title>
     <link
       href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css"
       rel="stylesheet"
       integrity="sha384-QWTKZyjpPEjISv5WaRU9OFeRpok6YctnYmDr5pNlyT2bRjXh0JMhjY6hW+ALEwIH"
       crossorigin="anonymous"
     />
-    <link rel="stylesheet" href="style.css?v=20260415-2" />
+    <link rel="stylesheet" href="style.css?v=20260502-3" />
   </head>
   <body data-page="catalog">
     <nav class="navbar navbar-expand-lg sticky-top">
       <div class="container-fluid px-3 px-lg-4">
-        <a class="navbar-brand fw-semibold" href="index.html">VENTMASH</a>
+        <a class="navbar-brand fw-semibold" href="index.html">VENTSEARCH</a>
         <form class="d-none d-md-flex align-items-center flex-grow-1 mx-3" role="search">
           <input
             id="headerSearchInput"
@@ -48,6 +48,11 @@
             <li class="nav-item">
               <a class="nav-link" href="#contact">Контакты</a>
             </li>
+            <li class="nav-item">
+              <button id="shareLinkBtn" class="btn btn-sm btn-outline-dark ms-lg-2 mt-2 mt-lg-0" type="button">
+                Поделиться
+              </button>
+            </li>
           </ul>
         </div>
       </div>
@@ -57,8 +62,8 @@
       <div class="container-fluid px-3 px-lg-4 py-3">
         <div class="d-flex flex-column flex-md-row align-items-md-center justify-content-between gap-3">
           <div>
-            <h1 class="h4 mb-1">Каталог промышленных вентиляторов</h1>
-            <div class="text-secondary">Современный B2B-подбор по параметрам с визуальным сравнением Q–P.</div>
+            <h1 class="h4 mb-1">Профессиональный подбор промышленных вентиляторов</h1>
+            <div class="text-secondary">B2B-платформа для инженерного выбора: точный поиск по параметрам, наглядное сравнение Q–P и быстрый экспорт отчётов.</div>
           </div>
           <button
             class="btn btn-outline-dark btn-sm d-lg-none"
@@ -186,12 +191,16 @@
             </div>
           </div>
 
-          <div id="compareBar" class="compare-bar d-none">
-            <span>Выбрано:</span>
-            <span id="selectedCount" class="compare-bar-selected">0</span>
-            <button id="openCompareBtn" type="button" class="btn btn-sm btn-dark">Сравнить</button>
-            <button id="clearCompareBtn" type="button" class="btn btn-sm btn-outline-dark">Очистить</button>
-            <a class="btn btn-sm btn-outline-dark ms-auto" href="compare.html">Открыть страницу сравнения</a>
+          <div id="compareBar" class="compare-bar compare-bar-hidden">
+            <div class="compare-bar-main">
+              <span>Выбрано:</span>
+              <span id="selectedCount" class="compare-bar-selected">0</span>
+            </div>
+            <div class="compare-bar-actions">
+              <button id="openCompareBtn" type="button" class="btn btn-sm btn-dark">Сравнить</button>
+              <button id="clearCompareBtn" type="button" class="btn btn-sm btn-outline-dark">Очистить</button>
+            </div>
+            <a class="btn btn-sm btn-outline-dark compare-bar-link" href="compare.html">Открыть страницу сравнения</a>
           </div>
 
           <div id="loading" class="py-4 text-center text-secondary">Загрузка каталога...</div>
@@ -237,19 +246,33 @@
         <section id="about" class="mb-5">
           <h2 class="h5">О проекте</h2>
           <p class="text-secondary mb-0">
-            Учебный MVP: каталог и карточки промышленных вентиляторов. Фронтенд — Vanilla JS и Bootstrap 5,
-            бэкенд — Python (FastAPI), обмен данными через REST (JSON).
+            VENTSEARCH — веб-сервис для подбора промышленных вентиляторов по техническим параметрам. Платформа
+            помогает инженерам и закупкам быстро находить подходящие модели, сравнивать характеристики на графике Q–P
+            и формировать PDF-отчёт для согласования внутри компании. Официальные домены: ventsearch.ru, ventsearch.online.
           </p>
         </section>
 
         <section id="contact" class="mb-2">
           <h2 class="h5">Контакты</h2>
           <p class="text-secondary mb-0">
-            Для демонстрации в университете. Можно расширить: корзина, заявки, личный кабинет, админка.
+            Проектная команда VENTSEARCH. По вопросам демонстрации, внедрения и доработок:
+            <a href="mailto:ventsearch.team@gmail.com">ventsearch.team@gmail.com</a>.
+            Официальные домены: ventsearch.ru, ventsearch.online. Также вы можете использовать кнопку «Поделиться», чтобы
+            отправить локальную ссылку коллегам в одной сети.
           </p>
         </section>
       </div>
     </main>
+
+    <button
+      class="btn btn-dark btn-sm mobile-filters-fab d-lg-none"
+      type="button"
+      data-bs-toggle="offcanvas"
+      data-bs-target="#filtersOffcanvas"
+      aria-controls="filtersOffcanvas"
+    >
+      Фильтры
+    </button>
 
     <script
       src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"
@@ -258,7 +281,7 @@
     ></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
-    <script src="config.js?v=20260415-2"></script>
-    <script src="script.js?v=20260415-2"></script>
+    <script src="config.js?v=20260424-1"></script>
+    <script src="script.js?v=20260502-5"></script>
   </body>
 </html>

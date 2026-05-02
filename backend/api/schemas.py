@@ -16,6 +16,15 @@ class RangeOut(BaseModel):
     raw: str = ""
 
 
+class QPPointOut(BaseModel):
+    """Точка на графике Q–P (расход–давление)."""
+
+    model_config = ConfigDict(json_schema_extra={"example": {"q": 1000, "p": 250}})
+
+    q: float = Field(..., description="Расход воздуха (Q), м³/ч")
+    p: float = Field(..., description="Давление (P), Па")
+
+
 class ProductRawOut(BaseModel):
     model_config = ConfigDict(
         json_schema_extra={
@@ -151,4 +160,31 @@ class HTTPValidationErrorOut(BaseModel):
     detail: List[HTTPValidationErrorDetail] | List[Dict[str, Any]] = Field(
         default_factory=list,
         description="Список ошибок валидации параметров",
+    )
+
+
+class PdfExportRequest(BaseModel):
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "ids": ["3037", "3038", "3039"],
+                "filename": "ventmash-compare.pdf",
+                "chart_image_data_url": "data:image/png;base64,...",
+            }
+        }
+    )
+
+    ids: List[str] = Field(
+        ...,
+        min_length=1,
+        max_length=20,
+        description="Список id/моделей для включения в PDF (1-20 элементов).",
+    )
+    filename: Optional[str] = Field(
+        default=None,
+        description="Имя файла для скачивания (опционально, без пути).",
+    )
+    chart_image_data_url: Optional[str] = Field(
+        default=None,
+        description="PNG-график из canvas в формате data URL (опционально).",
     )

@@ -3,10 +3,18 @@ VENTMASH — REST API на FastAPI (OpenAPI: /docs, /redoc).
 Фронтенд обслуживается отдельно; CORS настраивается через CORS_ORIGINS.
 """
 import logging
+import base64
+import os
+
+import socket
+import ipaddress
+
 import re
 import threading
 import traceback
 from contextlib import asynccontextmanager, contextmanager
+from datetime import datetime
+from io import BytesIO
 from pathlib import Path
 from typing import Annotated, Any, Literal, Optional
 
@@ -21,8 +29,15 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi import Path as PathParam
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.units import mm
+from reportlab.lib.utils import ImageReader
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
+from reportlab.pdfgen import canvas
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from api.schemas import (
@@ -30,8 +45,10 @@ from api.schemas import (
     ErrorOut,
     HealthOut,
     HTTPValidationErrorOut,
+    PdfExportRequest,
     ProductListPageOut,
     ProductOut,
+    QPPointOut,
 )
 from config import CORS_ORIGINS, CSV_PATH, PORT
 from database import init_database, shutdown_database
@@ -108,6 +125,285 @@ def _startup_db() -> None:
         put_connection(conn)
 
 
+def _safe_pdf_filename(name: Optional[str]) -> str:
+    base = normalize_whitespace(name or "ventmash-compare.pdf")
+    if not base.lower().endswith(".pdf"):
+        base = f"{base}.pdf"
+    cleaned = re.sub(r'[^A-Za-z0-9._-]+', "-", base).strip("-")
+    return cleaned or "ventmash-compare.pdf"
+
+
+def _to_float(value: Any) -> Optional[float]:
+    try:
+        if value is None:
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _extract_chart_png_bytes(chart_image_data_url: Optional[str]) -> Optional[bytes]:
+    if not chart_image_data_url:
+        return None
+    raw = chart_image_data_url.strip()
+    if not raw.startswith("data:image/png;base64,"):
+        return None
+    try:
+        return base64.b64decode(raw.split(",", 1)[1], validate=True)
+    except Exception:
+        return None
+
+
+def _format_pdf_num(value: Any) -> str:
+    num = _to_float(value)
+    if num is None:
+        return "—"
+    if float(num).is_integer():
+        return f"{int(num):,}".replace(",", " ")
+    return f"{num:,.2f}".replace(",", " ").replace(".", ",")
+
+
+def _pick_pdf_fonts() -> tuple[str, str]:
+    """
+    Шрифт с кириллицей для ReportLab. Встроенный Helvetica её не поддерживает (в PDF — «квадраты»).
+
+    Приоритет: `backend/fonts/DejaVu*.ttf` (идёт с репозиторием/Docker), затем системные TTF Windows/macOS/Linux.
+    Если ничего не найдено — fallback Helvetica (латиница/цифры).
+    """
+    backend_dir = Path(__file__).resolve().parent
+
+    candidates: list[tuple[Path, Path]] = [
+        (backend_dir / "fonts" / "DejaVuSans.ttf", backend_dir / "fonts" / "DejaVuSans-Bold.ttf"),
+    ]
+
+    windir = os.environ.get("WINDIR") or os.environ.get("SystemRoot")
+    if windir:
+        wf = Path(windir) / "Fonts"
+        candidates.extend(
+            [
+                (wf / "arial.ttf", wf / "arialbd.ttf"),
+                (wf / "segoeui.ttf", wf / "segoeuib.ttf"),
+            ]
+        )
+
+    candidates.extend(
+        [
+            (
+                Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
+                Path("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"),
+            ),
+            (Path("/Library/Fonts/Arial Unicode.ttf"), Path("/Library/Fonts/Arial Bold.ttf")),
+            (
+                Path("/System/Library/Fonts/Supplemental/Arial.ttf"),
+                Path("/System/Library/Fonts/Supplemental/Arial Bold.ttf"),
+            ),
+            (
+                Path("/System/Library/Fonts/Supplemental/Arial Unicode.ttf"),
+                Path("/System/Library/Fonts/Supplemental/Arial Bold.ttf"),
+            ),
+        ]
+    )
+
+    for regular_path, bold_path in candidates:
+        reg = regular_path
+        bold = bold_path
+        if not reg.exists():
+            continue
+        stem_safe = reg.stem.replace(" ", "_")
+        regular_name = f"VentPdfRegular-{stem_safe}"
+        bold_name = f"VentPdfBold-{bold.stem.replace(' ', '_')}" if bold.exists() else regular_name
+        try:
+            if regular_name not in pdfmetrics.getRegisteredFontNames():
+                pdfmetrics.registerFont(TTFont(regular_name, str(reg)))
+            if bold.exists():
+                if bold_name not in pdfmetrics.getRegisteredFontNames():
+                    pdfmetrics.registerFont(TTFont(bold_name, str(bold)))
+            else:
+                bold_name = regular_name
+            logger.info("PDF: зарегистрированы шрифты для кириллицы из %s", reg)
+            return regular_name, bold_name
+        except Exception:
+            logger.warning("Не удалось зарегистрировать PDF-шрифт %s", reg, exc_info=True)
+    logger.warning(
+        "PDF: не найдены TTF с кириллицей (%s/fonts/DejaVu*.ttf и системные пути); подставляется Helvetica",
+        backend_dir,
+    )
+    return "Helvetica", "Helvetica-Bold"
+
+
+def _build_compare_pdf(products: list[dict[str, Any]], chart_png: Optional[bytes] = None) -> bytes:
+    buf = BytesIO()
+    pdf = canvas.Canvas(buf, pagesize=A4)
+    page_w, page_h = A4
+    left = 14 * mm
+    right = page_w - 14 * mm
+    width = right - left
+    y = page_h - 14 * mm
+    font_regular, font_bold = _pick_pdf_fonts()
+    c_primary = colors.HexColor("#027bf3")
+    c_surface = colors.HexColor("#f6f8fa")
+    c_border = colors.HexColor("#e2e5e9")
+    c_text = colors.HexColor("#111111")
+    c_muted = colors.HexColor("#55595d")
+    c_best = colors.HexColor("#e8f7e8")
+
+    def new_page() -> None:
+        nonlocal y
+        pdf.showPage()
+        y = page_h - 14 * mm
+
+    def line(text: str, step: float = 5.6 * mm, bold: bool = False, color: Any = None, size: int = 10) -> None:
+        nonlocal y
+        if y < 20 * mm:
+            new_page()
+        pdf.setFillColor(color or c_text)
+        pdf.setFont(font_bold if bold else font_regular, size)
+        pdf.drawString(left, y, text)
+        y -= step
+
+    def card_header(title: str, subtitle: Optional[str] = None) -> None:
+        nonlocal y
+        h = 18 * mm if subtitle else 13 * mm
+        if y - h < 18 * mm:
+            new_page()
+        pdf.setFillColor(c_primary)
+        pdf.roundRect(left, y - h, width, h, 3 * mm, stroke=0, fill=1)
+        pdf.setFillColor(colors.white)
+        pdf.setFont(font_bold, 13)
+        pdf.drawString(left + 4 * mm, y - 6.5 * mm, title)
+        if subtitle:
+            pdf.setFont(font_regular, 9)
+            pdf.drawString(left + 4 * mm, y - 12 * mm, subtitle)
+        y -= h + 4 * mm
+
+    def draw_row(label: str, values: list[str], highlights: set[int]) -> None:
+        nonlocal y
+        row_h = 7.4 * mm
+        label_w = 42 * mm
+        model_count = max(1, len(values))
+        value_w = (width - label_w) / model_count
+        if y - row_h < 18 * mm:
+            new_page()
+        pdf.setStrokeColor(c_border)
+        pdf.setFillColor(c_surface)
+        pdf.rect(left, y - row_h, label_w, row_h, stroke=1, fill=1)
+        pdf.setFillColor(c_text)
+        pdf.setFont(font_bold, 8.5)
+        pdf.drawString(left + 1.8 * mm, y - 4.9 * mm, label)
+        for idx, text in enumerate(values):
+            x = left + label_w + idx * value_w
+            fill = c_best if idx in highlights else colors.white
+            pdf.setFillColor(fill)
+            pdf.rect(x, y - row_h, value_w, row_h, stroke=1, fill=1)
+            pdf.setFillColor(c_text)
+            pdf.setFont(font_regular, 8)
+            clipped = normalize_whitespace(text)[:36]
+            pdf.drawString(x + 1.2 * mm, y - 4.9 * mm, clipped or "—")
+        y -= row_h
+
+    pdf.setAuthor("VENTMASH API")
+    pdf.setTitle("VENTMASH Сравнение моделей")
+    card_header(
+        "VENTMASH — отчет по сравнению",
+        f"Дата выгрузки: {datetime.now().strftime('%d.%m.%Y %H:%M')}   |   Выбрано моделей: {len(products)}",
+    )
+
+    if chart_png:
+        try:
+            image = ImageReader(BytesIO(chart_png))
+            chart_w = width
+            chart_h = 72 * mm
+            if y - chart_h < 20 * mm:
+                new_page()
+            pdf.setStrokeColor(c_border)
+            pdf.setFillColor(colors.white)
+            pdf.roundRect(left, y - chart_h - 3 * mm, chart_w, chart_h + 3 * mm, 2 * mm, stroke=1, fill=1)
+            pdf.drawImage(image, left, y - chart_h, width=chart_w, height=chart_h, preserveAspectRatio=True, mask="auto")
+            y -= chart_h + 6 * mm
+            line("График Q-P, полученный из интерфейса сравнения.", step=6.5 * mm, color=c_muted, size=9)
+        except Exception:
+            line("Не удалось встроить график Q-P в отчет.", step=6.5 * mm, color=c_muted, size=9)
+
+    models = [normalize_whitespace(p.get("model") or p.get("id") or "Без названия") for p in products]
+    types = [normalize_whitespace(p.get("type") or "—") for p in products]
+    sizes = [normalize_whitespace(p.get("size") or "—") for p in products]
+    diameters = [f"{_format_pdf_num(p.get('diameter'))} мм" if p.get("diameter") is not None else "—" for p in products]
+    airflows = [normalize_whitespace((p.get("airflow") or {}).get("raw") or "—") for p in products]
+    pressures = [normalize_whitespace((p.get("pressure") or {}).get("raw") or "—") for p in products]
+    powers = [f"{_format_pdf_num(p.get('power'))} Вт" if p.get("power") is not None else "—" for p in products]
+    noises = [f"{_format_pdf_num(p.get('noise_level'))} дБ" if p.get("noise_level") is not None else "—" for p in products]
+    prices = [f"{_format_pdf_num(p.get('price'))} ₽" if p.get("price") is not None else "по запросу" for p in products]
+
+    power_values = [_to_float(p.get("power")) for p in products]
+    noise_values = [_to_float(p.get("noise_level")) for p in products]
+    price_values = [_to_float(p.get("price")) for p in products]
+    airflow_max_values = [_to_float((p.get("airflow") or {}).get("max")) for p in products]
+    pressure_max_values = [_to_float((p.get("pressure") or {}).get("max")) for p in products]
+
+    def min_indexes(arr: list[Optional[float]]) -> set[int]:
+        valid = [(i, v) for i, v in enumerate(arr) if v is not None]
+        if not valid:
+            return set()
+        target = min(v for _, v in valid)
+        return {i for i, v in valid if v == target}
+
+    def max_indexes(arr: list[Optional[float]]) -> set[int]:
+        valid = [(i, v) for i, v in enumerate(arr) if v is not None]
+        if not valid:
+            return set()
+        target = max(v for _, v in valid)
+        return {i for i, v in valid if v == target}
+
+    line("Сравнительная таблица (лучшие значения выделены):", step=7.0 * mm, bold=True, size=10)
+    draw_row("Модель", models, set())
+    draw_row("Тип", types, set())
+    draw_row("Типоразмер", sizes, set())
+    draw_row("Диаметр", diameters, set())
+    draw_row("Расход", airflows, max_indexes(airflow_max_values))
+    draw_row("Давление", pressures, max_indexes(pressure_max_values))
+    draw_row("Мощность", powers, min_indexes(power_values))
+    draw_row("Шум", noises, min_indexes(noise_values))
+    draw_row("Цена", prices, min_indexes(price_values))
+
+    y -= 4 * mm
+    line("Подробно по моделям:", step=7.0 * mm, bold=True)
+    for idx, p in enumerate(products, start=1):
+        if y < 36 * mm:
+            new_page()
+        card_h = 30 * mm
+        pdf.setStrokeColor(c_border)
+        pdf.setFillColor(colors.white)
+        pdf.roundRect(left, y - card_h, width, card_h, 2 * mm, stroke=1, fill=1)
+        pdf.setFillColor(c_text)
+        pdf.setFont(font_bold, 10)
+        title = normalize_whitespace(p.get("model") or p.get("id") or "Без названия")
+        pdf.drawString(left + 3 * mm, y - 6 * mm, f"{idx}. {title}"[:95])
+        pdf.setFillColor(c_muted)
+        pdf.setFont(font_regular, 8.5)
+        pdf.drawString(left + 3 * mm, y - 11 * mm, f"ID: {normalize_whitespace(p.get('id') or '—')}")
+        pdf.drawString(
+            left + 3 * mm,
+            y - 15.5 * mm,
+            f"Тип: {normalize_whitespace(p.get('type') or '—')}   |   Типоразмер: {normalize_whitespace(p.get('size') or '—')}",
+        )
+        pdf.drawString(
+            left + 3 * mm,
+            y - 20 * mm,
+            f"Расход: {normalize_whitespace((p.get('airflow') or {}).get('raw') or '—')}   |   Давление: {normalize_whitespace((p.get('pressure') or {}).get('raw') or '—')}",
+        )
+        pdf.drawString(
+            left + 3 * mm,
+            y - 24.5 * mm,
+            f"Мощность: {powers[idx - 1]}   |   Шум: {noises[idx - 1]}   |   Цена: {prices[idx - 1]}",
+        )
+        y -= card_h + 3.5 * mm
+
+    pdf.save()
+    data = buf.getvalue()
+    buf.close()
+    return data
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     _startup_db()
@@ -154,6 +450,44 @@ def _wants_html(request: Request) -> bool:
 def _is_frontend_request(request: Request) -> bool:
     path = request.url.path or ""
     return not path.startswith("/api")
+
+
+def _discover_local_ipv4_candidates() -> list[str]:
+    candidates: set[str] = set()
+    try:
+        # Primary address used for outbound traffic.
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("8.8.8.8", 80))
+            candidates.add(s.getsockname()[0])
+    except Exception:
+        pass
+    try:
+        host = socket.gethostname()
+        infos = socket.getaddrinfo(host, None, family=socket.AF_INET, type=socket.SOCK_STREAM)
+        for info in infos:
+            ip = info[4][0]
+            candidates.add(ip)
+    except Exception:
+        pass
+
+    out: list[str] = []
+    for raw in sorted(candidates):
+        try:
+            ip = ipaddress.ip_address(raw)
+        except ValueError:
+            continue
+        if ip.is_loopback:
+            continue
+        if ip.is_private or ip.is_link_local:
+            out.append(raw)
+    return out
+
+
+def _format_url(scheme: str, host: str, port: Optional[int], path: str = "/") -> str:
+    default_port = 80 if scheme == "http" else 443 if scheme == "https" else None
+    port_part = f":{port}" if port and port != default_port else ""
+    normalized_path = path if path.startswith("/") else f"/{path}"
+    return f"{scheme}://{host}{port_part}{normalized_path}"
 
 
 @app.exception_handler(StarletteHTTPException)
@@ -358,6 +692,80 @@ def api_product_detail(
 
 
 @app.get(
+    "/api/products/{id_or_model}/qp",
+    response_model=list[QPPointOut],
+    summary="Точки Q–P для модели (из диапазонов CSV)",
+    description=(
+        "Возвращает массив точек для графика Q–P (расход–давление). "
+        "Точки строятся из диапазонов `airflow(min/max)` и `pressure(min/max)` в таблице products. "
+        "Это аппроксимация для UI (линейная интерполяция)."
+    ),
+    responses={
+        200: {"description": "Массив точек [{q,p}, ...].", "model": list[QPPointOut]},
+        404: {"description": "Вентилятор не найден.", "model": ErrorOut},
+        422: {"description": "Недостаточно данных для построения Q–P.", "model": HTTPValidationErrorOut},
+        **COMMON_ERROR_RESPONSES,
+    },
+    tags=["catalog"],
+)
+def api_product_qp(
+    id_or_model: Annotated[
+        str,
+        PathParam(description="Идентификатор из CSV, полное имя модели или slug (_meta.model_slug)."),
+    ],
+    points: Annotated[int, Query(description="Число точек на кривой (2–200).", ge=2, le=200)] = 25,
+):
+    _ensure_catalog_sync_with_reindex()
+
+    raw = normalize_whitespace(id_or_model)
+    with db_session() as conn:
+        p = get_by_id(conn, raw) or get_by_model_or_slug(conn, raw.lower(), slugify(raw))
+    if not p:
+        raise HTTPException(status_code=404, detail=ErrorOut(error="Product not found").model_dump())
+
+    q_min = p.get("airflow", {}).get("min")
+    q_max = p.get("airflow", {}).get("max")
+    p_min = p.get("pressure", {}).get("min")
+    p_max = p.get("pressure", {}).get("max")
+
+    # Требуем хотя бы один конец диапазона по каждой оси
+    if (q_min is None and q_max is None) or (p_min is None and p_max is None):
+        raise HTTPException(
+            status_code=422,
+            detail={"detail": [{"loc": ["path", "id_or_model"], "msg": "Not enough data for Q-P", "type": "value_error"}]},
+        )
+
+    if q_min is None:
+        q_min = q_max
+    if q_max is None:
+        q_max = q_min
+    if p_min is None:
+        p_min = p_max
+    if p_max is None:
+        p_max = p_min
+
+    q_min_f = float(q_min)
+    q_max_f = float(q_max)
+    p_min_f = float(p_min)
+    p_max_f = float(p_max)
+
+    # Для графика удобнее, когда P убывает при росте Q
+    p_start = max(p_min_f, p_max_f)
+    p_end = min(p_min_f, p_max_f)
+
+    if points < 2:
+        points = 2
+
+    out: list[QPPointOut] = []
+    for i in range(points):
+        t = i / (points - 1)
+        q = q_min_f + (q_max_f - q_min_f) * t
+        pp = p_start + (p_end - p_start) * t
+        out.append(QPPointOut(q=q, p=pp))
+    return out
+
+
+@app.get(
     "/api/health",
     response_model=HealthOut,
     summary="Проверка работоспособности",
@@ -372,6 +780,77 @@ def api_health():
     with db_session() as conn:
         n = count_products(conn)
     return HealthOut(ok=True, products=n)
+
+
+
+@app.get(
+    "/api/share-links",
+    summary="Ссылки для открытия приложения в локальной сети",
+    description="Возвращает ссылки с доступными локальными IPv4-адресами хоста для быстрого шаринга.",
+    tags=["system"],
+)
+def api_share_links(request: Request):
+    scheme = request.url.scheme or "http"
+    port = request.url.port
+    base_path = "/"
+    urls: list[str] = []
+
+    # Always include the URL from current request host.
+    current_host = request.url.hostname or "localhost"
+    urls.append(_format_url(scheme, current_host, port, base_path))
+
+    # Add LAN candidates when accessed from localhost or single-IP host.
+    for ip in _discover_local_ipv4_candidates():
+        url = _format_url(scheme, ip, port, base_path)
+        if url not in urls:
+            urls.append(url)
+
+    return {
+        "urls": urls,
+        "hint": "Откройте одну из ссылок на другом устройстве в той же локальной сети.",
+    }
+
+
+
+@app.post(
+    "/api/export/pdf",
+    summary="Экспорт сравнения в PDF (server-side)",
+    description="Генерирует PDF через reportlab по списку id/моделей и отдает файл для скачивания.",
+    responses={
+        200: {"description": "PDF-файл сформирован и отправлен."},
+        404: {"description": "Одна или несколько моделей не найдены.", "model": ErrorOut},
+        422: {"description": "Некорректное тело запроса.", "model": HTTPValidationErrorOut},
+        **COMMON_ERROR_RESPONSES,
+    },
+    tags=["export"],
+)
+def api_export_pdf(payload: PdfExportRequest):
+    _ensure_catalog_sync_with_reindex()
+    ids = [normalize_whitespace(v) for v in payload.ids if normalize_whitespace(v)]
+    if not ids:
+        raise HTTPException(status_code=422, detail={"detail": [{"loc": ["body", "ids"], "msg": "ids must not be empty", "type": "value_error"}]})
+
+    products: list[dict[str, Any]] = []
+    missing: list[str] = []
+    with db_session() as conn:
+        for raw in ids:
+            item = get_by_id(conn, raw) or get_by_model_or_slug(conn, raw.lower(), slugify(raw))
+            if item:
+                products.append(item)
+            else:
+                missing.append(raw)
+
+    if missing:
+        raise HTTPException(
+            status_code=404,
+            detail=ErrorOut(error=f"Product not found: {', '.join(missing)}").model_dump(),
+        )
+
+    chart_png = _extract_chart_png_bytes(payload.chart_image_data_url)
+    pdf_bytes = _build_compare_pdf(products, chart_png=chart_png)
+    filename = _safe_pdf_filename(payload.filename)
+    headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
+    return StreamingResponse(BytesIO(pdf_bytes), media_type="application/pdf", headers=headers)
 
 
 @app.get("/", include_in_schema=False)
