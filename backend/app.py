@@ -1,5 +1,5 @@
 """
-VENTMASH — REST API на FastAPI (OpenAPI: /docs, /redoc).
+VENTSEARCH — REST API на FastAPI (OpenAPI: /docs, /redoc).
 Фронтенд обслуживается отдельно; CORS настраивается через CORS_ORIGINS.
 """
 import logging
@@ -126,11 +126,11 @@ def _startup_db() -> None:
 
 
 def _safe_pdf_filename(name: Optional[str]) -> str:
-    base = normalize_whitespace(name or "ventmash-compare.pdf")
+    base = normalize_whitespace(name or "ventsearch-compare.pdf")
     if not base.lower().endswith(".pdf"):
         base = f"{base}.pdf"
     cleaned = re.sub(r'[^A-Za-z0-9._-]+', "-", base).strip("-")
-    return cleaned or "ventmash-compare.pdf"
+    return cleaned or "ventsearch-compare.pdf"
 
 
 def _to_float(value: Any) -> Optional[float]:
@@ -301,10 +301,10 @@ def _build_compare_pdf(products: list[dict[str, Any]], chart_png: Optional[bytes
             pdf.drawString(x + 1.2 * mm, y - 4.9 * mm, clipped or "—")
         y -= row_h
 
-    pdf.setAuthor("VENTMASH API")
-    pdf.setTitle("VENTMASH Сравнение моделей")
+    pdf.setAuthor("VENTSEARCH API")
+    pdf.setTitle("VENTSEARCH Сравнение моделей")
     card_header(
-        "VENTMASH — отчет по сравнению",
+        "VENTSEARCH — отчет по сравнению",
         f"Дата выгрузки: {datetime.now().strftime('%d.%m.%Y %H:%M')}   |   Выбрано моделей: {len(products)}",
     )
 
@@ -413,7 +413,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="VENTMASH API",
+    title="VENTSEARCH API",
     description=(
         "B2B-каталог промышленных вентиляторов. "
         "Данные в PostgreSQL; CSV синхронизируется по mtime/размеру и при смене содержимого (SHA-256)."
