@@ -16,7 +16,8 @@ sudo rm -f /etc/nginx/sites-enabled/default
 sudo tee /etc/nginx/sites-available/ventsearch.conf >/dev/null <<'EOF'
 server {
     listen 80;
-    server_name _;
+    # Если нужен временный доступ по IP: оставьте server_name _
+    server_name ventsearch.ru www.ventsearch.ru ventsearch.online www.ventsearch.online;
 
     client_max_body_size 20m;
 

@@ -47,6 +47,13 @@ def test_export_pdf_returns_file(monkeypatch):
     assert response.content.startswith(b"%PDF")
 
 
+def test_pdf_fonts_prefers_builtin_dejavu():
+    """Helvetica не поддерживает кириллицу; в образе приложения должен лежать DejaVu под backend/fonts/."""
+    reg, bold = app_module._pick_pdf_fonts()
+    assert reg.startswith("VentPdfRegular-")
+    assert bold.startswith("VentPdfBold-") or bold == reg
+
+
 def test_export_pdf_returns_404_when_not_found(monkeypatch):
     monkeypatch.setattr(app_module, "get_by_id", lambda *args, **kwargs: None)
     monkeypatch.setattr(app_module, "get_by_model_or_slug", lambda *args, **kwargs: None)
