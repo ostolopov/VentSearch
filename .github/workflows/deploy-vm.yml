@@ -68,8 +68,17 @@ jobs:
               exit 1
             fi
 
-            # Запуск через compose (файл в deploy/, secrets на уровень выше)
-            docker compose -f deploy/compose.prod.yml --env-file "$SECRETS_FILE" up -d --build
+            COMPOSE="docker compose -f deploy/compose.prod.yml --env-file $SECRETS_FILE -p ventsearch"
+
+            # Остановить старые стеки (корневой compose.prod.yml и предыдущие деплои)
+            docker compose -f compose.prod.yml --env-file "$SECRETS_FILE" -p ventsearch down --remove-orphans 2>/dev/null || true
+            $COMPOSE down --remove-orphans 2>/dev/null || true
+
+            # Убрать контейнеры с фиксированными именами, если остались от другого проекта
+            docker rm -f ventsearch-db ventsearch-app 2>/dev/null || true
+
+            # Запуск
+            $COMPOSE up -d --build
 
             # Healthcheck
             for i in $(seq 1 20); do
@@ -82,6 +91,6 @@ jobs:
             done
 
             echo "Healthcheck не прошёл — смотрите логи:"
-            docker compose -f deploy/compose.prod.yml ps
-            docker compose -f deploy/compose.prod.yml logs --tail=100
+            $COMPOSE ps
+            $COMPOSE logs --tail=100
             exit 1
