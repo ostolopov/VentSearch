@@ -598,10 +598,39 @@ async function initCatalogPage() {
       state.selectedIds.delete(id);
     } else {
       state.selectedIds.add(id);
+      if (state.selectedIds.size >= 2) {
+        showCompareToast();
+      }
     }
     saveCompareIds(state.selectedIds);
     hideError();
     syncSelectionUi();
+  }
+
+  function showCompareToast() {
+    let toastEl = document.getElementById('compareToast');
+    if (!toastEl) {
+      toastEl = document.createElement('div');
+      toastEl.id = 'compareToast';
+      toastEl.className = 'toast align-items-center text-bg-primary border-0 position-fixed bottom-0 end-0 m-3';
+      toastEl.setAttribute('role', 'alert');
+      toastEl.setAttribute('aria-live', 'assertive');
+      toastEl.setAttribute('aria-atomic', 'true');
+      toastEl.style.zIndex = '1060';
+      toastEl.innerHTML = `
+        <div class="d-flex">
+          <div class="toast-body">
+            Добавлено 2 или более моделей. <a href="compare.html" class="text-white fw-bold text-decoration-underline">Перейти к сравнению?</a>
+          </div>
+          <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast" aria-label="Close"></button>
+        </div>
+      `;
+      document.body.appendChild(toastEl);
+    }
+    if (typeof bootstrap !== 'undefined' && bootstrap.Toast) {
+      const toast = new bootstrap.Toast(toastEl, { delay: 5000 });
+      toast.show();
+    }
   }
 
   function renderProducts(products, meta) {
@@ -783,6 +812,8 @@ async function initCatalogPage() {
         showEmptyState();
         if (paginationNav) paginationNav.classList.add("d-none");
         if (resultsCount) resultsCount.textContent = "0";
+        const emptyStateText = document.querySelector(".empty-state-card .h5");
+        if (emptyStateText) emptyStateText.textContent = "По заданным параметрам ничего не нашлось, измените параметры или очистите значения поиска 🕵️‍♂️";
       } else {
         showCatalogResults();
         renderProducts(items, { total, page, limit });
@@ -956,9 +987,29 @@ async function initComparePage() {
     compareTableBody.innerHTML = "";
     const headerRow = document.createElement("tr");
     headerRow.innerHTML = `<th style="width:200px;">Параметр</th>${products
-      .map((p) => `<th>${escapeHtml(p.model || p.id)}</th>`)
+      .map((p) => `<th>
+        <div class="d-flex justify-content-between align-items-center">
+          <span>${escapeHtml(p.model || p.id)}</span>
+          <button type="button" class="btn btn-sm btn-link text-danger p-0 ms-2 btn-remove-compare" data-id="${escapeHtml(p.id)}" title="Удалить из сравнения">
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-x-circle" viewBox="0 0 16 16">
+              <path d="M8 15A7 7 0 1 1 8 1a7 7 0 0 1 0 14m0 1A8 8 0 1 0 8 0a8 8 0 0 0 0 16"/>
+              <path d="M4.646 4.646a.5.5 0 0 1 .708 0L8 7.293l2.646-2.647a.5.5 0 0 1 .708.708L8.707 8l2.647 2.646a.5.5 0 0 1-.708.708L8 8.707l-2.646 2.647a.5.5 0 0 1-.708-.708L7.293 8 4.646 5.354a.5.5 0 0 1 0-.708"/>
+            </svg>
+          </button>
+        </div>
+      </th>`)
       .join("")}`;
     compareTableHead.appendChild(headerRow);
+
+    headerRow.querySelectorAll(".btn-remove-compare").forEach(btn => {
+      btn.addEventListener("click", () => {
+        const id = btn.dataset.id;
+        const ids = new Set(loadCompareIds());
+        ids.delete(id);
+        saveCompareIds(ids);
+        window.location.reload();
+      });
+    });
 
     const rows = [
       { label: "Тип", pick: (p) => p.type || "—", best: "none" },
@@ -1444,6 +1495,19 @@ async function initProjectPage() {
 document.addEventListener("DOMContentLoaded", () => {
   updateProjectNavBadge();
   updateCompareNavBadge();
+
+  const cookieBanner = document.getElementById("cookieConsentBanner");
+  const acceptCookiesBtn = document.getElementById("acceptCookiesBtn");
+  if (cookieBanner && acceptCookiesBtn) {
+    if (!localStorage.getItem("ventsearch.cookies.accepted")) {
+      cookieBanner.classList.remove("d-none");
+    }
+    acceptCookiesBtn.addEventListener("click", () => {
+      localStorage.setItem("ventsearch.cookies.accepted", "true");
+      cookieBanner.classList.add("d-none");
+    });
+  }
+
   const page = document.body.dataset.page;
   if (page === "catalog") {
     initCatalogPage().catch((err) => {

@@ -38,6 +38,9 @@
             <li class="nav-item d-none d-md-block">
               <a class="nav-link" href="index.html">Каталог</a>
             </li>
+            <li class="nav-item d-none d-md-block">
+              <a class="nav-link" href="delivery.html">Доставка</a>
+            </li>
             <li class="nav-item">
               <a class="nav-link nav-link-project active" href="project.html" aria-current="page">
                 Мой проект
@@ -177,13 +180,13 @@
                   <input id="profileCompany" class="form-control" placeholder="Название компании (ООО «Пример»)" required />
                 </div>
                 <div>
-                  <input id="profileName" class="form-control" placeholder="Контактное лицо (ФИО)" required />
+                  <input id="profileName" class="form-control" placeholder="Контактное лицо (ФИО)" required pattern="^[a-zA-Zа-яА-ЯёЁ\s\-]+$" title="Только буквы, пробелы и дефисы" />
                 </div>
                 <div>
-                  <input id="profileEmail" type="email" class="form-control" placeholder="E-mail (name@company.ru)" required />
+                  <input id="profileEmail" type="email" class="form-control" placeholder="E-mail (name@company.ru)" required pattern="^[a-zA-Z0-9._%\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$" title="Введите корректный email (например, name@domain.com)" />
                 </div>
                 <div>
-                  <input id="profilePhone" class="form-control" placeholder="Телефон (+7 ...)" required />
+                  <input id="profilePhone" type="tel" class="form-control" placeholder="Телефон (+7 ...)" required pattern="^\+?[0-9\s\-\(\)]{10,20}$" title="Введите корректный номер телефона" />
                 </div>
                 <div class="d-flex justify-content-end mt-1">
                   <button class="btn btn-outline-secondary btn-sm" type="submit">Сохранить контакты</button>

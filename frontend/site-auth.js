@@ -305,7 +305,8 @@
       renderNavGuest();
 
       if (document.body.dataset.page === "auth") window.location.href = "index.html";
-      if (document.body.dataset.page === "admin") window.location.href = "auth.html";
+      else if (document.body.dataset.page === "admin") window.location.href = "auth.html";
+      else window.location.reload();
     });
 
 

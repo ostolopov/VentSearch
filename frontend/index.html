@@ -49,6 +49,9 @@
             <li class="nav-item d-none d-md-block">
               <a class="nav-link active" href="index.html">Каталог</a>
             </li>
+            <li class="nav-item d-none d-md-block">
+              <a class="nav-link" href="delivery.html">Доставка</a>
+            </li>
             <li class="nav-item">
               <a class="nav-link nav-link-project" href="project.html">
                 Мой проект
@@ -156,33 +159,33 @@
                   <div class="row g-2">
                     <div class="col-6">
                       <label for="minAirflow" class="form-label text-secondary small mb-1 fw-medium">Расход от</label>
-                      <input id="minAirflow" name="minAirflow" class="form-control rounded-3" inputmode="numeric" placeholder="м³/ч" />
+                      <input id="minAirflow" name="minAirflow" type="number" min="0" class="form-control rounded-3" placeholder="м³/ч" />
                     </div>
                     <div class="col-6">
                       <label for="maxAirflow" class="form-label text-secondary small mb-1 fw-medium">Расход до</label>
-                      <input id="maxAirflow" name="maxAirflow" class="form-control rounded-3" inputmode="numeric" placeholder="м³/ч" />
+                      <input id="maxAirflow" name="maxAirflow" type="number" min="0" class="form-control rounded-3" placeholder="м³/ч" />
                     </div>
                   </div>
 
                   <div class="row g-2">
                     <div class="col-6">
                       <label for="minPressure" class="form-label text-secondary small mb-1 fw-medium">Давление от</label>
-                      <input id="minPressure" name="minPressure" class="form-control rounded-3" inputmode="numeric" placeholder="Па" />
+                      <input id="minPressure" name="minPressure" type="number" min="0" class="form-control rounded-3" placeholder="Па" />
                     </div>
                     <div class="col-6">
                       <label for="maxPressure" class="form-label text-secondary small mb-1 fw-medium">Давление до</label>
-                      <input id="maxPressure" name="maxPressure" class="form-control rounded-3" inputmode="numeric" placeholder="Па" />
+                      <input id="maxPressure" name="maxPressure" type="number" min="0" class="form-control rounded-3" placeholder="Па" />
                     </div>
                   </div>
 
                   <div class="row g-2">
                     <div class="col-6">
                       <label for="minPrice" class="form-label text-secondary small mb-1 fw-medium">Цена от</label>
-                      <input id="minPrice" name="minPrice" class="form-control rounded-3" inputmode="numeric" placeholder="₽" />
+                      <input id="minPrice" name="minPrice" type="number" min="0" class="form-control rounded-3" placeholder="₽" />
                     </div>
                     <div class="col-6">
                       <label for="maxPrice" class="form-label text-secondary small mb-1 fw-medium">Цена до</label>
-                      <input id="maxPrice" name="maxPrice" class="form-control rounded-3" inputmode="numeric" placeholder="₽" />
+                      <input id="maxPrice" name="maxPrice" type="number" min="0" class="form-control rounded-3" placeholder="₽" />
                     </div>
                   </div>
 
@@ -195,7 +198,7 @@
                     </div>
                     <div class="col-6">
                       <label for="minPower" class="form-label text-secondary small mb-1 fw-medium">Мощность от</label>
-                      <input id="minPower" name="minPower" class="form-control rounded-3" inputmode="numeric" placeholder="Вт" />
+                      <input id="minPower" name="minPower" type="number" min="0" class="form-control rounded-3" placeholder="Вт" />
                     </div>
                   </div>
 
@@ -223,6 +226,7 @@
               </div>
             </div>
             <div class="d-flex align-items-center gap-2">
+              <label for="sort" class="form-label mb-0 me-2 fw-medium text-secondary d-none d-md-block">Сортировка:</label>
               <select id="sort" name="sort" class="form-select form-select-sm">
                 <option value="price_asc">Цена: по возрастанию</option>
                 <option value="price_desc">Цена: по убыванию</option>
@@ -290,6 +294,19 @@
             отправить локальную ссылку коллегам в одной сети.
           </p>
         </section>
+
+        <footer class="mt-5 pt-4 border-top text-secondary small">
+          <div class="d-flex flex-column flex-md-row justify-content-between align-items-center gap-3">
+            <div>
+              &copy; 2026 VENTSEARCH. Все права защищены.
+            </div>
+            <div class="d-flex gap-3">
+              <a href="#" class="text-secondary text-decoration-none">Пользовательское соглашение</a>
+              <a href="#" class="text-secondary text-decoration-none">Политика конфиденциальности</a>
+              <a href="#" class="text-secondary text-decoration-none">Лицензии</a>
+            </div>
+          </div>
+        </footer>
       </div>
     </main>
 
@@ -320,11 +337,11 @@
               </div>
               <div class="tab-pane fade" id="authModalRegister">
                 <form id="authModalRegisterForm" class="vstack gap-2">
-                  <input id="authModalRegEmail" type="email" class="form-control form-control-sm" placeholder="E-mail" required />
+                  <input id="authModalRegEmail" type="email" class="form-control form-control-sm" placeholder="E-mail" required pattern="^[a-zA-Z0-9._%\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$" title="Введите корректный email" />
                   <input id="authModalRegPassword" type="password" class="form-control form-control-sm" placeholder="Пароль (мин. 6)" required minlength="6" />
-                  <input id="authModalRegName" class="form-control form-control-sm" placeholder="ФИО" />
+                  <input id="authModalRegName" class="form-control form-control-sm" placeholder="ФИО" pattern="^[a-zA-Zа-яА-ЯёЁ\s\-]+$" title="Только буквы, пробелы и дефисы" />
                   <input id="authModalRegCompany" class="form-control form-control-sm" placeholder="Компания" />
-                  <input id="authModalRegPhone" class="form-control form-control-sm" placeholder="Телефон" />
+                  <input id="authModalRegPhone" type="tel" class="form-control form-control-sm" placeholder="Телефон" pattern="^\+?[0-9\s\-\(\)]{10,20}$" title="Введите корректный номер телефона" />
                   <button class="btn btn-dark btn-sm" type="submit">Зарегистрироваться</button>
                 </form>
               </div>
@@ -343,6 +360,15 @@
     >
       Фильтры
     </button>
+
+    <div id="cookieConsentBanner" class="position-fixed bottom-0 start-0 w-100 bg-dark text-white p-3 d-none" style="z-index: 1050; border-top-left-radius: 12px; border-top-right-radius: 12px;">
+      <div class="container-fluid d-flex flex-column flex-md-row align-items-center justify-content-between gap-3">
+        <div class="small">
+          Мы используем файлы cookie для улучшения работы сайта, анализа трафика и персонализации. Продолжая использовать сайт, вы соглашаетесь с нашей политикой использования cookie.
+        </div>
+        <button id="acceptCookiesBtn" class="btn btn-primary btn-sm text-nowrap">Согласиться</button>
+      </div>
+    </div>
 
     <script
       src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"
