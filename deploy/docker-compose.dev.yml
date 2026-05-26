@@ -1,0 +1,25 @@
+# PostgreSQL для локальной разработки.
+#
+# Запуск из корня репозитория:
+#   docker compose -f deploy/docker-compose.dev.yml up -d
+#
+# Секреты берутся из secrets/.env.local
+# Шаблон: cp secrets/.env.local.example secrets/.env.local
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: ventsearch-postgres
+    env_file:
+      - ../secrets/.env.local
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-ventmash}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ventpass}
+      POSTGRES_DB: ${POSTGRES_DB:-ventmash}
+    ports:
+      - "5432:5432"
+    volumes:
+      - ventsearch_pgdata:/var/lib/postgresql/data
+
+volumes:
+  ventsearch_pgdata:

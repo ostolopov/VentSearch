@@ -4,7 +4,7 @@ from contextlib import contextmanager
 from fastapi.testclient import TestClient
 
 import app as app_module
-from auth.security import hash_password, verify_password
+from infrastructure.auth.jwt_service import hash_password, verify_password
 
 
 def _make_client(monkeypatch):

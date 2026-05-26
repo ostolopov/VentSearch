@@ -1,5 +1,5 @@
 import pytest
-from search.bloom_filter import BloomFilter 
+from infrastructure.search.bloom_filter import BloomFilter
 
 def test_bloom_add_and_check():
     """Проверка: добавленный вентилятор должен находиться фильтром"""
