@@ -58,3 +58,9 @@ CORS_ORIGINS = [
     for o in os.environ.get("CORS_ORIGINS", _default_origins).split(",")
     if o.strip()
 ]
+
+# Аутентификация (JWT) и учётная запись администратора при первом старте
+JWT_SECRET = os.environ.get("JWT_SECRET", "change-me-in-production")
+JWT_EXPIRE_HOURS = int(os.environ.get("JWT_EXPIRE_HOURS", "168"))  # 7 суток
+ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL", "admin@ventsearch.local").strip().lower()
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "admin123")

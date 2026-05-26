@@ -39,6 +39,9 @@ let compareChart = null;
 let productChart = null;
 const COMPARE_STORAGE_KEY = "ventsearch.compare.ids";
 const PROJECT_STORAGE_KEY = "ventsearch.project.ids";
+const PROFILE_STORAGE_KEY = "ventsearch.user.profile";
+const PROJECT_META_STORAGE_KEY = "ventsearch.project.meta";
+const VENTSEARCH_TEAM_EMAIL = "ventsearch.team@gmail.com";
 
 function loadCompareIds() {
   try {
@@ -56,6 +59,7 @@ function saveCompareIds(ids) {
   } catch {
     // ignore
   }
+  updateCompareNavBadge();
 }
 
 function loadProjectIds() {
@@ -74,6 +78,78 @@ function saveProjectIds(ids) {
   } catch {
     // ignore
   }
+  updateProjectNavBadge();
+}
+
+function loadUserProfile() {
+  try {
+    const raw = localStorage.getItem(PROFILE_STORAGE_KEY);
+    const data = raw ? JSON.parse(raw) : {};
+    return data && typeof data === "object" ? data : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveUserProfile(profile) {
+  try {
+    localStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(profile));
+  } catch {
+    // ignore
+  }
+}
+
+function loadProjectMeta() {
+  try {
+    const raw = localStorage.getItem(PROJECT_META_STORAGE_KEY);
+    const data = raw ? JSON.parse(raw) : {};
+    return data && typeof data === "object" ? data : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveProjectMeta(meta) {
+  try {
+    localStorage.setItem(PROJECT_META_STORAGE_KEY, JSON.stringify(meta));
+  } catch {
+    // ignore
+  }
+}
+
+function getProjectIdSet() {
+  return new Set(loadProjectIds());
+}
+
+function isInProject(id) {
+  return getProjectIdSet().has(String(id));
+}
+
+function toggleProjectId(id) {
+  const key = String(id);
+  if (!key) return false;
+  const ids = getProjectIdSet();
+  const added = !ids.has(key);
+  if (added) ids.add(key);
+  else ids.delete(key);
+  saveProjectIds(ids);
+  return added;
+}
+
+function updateProjectNavBadge() {
+  const badge = document.getElementById("navProjectBadge");
+  if (!badge) return;
+  const count = loadProjectIds().length;
+  badge.textContent = String(count);
+  badge.classList.toggle("d-none", count === 0);
+}
+
+function updateCompareNavBadge() {
+  const badge = document.getElementById("navCompareBadge");
+  if (!badge) return;
+  const count = loadCompareIds().length;
+  badge.textContent = String(count);
+  badge.classList.toggle("d-none", count === 0);
 }
 
 async function fetchProductsByIds(ids) {
@@ -336,6 +412,7 @@ function describeQuery(filters) {
 }
 
 function parseFilters(form) {
+  if (!form) return {};
   const formData = new FormData(form);
   const filters = {};
   for (const [key, value] of formData.entries()) {
@@ -383,6 +460,16 @@ async function initCatalogPage() {
   const alertBox = $("#alertBox");
   const loading = $("#loading");
   const grid = $("#productsGrid");
+
+  function setLoadingSafe(isLoading) {
+    if (loading) loading.style.display = isLoading ? "block" : "none";
+  }
+
+  function showErrorSafe(message) {
+    if (!alertBox) return;
+    alertBox.textContent = message;
+    alertBox.classList.remove("d-none");
+  }
   const headerSearchInput = $("#headerSearchInput");
   const headerSearchBtn = $("#headerSearchBtn");
   const resultsCount = $("#resultsCount");
@@ -397,10 +484,6 @@ async function initCatalogPage() {
   const sortSelect = $("#sort");
   const typeSelect = $("#type");
   const diameterSelect = $("#diameter");
-  const compareBar = $("#compareBar");
-  const selectedCount = $("#selectedCount");
-  const openCompareBtn = $("#openCompareBtn");
-  const clearCompareBtn = $("#clearCompareBtn");
   const emptySection = $("#emptyStateSection");
   const backToFiltersBtn = $("#backToFiltersBtn");
   const analogsList = $("#analogsList");
@@ -420,46 +503,40 @@ async function initCatalogPage() {
   };
 
   function showError(message) {
-    alertBox.textContent = message;
-    alertBox.classList.remove("d-none");
+    showErrorSafe(message);
   }
 
   function hideError() {
-    alertBox.classList.add("d-none");
+    alertBox?.classList.add("d-none");
   }
 
   function setLoading(isLoading) {
-    loading.style.display = isLoading ? "block" : "none";
+    setLoadingSafe(isLoading);
   }
 
   function showCatalogResults() {
-    emptySection.classList.add("d-none");
-    grid.parentElement?.classList.remove("d-none");
+    emptySection?.classList.add("d-none");
+    grid?.parentElement?.classList.remove("d-none");
   }
 
   function showEmptyState() {
-    emptySection.classList.remove("d-none");
-    grid.parentElement?.classList.remove("d-none");
+    emptySection?.classList.remove("d-none");
+    grid?.parentElement?.classList.remove("d-none");
   }
 
   function getSelectedProducts() {
     return [...state.selectedIds].map((id) => state.cacheById.get(id)).filter(Boolean);
   }
 
-  function updateCompareBar() {
-    const n = state.selectedIds.size;
-    selectedCount.textContent = `${n}`;
-    compareBar.classList.toggle("compare-bar-hidden", n === 0);
-    openCompareBtn.disabled = n < 2;
-  }
-
   function syncSelectionUi() {
+    if (!grid) return;
     const toggleButtons = grid.querySelectorAll(".btn-compare-toggle");
     for (const button of toggleButtons) {
       const id = String(button.dataset.id || "");
       const selected = state.selectedIds.has(id);
-      button.classList.toggle("active", selected);
-      button.textContent = "Сравнить";
+      button.classList.toggle("btn-dark", selected);
+      button.classList.toggle("btn-outline-dark", !selected);
+      button.textContent = selected ? "В сравнении" : "Сравнить";
       button.title = selected ? "Уже добавлен в сравнение" : "Добавить в сравнение";
       const card = button.closest(".product-card");
       if (card) card.classList.toggle("selected", selected);
@@ -468,19 +545,18 @@ async function initCatalogPage() {
     for (const button of projectButtons) {
       const id = String(button.dataset.id || "");
       const inProject = state.projectIds.has(id);
-      button.classList.toggle("active", inProject);
-      button.textContent = "В проект";
-      button.title = inProject ? "Уже добавлен в проект" : "Добавить в проект";
+      button.classList.toggle("btn-dark", inProject);
+      button.classList.toggle("btn-outline-dark", !inProject);
+      button.textContent = inProject ? "В проекте" : "Добавить в проект";
+      button.title = inProject ? "Убрать из проекта" : "Добавить в проект";
+      const card = button.closest(".product-card");
+      if (card) card.classList.toggle("in-project", inProject);
     }
   }
 
   function toggleProjectSelection(id) {
-    if (state.projectIds.has(id)) {
-      state.projectIds.delete(id);
-    } else {
-      state.projectIds.add(id);
-    }
-    saveProjectIds(state.projectIds);
+    const added = toggleProjectId(id);
+    state.projectIds = getProjectIdSet();
     hideError();
     syncSelectionUi();
   }
@@ -493,11 +569,11 @@ async function initCatalogPage() {
     }
     saveCompareIds(state.selectedIds);
     hideError();
-    updateCompareBar();
     syncSelectionUi();
   }
 
   function renderProducts(products, meta) {
+    if (!grid) return;
     grid.innerHTML = "";
     state.currentItems = Array.isArray(products) ? products : [];
     const total = meta?.total ?? 0;
@@ -509,8 +585,8 @@ async function initCatalogPage() {
 
     const from = total > 0 ? (page - 1) * limit + 1 : 0;
     const to = Math.min(page * limit, total);
-    resultsCount.textContent = total > 0 ? `${from}-${to} из ${formatNumber(total)}` : "0";
-    querySummary.textContent = state.querySummaryText;
+    if (resultsCount) resultsCount.textContent = total > 0 ? `${from}-${to} из ${formatNumber(total)}` : "0";
+    if (querySummary) querySummary.textContent = state.querySummaryText;
 
     if (!state.currentItems.length) {
       if (paginationNav) paginationNav.classList.add("d-none");
@@ -547,13 +623,13 @@ async function initCatalogPage() {
           <a class="btn btn-sm btn-dark product-open-btn mt-2" href="product.html?id=${encodeURIComponent(p.id)}">Открыть</a>
         </div>
         <div class="product-card-actions mt-2 d-flex gap-2">
-          <button type="button" class="btn btn-outline-dark btn-sm flex-grow-1 btn-project-toggle ${inProject ? "active" : ""}" data-id="${escapeHtml(
+          <button type="button" class="btn btn-sm flex-grow-1 btn-project-toggle ${inProject ? "btn-dark" : "btn-outline-dark"}" data-id="${escapeHtml(
         p.id
-      )}" title="${inProject ? "Уже добавлен в проект" : "Добавить в проект"}">
-            В проект
+      )}" title="${inProject ? "Убрать из проекта" : "Добавить в проект"}">
+            ${inProject ? "В проекте" : "Добавить в проект"}
           </button>
-          <button type="button" class="btn-compare-toggle flex-grow-1 ${selected ? "active" : ""}" data-id="${escapeHtml(p.id)}">
-            Сравнить
+          <button type="button" class="btn btn-sm btn-compare-toggle flex-grow-1 ${selected ? "btn-dark" : "btn-outline-dark"}" data-id="${escapeHtml(p.id)}">
+            ${selected ? "В сравнении" : "Сравнить"}
           </button>
         </div>
       `;
@@ -584,13 +660,14 @@ async function initCatalogPage() {
     if (paginationNav) {
       const totalPages = Math.max(1, Math.ceil(total / limit));
       paginationNav.classList.toggle("d-none", total <= limit);
-      pageIndicator.textContent = `Страница ${page} из ${totalPages}`;
-      prevPageBtn.disabled = page <= 1;
-      nextPageBtn.disabled = page >= totalPages;
+      if (pageIndicator) pageIndicator.textContent = `Страница ${page} из ${totalPages}`;
+      if (prevPageBtn) prevPageBtn.disabled = page <= 1;
+      if (nextPageBtn) nextPageBtn.disabled = page >= totalPages;
     }
   }
 
   function renderAnalogs(analogs) {
+    if (!analogsList) return;
     analogsList.innerHTML = "";
     for (const item of analogs) {
       const card = document.createElement("div");
@@ -649,8 +726,8 @@ async function initCatalogPage() {
     state.currentPage = page;
     state.filters = parseFilters(filtersForm);
     state.querySummaryText = describeQuery(state.filters);
-    querySummary.textContent = state.querySummaryText;
-    emptyQuerySummary.textContent = state.querySummaryText;
+    if (querySummary) querySummary.textContent = state.querySummaryText;
+    if (emptyQuerySummary) emptyQuerySummary.textContent = state.querySummaryText;
 
     try {
       const requestedSort = sortSelect?.value || "price_asc";
@@ -673,7 +750,7 @@ async function initCatalogPage() {
         renderAnalogs(state.analogs);
         showEmptyState();
         if (paginationNav) paginationNav.classList.add("d-none");
-        resultsCount.textContent = "0";
+        if (resultsCount) resultsCount.textContent = "0";
       } else {
         showCatalogResults();
         renderProducts(items, { total, page, limit });
@@ -688,7 +765,7 @@ async function initCatalogPage() {
 
   async function loadFacets() {
     const data = await fetchJson(apiUrl("/api/products/facets"));
-    if (Array.isArray(data?.types)) {
+    if (Array.isArray(data?.types) && typeSelect) {
       for (const t of data.types) {
         const opt = document.createElement("option");
         opt.value = t;
@@ -696,7 +773,7 @@ async function initCatalogPage() {
         typeSelect.appendChild(opt);
       }
     }
-    if (Array.isArray(data?.diameters)) {
+    if (Array.isArray(data?.diameters) && diameterSelect) {
       for (const d of data.diameters) {
         const opt = document.createElement("option");
         opt.value = String(d);
@@ -733,39 +810,32 @@ async function initCatalogPage() {
     if (instance) instance.hide();
   }
 
-  filtersForm.addEventListener("submit", (e) => {
+  filtersForm?.addEventListener("submit", (e) => {
     e.preventDefault();
     if (!validateRangeFilters()) return;
     loadPage(1);
     closeFiltersOffcanvasIfMobile();
   });
 
-  sortSelect.addEventListener("change", () => loadPage(1));
+  sortSelect?.addEventListener("change", () => loadPage(1));
 
-  resetBtn.addEventListener("click", () => {
-    filtersForm.reset();
+  resetBtn?.addEventListener("click", () => {
+    filtersForm?.reset();
     state.selectedIds.clear();
-    updateCompareBar();
+    saveCompareIds(state.selectedIds);
     loadPage(1);
   });
 
-  prevPageBtn.addEventListener("click", () => {
+  prevPageBtn?.addEventListener("click", () => {
     if (state.currentPage > 1) loadPage(state.currentPage - 1);
   });
 
-  nextPageBtn.addEventListener("click", () => {
+  nextPageBtn?.addEventListener("click", () => {
     const totalPages = Math.max(1, Math.ceil(state.lastTotal / state.lastLimit));
     if (state.currentPage < totalPages) loadPage(state.currentPage + 1);
   });
 
-  openCompareBtn.addEventListener("click", openCompare);
-  clearCompareBtn.addEventListener("click", () => {
-    state.selectedIds.clear();
-    saveCompareIds(state.selectedIds);
-    updateCompareBar();
-    syncSelectionUi();
-  });
-  backToFiltersBtn.addEventListener("click", () => {
+  backToFiltersBtn?.addEventListener("click", () => {
     showCatalogResults();
     window.scrollTo({ top: 0, behavior: "smooth" });
   });
@@ -806,22 +876,31 @@ async function initCatalogPage() {
     }
   });
 
+  const urlQ = new URLSearchParams(window.location.search).get("q");
+  if (urlQ) {
+    const trimmed = String(urlQ).trim();
+    if (filtersForm?.elements.q) filtersForm.elements.q.value = trimmed;
+    if (headerSearchInput) headerSearchInput.value = trimmed;
+  }
+
   try {
     setLoading(true);
     await loadFacets();
     await loadPage(1);
     showCatalogResults();
-    updateCompareBar();
     syncSelectionUi();
+    updateProjectNavBadge();
+    updateCompareNavBadge();
   } catch (err) {
     console.error(err);
-    showError("Ошибка инициализации каталога.");
+    showErrorSafe(err.message || "Ошибка инициализации каталога. Проверьте, что API запущен.");
   } finally {
-    setLoading(false);
+    setLoadingSafe(false);
   }
 }
 
 async function initComparePage() {
+  updateProjectNavBadge();
   const alertBox = $("#alertBox");
   const compareMeta = $("#compareMeta");
   const clearCompareBtn = $("#clearCompareBtn");
@@ -920,6 +999,7 @@ async function initComparePage() {
   try {
     hideError();
     const ids = loadCompareIds();
+    updateCompareNavBadge();
     if (ids.length < 2) {
       compareMeta.textContent = "Выберите минимум 2 модели в каталоге и вернитесь на страницу сравнения.";
       const backBtn = document.createElement("a");
@@ -949,6 +1029,15 @@ async function initComparePage() {
   }
 }
 
+function syncProductProjectButton(button, productId) {
+  if (!button) return;
+  const inProject = isInProject(productId);
+  button.classList.toggle("btn-dark", !inProject);
+  button.classList.toggle("btn-dark", inProject);
+  button.textContent = inProject ? "В проекте" : "В проект";
+  button.title = inProject ? "Перейти в личный кабинет" : "Сохранить модель в проект";
+}
+
 async function initProductPage() {
   const alertBox = $("#alertBox");
   const loading = $("#loading");
@@ -957,7 +1046,9 @@ async function initProductPage() {
   const compareWithSelect = $("#compareWithSelect");
   const compareOnProductBtn = $("#compareOnProductBtn");
   const productCompareMeta = $("#productCompareMeta");
+  const addToProjectBtn = $("#addToProjectBtn");
   let currentProduct = null;
+  updateProjectNavBadge();
 
   function showError(message) {
     alertBox.textContent = message;
@@ -1038,6 +1129,16 @@ async function initProductPage() {
       productCompareMeta.textContent = `Сравнение: ${currentProduct.model || currentProduct.id} vs ${second.model || second.id}`;
     });
 
+    syncProductProjectButton(addToProjectBtn, data.id);
+    addToProjectBtn?.addEventListener("click", () => {
+      if (isInProject(data.id)) {
+        window.location.href = "project.html";
+        return;
+      }
+      toggleProjectId(data.id);
+      syncProductProjectButton(addToProjectBtn, data.id);
+    });
+
     container.classList.remove("d-none");
     alertBox.classList.add("d-none");
   } catch (err) {
@@ -1048,9 +1149,283 @@ async function initProductPage() {
   }
 }
 
+function buildProjectQuoteBody(products, profile, meta) {
+  const lines = [
+    "Запрос коммерческого предложения — VENTSEARCH",
+    "",
+    `Проект: ${meta.title || "Без названия"}`,
+    meta.notes ? `Комментарий: ${meta.notes}` : "",
+    "",
+    "Контакты:",
+    profile.company ? `Компания: ${profile.company}` : "",
+    profile.name ? `ФИО: ${profile.name}` : "",
+    profile.email ? `E-mail: ${profile.email}` : "",
+    profile.phone ? `Телефон: ${profile.phone}` : "",
+    "",
+    "Состав проекта:",
+  ].filter((line) => line !== undefined);
+  for (const p of products) {
+    lines.push(
+      `- ${p.model || p.id} (${p.type || "—"}): расход ${p.airflow?.raw || "—"}, давление ${p.pressure?.raw || "—"}, цена ${formatPrice(p.price)}`,
+    );
+  }
+  return lines.join("\n");
+}
+
+async function exportProjectPdf(products) {
+  if (!products.length) {
+    throw new Error("empty");
+  }
+  const ids = products.map((p) => String(p.id)).filter(Boolean);
+  const response = await fetch(apiUrl("/api/export/pdf"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      ids,
+      filename: "ventsearch-project.pdf",
+    }),
+  });
+  if (!response.ok) {
+    throw new Error(`PDF export failed: ${response.status}`);
+  }
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "ventsearch-project.pdf";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+async function initProjectPage() {
+  if (window.VentSiteAuth) {
+    await window.VentSiteAuth.refreshSession();
+  }
+  const alertBox = $("#alertBox");
+  const successBox = $("#successBox");
+  const projectMeta = $("#projectMeta");
+  const projectLoading = $("#projectLoading");
+  const projectEmpty = $("#projectEmpty");
+  const projectTableWrap = $("#projectTableWrap");
+  const projectTableBody = $("#projectTableBody");
+  const projectTotalPrice = $("#projectTotalPrice");
+  const profileForm = $("#profileForm");
+  const projectTitle = $("#projectTitle");
+  const projectNotes = $("#projectNotes");
+  const exportProjectPdfBtn = $("#exportProjectPdfBtn");
+  const requestQuoteBtn = $("#requestQuoteBtn");
+  const clearProjectBtn = $("#clearProjectBtn");
+
+  let currentProducts = [];
+
+  function showError(message) {
+    if (!alertBox) return;
+    alertBox.textContent = message;
+    alertBox.classList.remove("d-none");
+    successBox?.classList.add("d-none");
+  }
+
+  function showSuccess(message) {
+    if (!successBox) return;
+    successBox.textContent = message;
+    successBox.classList.remove("d-none");
+    alertBox?.classList.add("d-none");
+  }
+
+  function hideMessages() {
+    alertBox?.classList.add("d-none");
+    successBox?.classList.add("d-none");
+  }
+
+  function fillProfileForm(profile) {
+    $("#profileCompany").value = profile.company || "";
+    $("#profileName").value = profile.name || "";
+    $("#profileEmail").value = profile.email || "";
+    $("#profilePhone").value = profile.phone || "";
+  }
+
+  function readProfileForm() {
+    return {
+      company: String($("#profileCompany")?.value || "").trim(),
+      name: String($("#profileName")?.value || "").trim(),
+      email: String($("#profileEmail")?.value || "").trim(),
+      phone: String($("#profilePhone")?.value || "").trim(),
+    };
+  }
+
+  function readProjectMetaForm() {
+    return {
+      title: String(projectTitle?.value || "").trim(),
+      notes: String(projectNotes?.value || "").trim(),
+    };
+  }
+
+  function persistProjectMeta() {
+    saveProjectMeta(readProjectMetaForm());
+  }
+
+  function renderProjectTable(products) {
+    currentProducts = products;
+    projectTableBody.innerHTML = "";
+    let total = 0;
+    let pricedCount = 0;
+
+    for (const p of products) {
+      const price = toNumber(p.price);
+      if (price != null) {
+        total += price;
+        pricedCount += 1;
+      }
+      const tr = document.createElement("tr");
+      tr.innerHTML = `
+        <td>
+          <a href="product.html?id=${encodeURIComponent(p.id)}">${escapeHtml(p.model || p.id)}</a>
+          <div class="small text-secondary">${escapeHtml(p.size || "")}</div>
+        </td>
+        <td>${escapeHtml(p.type || "—")}</td>
+        <td>${escapeHtml(p.airflow?.raw || "—")}</td>
+        <td>${escapeHtml(p.pressure?.raw || "—")}</td>
+        <td>${escapeHtml(formatPrice(p.price))}</td>
+        <td class="text-end">
+          <button type="button" class="btn btn-outline-dark btn-sm btn-remove-project-item" data-id="${escapeHtml(p.id)}">
+            Удалить
+          </button>
+        </td>
+      `;
+      projectTableBody.appendChild(tr);
+    }
+
+    if (pricedCount > 0) {
+      projectTotalPrice.textContent = formatPrice(total);
+    } else {
+      projectTotalPrice.textContent = "по запросу";
+    }
+
+    projectTableBody.querySelectorAll(".btn-remove-project-item").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        toggleProjectId(btn.dataset.id);
+        void reloadProject();
+      });
+    });
+  }
+
+  async function reloadProject() {
+    hideMessages();
+    const ids = loadProjectIds();
+    updateProjectNavBadge();
+    projectMeta.textContent =
+      ids.length > 0 ? `В проекте ${ids.length} ${ids.length === 1 ? "модель" : ids.length < 5 ? "модели" : "моделей"}` : "Добавьте модели из каталога";
+
+    if (!ids.length) {
+      projectLoading.classList.add("d-none");
+      projectEmpty.classList.remove("d-none");
+      projectTableWrap.classList.add("d-none");
+      exportProjectPdfBtn.disabled = true;
+      requestQuoteBtn.disabled = true;
+      currentProducts = [];
+      return;
+    }
+
+    projectLoading.classList.remove("d-none");
+    projectEmpty.classList.add("d-none");
+    projectTableWrap.classList.add("d-none");
+    exportProjectPdfBtn.disabled = true;
+    requestQuoteBtn.disabled = true;
+
+    try {
+      const products = await fetchProductsByIds(ids);
+      const order = new Map(ids.map((id, index) => [String(id), index]));
+      products.sort((a, b) => (order.get(String(a.id)) ?? 0) - (order.get(String(b.id)) ?? 0));
+      renderProjectTable(products);
+      projectLoading.classList.add("d-none");
+      projectTableWrap.classList.remove("d-none");
+      exportProjectPdfBtn.disabled = false;
+      requestQuoteBtn.disabled = false;
+    } catch (err) {
+      console.error(err);
+      projectLoading.classList.add("d-none");
+      showError("Не удалось загрузить модели проекта. Проверьте доступность API.");
+    }
+  }
+
+  const savedProfile = loadUserProfile();
+  const savedMeta = loadProjectMeta();
+  fillProfileForm(savedProfile);
+  if (projectTitle) projectTitle.value = savedMeta.title || "";
+  if (projectNotes) projectNotes.value = savedMeta.notes || "";
+
+  profileForm?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    saveUserProfile(readProfileForm());
+    showSuccess("Контактные данные сохранены в этом браузере.");
+  });
+
+  projectTitle?.addEventListener("change", persistProjectMeta);
+  projectNotes?.addEventListener("change", persistProjectMeta);
+  projectTitle?.addEventListener("blur", persistProjectMeta);
+  projectNotes?.addEventListener("blur", persistProjectMeta);
+
+  exportProjectPdfBtn?.addEventListener("click", async () => {
+    hideMessages();
+    try {
+      await exportProjectPdf(currentProducts);
+      showSuccess("PDF-файл сформирован и загружен.");
+    } catch (err) {
+      console.error(err);
+      showError("Не удалось экспортировать PDF. Проверьте доступность API.");
+    }
+  });
+
+  requestQuoteBtn?.addEventListener("click", async () => {
+    hideMessages();
+    saveUserProfile(readProfileForm());
+    persistProjectMeta();
+    if (!currentProducts.length) {
+      showError("Добавьте хотя бы одну модель в проект.");
+      return;
+    }
+    const profile = readProfileForm();
+    if (!profile.email && !profile.phone) {
+      showError("Укажите e-mail или телефон в профиле, чтобы менеджер мог связаться с вами.");
+      return;
+    }
+    const body = buildProjectQuoteBody(currentProducts, profile, readProjectMetaForm());
+    const subject = encodeURIComponent(`Запрос цены — ${readProjectMetaForm().title || "VENTSEARCH"}`);
+    const mailto = `mailto:${VENTSEARCH_TEAM_EMAIL}?subject=${subject}&body=${encodeURIComponent(body)}`;
+    window.location.href = mailto;
+  });
+
+  clearProjectBtn?.addEventListener("click", () => {
+    if (!loadProjectIds().length) return;
+    if (!window.confirm("Очистить проект и удалить все сохранённые модели?")) return;
+    saveProjectIds(new Set());
+    void reloadProject();
+    showSuccess("Проект очищен.");
+  });
+
+  updateProjectNavBadge();
+  await reloadProject();
+}
+
 document.addEventListener("DOMContentLoaded", () => {
+  updateProjectNavBadge();
+  updateCompareNavBadge();
   const page = document.body.dataset.page;
-  if (page === "catalog") initCatalogPage();
+  if (page === "catalog") {
+    initCatalogPage().catch((err) => {
+      console.error(err);
+      const loading = document.getElementById("loading");
+      if (loading) loading.style.display = "none";
+      const alertBox = document.getElementById("alertBox");
+      if (alertBox) {
+        alertBox.textContent = err.message || "Ошибка загрузки каталога";
+        alertBox.classList.remove("d-none");
+      }
+    });
+  }
   if (page === "product") initProductPage();
   if (page === "compare") initComparePage();
+  if (page === "project") initProjectPage();
 });

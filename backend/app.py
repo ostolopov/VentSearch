@@ -53,6 +53,9 @@ from api.schemas import (
 from config import CORS_ORIGINS, CSV_PATH, PORT
 from database import init_database, shutdown_database
 from db.connection import get_connection, put_connection
+from api.admin_routes import router as admin_router
+from api.auth_routes import router as auth_router
+from db.bootstrap_admin import ensure_default_admin
 from db.init_db import init_db
 from db.csv_sync import sync_catalog_from_csv
 from db.repository import (
@@ -115,6 +118,7 @@ def _startup_db() -> None:
     conn = get_connection()
     try:
         init_db(conn)
+        ensure_default_admin(conn)
         sync_catalog_from_csv(conn, CSV_PATH)
         try:
             set_catalog_index(CatalogIndex.build(conn))
@@ -435,6 +439,9 @@ app.add_middleware(
 
 if PHOTOS_DIR.exists():
     app.mount("/photos", StaticFiles(directory=str(PHOTOS_DIR)), name="photos")
+
+app.include_router(auth_router)
+app.include_router(admin_router)
 
 
 @app.exception_handler(RequestValidationError)
@@ -872,6 +879,46 @@ def serve_product_page():
 @app.get("/compare.html", include_in_schema=False)
 def serve_compare_page():
     return FileResponse(FRONTEND_DIR / "compare.html")
+
+
+@app.get("/project.html", include_in_schema=False)
+def serve_project_page():
+    return FileResponse(FRONTEND_DIR / "project.html")
+
+
+@app.get("/admin.html", include_in_schema=False)
+def serve_admin_page():
+    return FileResponse(FRONTEND_DIR / "admin.html")
+
+
+@app.get("/admin-page.js", include_in_schema=False)
+def serve_admin_page_js():
+    return FileResponse(FRONTEND_DIR / "admin-page.js")
+
+
+@app.get("/auth-page.js", include_in_schema=False)
+def serve_auth_page_js():
+    return FileResponse(FRONTEND_DIR / "auth-page.js")
+
+
+@app.get("/site-auth.js", include_in_schema=False)
+def serve_site_auth_js():
+    return FileResponse(FRONTEND_DIR / "site-auth.js")
+
+
+@app.get("/auth.html", include_in_schema=False)
+def serve_auth_page():
+    return FileResponse(FRONTEND_DIR / "auth.html")
+
+
+@app.get("/admin.js", include_in_schema=False)
+def serve_admin_js():
+    return FileResponse(FRONTEND_DIR / "admin.js")
+
+
+@app.get("/auth.js", include_in_schema=False)
+def serve_auth_js():
+    return FileResponse(FRONTEND_DIR / "auth.js")
 
 
 @app.get("/style.css", include_in_schema=False)
