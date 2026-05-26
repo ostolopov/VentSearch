@@ -25,6 +25,7 @@ jobs:
           overwrite: true
           rm: true
           strip_components: 0
+          debug: true # <--- ВОТ СЮДА ДОБАВИЛИ ДЛЯ КОПИРОВАНИЯ
 
       - name: Run deploy commands on VM
         uses: appleboy/ssh-action@v1.2.0
@@ -34,6 +35,7 @@ jobs:
           key: ${{ secrets.VM_SSH_KEY }}
           port: ${{ secrets.VM_SSH_PORT || '22' }}
           script_stop: true
+          debug: true # <--- И СЮДА НА ВСЯКИЙ СЛУЧАЙ ДЛЯ КОМАНД
           script: |
             set -eu
             APP_DIR="$HOME/apps/ventsearch"

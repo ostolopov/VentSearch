@@ -1,10 +1,60 @@
 """
 Репозиторий продуктов: выборка списка с фильтрами и по id/модели/slug.
+Реализует паттерн Strategy для сортировки (OCP).
 """
 from typing import Any, Dict, List, Optional, Tuple
 
 import psycopg2
 from psycopg2.extras import RealDictCursor
+
+
+# --- Strategy Pattern for Sorting ---
+
+class SortStrategy:
+    """Базовый класс стратегии сортировки."""
+    def order_by_sql(self) -> str:
+        raise NotImplementedError
+
+
+class PriceAscStrategy(SortStrategy):
+    def order_by_sql(self) -> str:
+        return "price ASC NULLS LAST, model ASC"
+
+
+class PriceDescStrategy(SortStrategy):
+    def order_by_sql(self) -> str:
+        return "price DESC NULLS LAST, model ASC"
+
+
+class PowerAscStrategy(SortStrategy):
+    """Пример дополнительной стратегии (расширяемость без изменения старого кода)."""
+    def order_by_sql(self) -> str:
+        return "power ASC NULLS LAST, model ASC"
+
+
+class ModelAscStrategy(SortStrategy):
+    """Сортировка по модели (алфавит)."""
+    def order_by_sql(self) -> str:
+        return "model ASC"
+
+
+# Реестр стратегий. Ключи соответствуют значениям, приходящим из UI/API.
+SORT_STRATEGIES: Dict[str, SortStrategy] = {
+    "price_asc": PriceAscStrategy(),
+    "price_desc": PriceDescStrategy(),
+    "power_asc": PowerAscStrategy(),
+    "model_asc": ModelAscStrategy(),
+}
+
+DEFAULT_SORT_KEY = "price_asc"
+
+
+def _get_sort_strategy(sort_key: str) -> SortStrategy:
+    """Получает стратегию по ключу. Если ключ неизвестен, возвращает дефолтную."""
+    return SORT_STRATEGIES.get(sort_key, SORT_STRATEGIES[DEFAULT_SORT_KEY])
+
+
+# --- End of Strategy Pattern ---
 
 
 def _row_to_product_dict(row: Dict[str, Any]) -> Dict[str, Any]:
@@ -127,9 +177,9 @@ def _products_filter_sql(
             "(pressure_min IS NULL OR pressure_min <= " + next_param(max_pressure) + ")"
         )
 
-    order = "price ASC NULLS LAST, model ASC"
-    if sort == "price_desc":
-        order = "price DESC NULLS LAST, model ASC"
+    # Применение паттерна Strategy
+    strategy = _get_sort_strategy(sort)
+    order = strategy.order_by_sql()
 
     where_sql = " AND ".join(conditions)
     return where_sql, params, order
@@ -159,8 +209,7 @@ def list_products(
     offset: int = 0,
 ) -> List[Dict[str, Any]]:
     """
-    Выборка товаров с фильтрами. Сортировка по цене (price_asc / price_desc),
-    товары без цены в конце.
+    Выборка товаров с фильтрами. Сортировка делегируется стратегиям.
     """
     where_sql, params, order = _products_filter_sql(
         q=q,
