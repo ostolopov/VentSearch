@@ -446,7 +446,6 @@ def create_app() -> FastAPI:
 
         ids = [_normalize_ws(v) for v in payload.ids if _normalize_ws(v)]
         if not ids:
-            from fastapi import HTTPException
             raise HTTPException(
                 status_code=422,
                 detail={"detail": [{"loc": ["body", "ids"], "msg": "ids must not be empty", "type": "value_error"}]},

@@ -1,26 +1,6 @@
 """Тесты auth и admin (без реальной БД)."""
-from contextlib import contextmanager
-
-from fastapi.testclient import TestClient
-
-import app as app_module
 from infrastructure.auth.jwt_service import hash_password, verify_password
-
-
-def _make_client(monkeypatch):
-    monkeypatch.setattr(app_module, "_startup_db", lambda: None)
-    monkeypatch.setattr(app_module, "shutdown_database", lambda: None)
-    monkeypatch.setattr(app_module, "_ensure_catalog_sync_with_reindex", lambda: None)
-    monkeypatch.setattr(app_module, "set_catalog_index", lambda _: None)
-
-    @contextmanager
-    def _fake_db_session():
-        yield object()
-
-    monkeypatch.setattr("api.deps.db_session", _fake_db_session)
-    monkeypatch.setattr("api.auth_routes.db_session", _fake_db_session)
-    monkeypatch.setattr("api.admin_routes.db_session", _fake_db_session)
-    return TestClient(app_module.app, raise_server_exceptions=False)
+from tests.conftest import make_test_client
 
 
 def test_password_hash_roundtrip():
@@ -30,8 +10,8 @@ def test_password_hash_roundtrip():
 
 
 def test_login_requires_user(monkeypatch):
-    monkeypatch.setattr("api.auth_routes.get_user_by_email", lambda *args, **kwargs: None)
-    client = _make_client(monkeypatch)
+    monkeypatch.setattr("presentation.api.routes.auth.get_user_by_email", lambda conn, email: None)
+    client = make_test_client(monkeypatch)
     response = client.post(
         "/api/auth/login",
         json={"email": "nobody@test.local", "password": "secret123"},
@@ -40,6 +20,6 @@ def test_login_requires_user(monkeypatch):
 
 
 def test_admin_products_requires_auth(monkeypatch):
-    client = _make_client(monkeypatch)
+    client = make_test_client(monkeypatch)
     response = client.get("/api/admin/products")
     assert response.status_code == 401
