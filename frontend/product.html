@@ -10,7 +10,7 @@
       integrity="sha384-QWTKZyjpPEjISv5WaRU9OFeRpok6YctnYmDr5pNlyT2bRjXh0JMhjY6hW+ALEwIH"
       crossorigin="anonymous"
     />
-    <link rel="stylesheet" href="style.css?v=20260502-3" />
+    <link rel="stylesheet" href="style.css?v=20260524-1" />
     
     <!-- Yandex.Metrika counter -->
 <script type="text/javascript">
@@ -26,13 +26,81 @@
 <noscript><div><img src="https://mc.yandex.ru/watch/109006784" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
 <!-- /Yandex.Metrika counter -->
 
+    <style>
+      /* Fix active tabs style specific to product.html */
+      .nav-tabs .nav-link.active {
+        color: var(--vs-accent) !important;
+        border-bottom-color: var(--vs-accent) !important;
+        background: transparent !important;
+      }
+      .nav-tabs .nav-link:hover:not(.active) {
+        color: var(--vs-text) !important;
+        border-bottom-color: var(--vs-border) !important;
+      }
+      #specTableBody th {
+        font-weight: 500;
+        color: var(--vs-text-muted);
+        border-bottom: 1px solid var(--vs-border);
+        padding: 1rem;
+        background: transparent;
+      }
+      #specTableBody td {
+        font-weight: 600;
+        border-bottom: 1px solid var(--vs-border);
+        padding: 1rem;
+      }
+    </style>
   </head>
   <body data-page="product">
     <nav class="navbar navbar-expand-lg sticky-top">
       <div class="container-fluid px-3 px-lg-4">
-        <a class="navbar-brand fw-semibold" href="index.html">VENTSEARCH</a>
-        <div class="ms-auto d-flex gap-2">
-          <a class="btn btn-outline-dark btn-sm" href="index.html">← В каталог</a>
+        <a class="navbar-brand fw-semibold d-flex align-items-center" href="index.html">
+          <img src="../photos/logo.png" alt="VENTSEARCH" height="40" class="me-2" style="object-fit: contain;">
+          <span style="color: var(--vs-accent);">VENT</span><span style="color: var(--vs-text);">SEARCH</span>
+        </a>
+        <div class="d-flex align-items-center gap-2" id="nav">
+          <ul class="navbar-nav flex-row align-items-center gap-2 ms-auto mb-0">
+            <li class="nav-item d-none d-md-block">
+              <a class="nav-link" href="index.html">Каталог</a>
+            </li>
+            <li class="nav-item">
+              <a class="nav-link nav-link-project" href="project.html">
+                Мой проект
+                <span id="navProjectBadge" class="nav-project-badge d-none">0</span>
+              </a>
+            </li>
+            <li class="nav-item">
+              <a class="nav-link nav-link-compare" href="compare.html">
+                Сравнение
+                <span id="navCompareBadge" class="nav-compare-badge d-none">0</span>
+              </a>
+            </li>
+            <li class="nav-item" id="navAuthGuest">
+              <a class="nav-link btn btn-link border-0 py-2 text-decoration-none" href="auth.html">Вход</a>
+            </li>
+            <li class="nav-item dropdown d-none" id="navAuthUser">
+              <a class="nav-link dropdown-toggle" href="#" role="button" data-bs-toggle="dropdown" aria-expanded="false">
+                <span id="navAuthEmail" class="d-none d-md-inline">Аккаунт</span>
+                <span class="d-md-none">ЛК</span>
+              </a>
+              <ul class="dropdown-menu dropdown-menu-end position-absolute">
+                <li><a class="dropdown-item" href="project.html">Мой проект</a></li>
+                <li class="d-none" id="navAdminMenuItem">
+                  <a
+                    class="dropdown-item"
+                    href="admin.html"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >Управление каталогом</a>
+                </li>
+                <li><hr class="dropdown-divider" /></li>
+                <li><button class="dropdown-item" type="button" id="navLogoutBtn">Выйти</button></li>
+              </ul>
+            </li>
+            <li class="nav-item d-none d-md-block">
+              <button id="shareLinkBtn" class="btn btn-sm btn-dark" type="button" style="display: none;">Поделиться</button>
+            </li>
+          </ul>
         </div>
       </div>
     </nav>
@@ -49,110 +117,138 @@
       </div>
 
       <div id="productContainer" class="d-none">
-        <div class="product-hero mb-4">
-          <div>
-            <div class="card shadow-sm">
+        <div class="row g-4 mb-5">
+          <div class="col-lg-6 col-xl-5">
+            <div class="card shadow-sm border-0" style="border-radius: 20px; overflow: hidden;">
               <div
                 id="productImage"
-                class="ratio ratio-4x3 bg-light d-flex align-items-center justify-content-center"
+                class="ratio ratio-4x3 bg-white d-flex align-items-center justify-content-center p-4"
               >
                 <span class="text-secondary small">Фото скоро появится</span>
               </div>
             </div>
           </div>
-          <div>
-            <div class="card product-summary-card">
-              <div class="card-body">
-                <h1 id="productTitle" class="h3 mb-1"></h1>
-                <p id="productSubtitle" class="text-secondary mb-2"></p>
-                <p class="mb-0">
-                  <span class="fw-semibold">Цена:</span>
-                  <span id="productPrice"></span>
-                </p>
-                <button class="btn btn-primary product-action-btn" type="button">
-                  Добавить в проект / Запросить цену
-                </button>
+          <div class="col-lg-6 col-xl-7 d-flex flex-column justify-content-center">
+            <h1 id="productTitle" class="display-6 fw-bold mb-2"></h1>
+            <p id="productSubtitle" class="text-secondary fs-5 mb-4"></p>
+            
+            <div class="card shadow-sm border-0 bg-white" style="border-radius: 16px;">
+              <div class="card-body p-4 p-xl-5">
+                <div class="mb-4">
+                  <span class="text-secondary d-block mb-1 fw-semibold">Розничная цена</span>
+                  <div id="productPrice" class="display-5 fw-bold text-dark" style="letter-spacing: -0.02em;"></div>
+                </div>
+                <div class="d-flex flex-column flex-sm-row gap-3 mt-4">
+                  <button id="addToProjectBtn" class="btn btn-primary btn-lg flex-grow-1" style="border-radius: 12px; font-weight: 600;" type="button">
+                    В проект
+                  </button>
+                  <a class="btn btn-outline-dark btn-lg flex-grow-1" href="project.html" style="border-radius: 12px; font-weight: 600;">Перейти в проект</a>
+                </div>
               </div>
             </div>
           </div>
         </div>
 
-        <div class="card tabs-card">
-          <div class="card-body">
-            <ul class="nav nav-tabs mb-3" id="productTabs" role="tablist">
+        <div class="card tabs-card border-0 shadow-sm" style="border-radius: 20px;">
+          <div class="card-body p-0">
+            <ul class="nav nav-tabs px-4 pt-3 border-bottom-0 bg-light" id="productTabs" role="tablist">
               <li class="nav-item" role="presentation">
                 <button
-                  class="nav-link active"
+                  class="nav-link active px-4 py-3 border-0 bg-transparent"
                   id="specs-tab"
                   data-bs-toggle="tab"
                   data-bs-target="#specs-pane"
                   type="button"
                   role="tab"
+                  style="border-bottom: 3px solid transparent; font-weight: 600; color: var(--vs-text-muted);"
                 >
                   Характеристики
                 </button>
               </li>
               <li class="nav-item" role="presentation">
                 <button
-                  class="nav-link"
+                  class="nav-link px-4 py-3 border-0 bg-transparent"
                   id="aero-tab"
                   data-bs-toggle="tab"
                   data-bs-target="#aero-pane"
                   type="button"
                   role="tab"
+                  style="border-bottom: 3px solid transparent; font-weight: 600; color: var(--vs-text-muted);"
                 >
-                  Аэродинамика (Q-P)
+                  Аэродинамика
                 </button>
               </li>
               <li class="nav-item" role="presentation">
                 <button
-                  class="nav-link"
+                  class="nav-link px-4 py-3 border-0 bg-transparent"
                   id="docs-tab"
                   data-bs-toggle="tab"
                   data-bs-target="#docs-pane"
                   type="button"
                   role="tab"
+                  style="border-bottom: 3px solid transparent; font-weight: 600; color: var(--vs-text-muted);"
                 >
-                  Документация и габариты
+                  Документация
                 </button>
               </li>
             </ul>
 
-            <div class="tab-content">
+            <div class="tab-content p-4 p-xl-5">
               <div class="tab-pane fade show active" id="specs-pane" role="tabpanel">
                 <div class="table-responsive">
-                  <table class="table table-sm align-middle mb-0">
+                  <table class="table align-middle mb-0" style="width: 100%; max-width: 800px;">
                     <tbody id="specTableBody"></tbody>
                   </table>
                 </div>
               </div>
 
               <div class="tab-pane fade" id="aero-pane" role="tabpanel">
-                <div class="d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-2 mb-3">
-                  <h2 class="h6 mb-0">График Q–P для модели</h2>
-                  <div class="d-flex gap-2 align-items-center">
-                    <select id="compareWithSelect" class="form-select form-select-sm">
+                <div class="d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-3 mb-4">
+                  <h2 class="h5 mb-0 fw-bold">График Q–P для модели</h2>
+                  <div class="d-flex gap-2 align-items-center bg-light p-2 rounded-3">
+                    <select id="compareWithSelect" class="form-select border-0 bg-white shadow-sm" style="min-width: 250px;">
                       <option value="">Сравнить с другой моделью...</option>
                     </select>
-                    <button id="compareOnProductBtn" type="button" class="btn btn-sm btn-outline-dark">
+                    <button id="compareOnProductBtn" type="button" class="btn btn-dark shadow-sm">
                       Сравнить
                     </button>
                   </div>
                 </div>
-                <div class="product-chart-wrap">
-                  <canvas id="productQpChart" height="260"></canvas>
+                <div class="product-chart-wrap bg-white border shadow-sm rounded-4 p-4">
+                  <canvas id="productQpChart" height="300"></canvas>
                 </div>
-                <div id="productCompareMeta" class="small text-secondary mt-2"></div>
+                <div id="productCompareMeta" class="small text-secondary mt-3 text-center"></div>
               </div>
 
               <div class="tab-pane fade" id="docs-pane" role="tabpanel">
-                <ul class="doc-list ps-3 mb-3">
-                  <li>Паспорт изделия (PDF) — по запросу менеджеру.</li>
-                  <li>Схема подключения и параметры двигателя.</li>
-                  <li>Таблица габаритов и монтажные размеры.</li>
-                </ul>
-                <div class="small text-secondary">
-                  Для реального проекта сюда можно подключить ссылки на файлы из CMS/ERP.
+                <div class="row g-4">
+                  <div class="col-md-4">
+                    <div class="card h-100 border bg-light shadow-sm" style="border-radius: 12px;">
+                      <div class="card-body text-center py-4">
+                        <svg class="mb-3 text-primary" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
+                        <h3 class="h6 fw-bold">Паспорт изделия</h3>
+                        <p class="small text-secondary mb-0">PDF-файл по запросу у менеджера</p>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="col-md-4">
+                    <div class="card h-100 border bg-light shadow-sm" style="border-radius: 12px;">
+                      <div class="card-body text-center py-4">
+                        <svg class="mb-3 text-primary" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+                        <h3 class="h6 fw-bold">Схема подключения</h3>
+                        <p class="small text-secondary mb-0">Параметры двигателя и схемы</p>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="col-md-4">
+                    <div class="card h-100 border bg-light shadow-sm" style="border-radius: 12px;">
+                      <div class="card-body text-center py-4">
+                        <svg class="mb-3 text-primary" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path><polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline><line x1="12" y1="22.08" x2="12" y2="12"></line></svg>
+                        <h3 class="h6 fw-bold">Габариты</h3>
+                        <p class="small text-secondary mb-0">Таблица монтажных размеров</p>
+                      </div>
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>
@@ -167,6 +263,8 @@
     ></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
     <script src="config.js?v=20260424-1"></script>
-    <script src="script.js?v=20260502-5"></script>
+    <script src="auth.js?v=20260524-10"></script>
+    <script src="site-auth.js?v=20260524-10"></script>
+    <script src="script.js?v=20260524-10"></script>
   </body>
 </html>

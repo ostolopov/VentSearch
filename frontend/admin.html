@@ -1,0 +1,261 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Управление каталогом — VENTSEARCH</title>
+    <link
+      href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css"
+      rel="stylesheet"
+      crossorigin="anonymous"
+    />
+    <link rel="stylesheet" href="style.css?v=20260524-1" />
+  </head>
+  <body class="admin-page" data-page="admin">
+    <nav class="navbar navbar-expand-lg sticky-top">
+      <div class="container-fluid px-3 px-lg-4">
+        <a class="navbar-brand fw-semibold d-flex align-items-center" href="index.html">
+          <img src="../photos/logo.png" alt="VENTSEARCH" height="40" class="me-2" style="object-fit: contain;">
+          <span style="color: var(--vs-accent);">VENT</span><span style="color: var(--vs-text);">SEARCH</span>
+        </a>
+        <form class="d-none d-md-flex align-items-center flex-grow-1 mx-3" role="search">
+          <input
+            id="headerSearchInput"
+            class="form-control form-control-sm"
+            type="search"
+            placeholder="Поиск по модели, типу, размеру"
+            aria-label="Поиск по каталогу"
+          />
+          <button id="headerSearchBtn" class="btn btn-sm btn-dark ms-2" type="button">Найти</button>
+        </form>
+        <div class="d-flex align-items-center gap-2 ms-auto" id="nav">
+          <ul class="navbar-nav flex-row align-items-center gap-2 mb-0">
+            <li class="nav-item d-none d-md-block">
+              <a class="nav-link" href="index.html">Каталог</a>
+            </li>
+            <li class="nav-item">
+              <a class="nav-link nav-link-project" href="project.html">
+                Мой проект
+                <span id="navProjectBadge" class="nav-project-badge d-none">0</span>
+              </a>
+            </li>
+            <li class="nav-item">
+              <a class="nav-link nav-link-compare" href="compare.html">
+                Сравнение
+                <span id="navCompareBadge" class="nav-compare-badge d-none">0</span>
+              </a>
+            </li>
+            <li class="nav-item" id="navAuthGuest">
+              <a class="nav-link btn btn-link border-0 py-2 text-decoration-none" href="auth.html">Вход</a>
+            </li>
+            <li class="nav-item dropdown d-none" id="navAuthUser">
+              <a class="nav-link dropdown-toggle" href="#" role="button" data-bs-toggle="dropdown" aria-expanded="false">
+                <span id="navAuthEmail" class="d-none d-md-inline">Аккаунт</span>
+                <span class="d-md-none">ЛК</span>
+              </a>
+              <ul class="dropdown-menu dropdown-menu-end position-absolute">
+                <li><a class="dropdown-item" href="project.html">Мой проект</a></li>
+                <li class="d-none" id="navAdminMenuItem">
+                  <span class="dropdown-item active" aria-current="page">Управление каталогом</span>
+                </li>
+                <li><hr class="dropdown-divider" /></li>
+                <li><button class="dropdown-item" type="button" id="navLogoutBtn">Выйти</button></li>
+              </ul>
+            </li>
+            <li class="nav-item d-none d-md-block">
+              <button id="shareLinkBtn" class="btn btn-sm btn-dark" type="button" style="display: none;">Поделиться</button>
+            </li>
+          </ul>
+        </div>
+      </div>
+    </nav>
+
+    <header class="mb-4" style="background: var(--vs-accent); color: #FFFFFF; padding: 2.5rem 0; border-radius: 0 0 24px 24px;">
+      <div class="container-fluid px-3 px-lg-4">
+        <div style="max-width: 800px;">
+          <h1 class="h3 mb-2 fw-bold">Управление каталогом</h1>
+          <div style="font-size: 1.05rem; opacity: 0.9;">Редактирование вентиляторов и пользователей.</div>
+        </div>
+      </div>
+    </header>
+
+    <main class="container-fluid px-3 px-lg-4 py-4">
+      <div id="adminGate" class="py-5 text-center text-secondary">Проверка доступа…</div>
+
+      <section id="adminAppSection" class="d-none">
+        <div id="adminAlert" class="alert alert-danger d-none" role="alert"></div>
+        <div id="adminSuccess" class="alert alert-success d-none" role="alert"></div>
+        <ul class="nav nav-tabs mb-3" role="tablist">
+          <li class="nav-item" role="presentation">
+            <button class="nav-link active" data-bs-toggle="tab" data-bs-target="#tabProducts" type="button">Вентиляторы</button>
+          </li>
+          <li class="nav-item" role="presentation">
+            <button class="nav-link" data-bs-toggle="tab" data-bs-target="#tabUsers" type="button">Пользователи</button>
+          </li>
+        </ul>
+        <div class="tab-content">
+          <div class="tab-pane fade show active" id="tabProducts" role="tabpanel">
+            <div class="d-flex flex-wrap gap-2 align-items-center mb-2">
+              <input id="productSearch" class="form-control form-control-sm" style="max-width: 280px" placeholder="ID, модель, тип..." />
+              <button id="productSearchBtn" class="btn btn-outline-dark btn-sm" type="button">Найти</button>
+              <button id="productCreateBtn" class="btn btn-dark btn-sm" type="button">+ Добавить</button>
+              <button id="productsDeleteSelectedBtn" class="btn btn-outline-danger btn-sm" type="button" disabled>
+                Удалить выбранные
+              </button>
+              <span id="productsMeta" class="small text-secondary ms-auto"></span>
+            </div>
+            <div class="table-responsive card shadow-sm">
+              <table class="table table-sm align-middle mb-0 admin-table">
+                <thead>
+                  <tr>
+                    <th class="text-center" style="width: 2.5rem">
+                      <input
+                        id="productsSelectAll"
+                        class="form-check-input m-0"
+                        type="checkbox"
+                        title="Выбрать все на странице"
+                        aria-label="Выбрать все на странице"
+                      />
+                    </th>
+                    <th>ID</th>
+                    <th>Модель</th>
+                    <th>Тип</th>
+                    <th>Цена</th>
+                    <th class="text-end">Действия</th>
+                  </tr>
+                </thead>
+                <tbody id="productsTableBody"></tbody>
+              </table>
+            </div>
+            <div class="d-flex justify-content-between align-items-center mt-2">
+              <span id="productsPageLabel" class="small text-secondary"></span>
+              <div class="d-flex gap-2">
+                <button id="productsPrevBtn" class="btn btn-outline-dark btn-sm" type="button">Назад</button>
+                <button id="productsNextBtn" class="btn btn-outline-dark btn-sm" type="button">Вперёд</button>
+              </div>
+            </div>
+          </div>
+          <div class="tab-pane fade" id="tabUsers" role="tabpanel">
+            <div class="d-flex flex-wrap gap-2 align-items-center mb-2">
+              <input id="userSearch" class="form-control form-control-sm" style="max-width: 280px" placeholder="E-mail, имя..." />
+              <button id="userSearchBtn" class="btn btn-outline-dark btn-sm" type="button">Найти</button>
+              <button id="userCreateBtn" class="btn btn-dark btn-sm" type="button">+ Пользователь</button>
+              <button id="usersDeleteSelectedBtn" class="btn btn-outline-danger btn-sm" type="button" disabled>
+                Удалить выбранные
+              </button>
+              <span id="usersMeta" class="small text-secondary ms-auto"></span>
+            </div>
+            <div class="table-responsive card shadow-sm">
+              <table class="table table-sm align-middle mb-0 admin-table">
+                <thead>
+                  <tr>
+                    <th class="text-center" style="width: 2.5rem">
+                      <input
+                        id="usersSelectAll"
+                        class="form-check-input m-0"
+                        type="checkbox"
+                        title="Выбрать все на странице"
+                        aria-label="Выбрать все на странице"
+                      />
+                    </th>
+                    <th>#</th>
+                    <th>E-mail</th>
+                    <th>Имя</th>
+                    <th>Роль</th>
+                    <th>Статус</th>
+                    <th class="text-end">Действия</th>
+                  </tr>
+                </thead>
+                <tbody id="usersTableBody"></tbody>
+              </table>
+            </div>
+            <div class="d-flex justify-content-between align-items-center mt-2">
+              <span id="usersPageLabel" class="small text-secondary"></span>
+              <div class="d-flex gap-2">
+                <button id="usersPrevBtn" class="btn btn-outline-dark btn-sm" type="button">Назад</button>
+                <button id="usersNextBtn" class="btn btn-outline-dark btn-sm" type="button">Вперёд</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <div class="modal fade" id="productModal" tabindex="-1" aria-hidden="true">
+      <div class="modal-dialog modal-lg modal-dialog-scrollable">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h2 class="modal-title h6" id="productModalTitle">Вентилятор</h2>
+            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Закрыть"></button>
+          </div>
+          <form id="productForm">
+            <div class="modal-body">
+              <div class="row g-2">
+                <div class="col-md-4"><label class="form-label mb-1">ID *</label><input name="id" class="form-control form-control-sm" required /></div>
+                <div class="col-md-4"><label class="form-label mb-1">Номер</label><input name="number" class="form-control form-control-sm" /></div>
+                <div class="col-md-4"><label class="form-label mb-1">Тип</label><input name="type" class="form-control form-control-sm" /></div>
+                <div class="col-md-6"><label class="form-label mb-1">Модель</label><input name="model" class="form-control form-control-sm" /></div>
+                <div class="col-md-6"><label class="form-label mb-1">Типоразмер</label><input name="size" class="form-control form-control-sm" /></div>
+                <div class="col-md-3"><label class="form-label mb-1">Диаметр</label><input name="diameter" type="number" step="any" class="form-control form-control-sm" /></div>
+                <div class="col-md-3"><label class="form-label mb-1">Мощность</label><input name="power" type="number" step="any" class="form-control form-control-sm" /></div>
+                <div class="col-md-3"><label class="form-label mb-1">Шум</label><input name="noise_level" type="number" step="any" class="form-control form-control-sm" /></div>
+                <div class="col-md-3"><label class="form-label mb-1">Цена</label><input name="price" type="number" step="any" class="form-control form-control-sm" /></div>
+                <div class="col-md-3"><label class="form-label mb-1">Расход min</label><input name="airflow_min" type="number" step="any" class="form-control form-control-sm" /></div>
+                <div class="col-md-3"><label class="form-label mb-1">Расход max</label><input name="airflow_max" type="number" step="any" class="form-control form-control-sm" /></div>
+                <div class="col-md-6"><label class="form-label mb-1">Расход raw</label><input name="airflow_raw" class="form-control form-control-sm" /></div>
+                <div class="col-md-3"><label class="form-label mb-1">Давление min</label><input name="pressure_min" type="number" step="any" class="form-control form-control-sm" /></div>
+                <div class="col-md-3"><label class="form-label mb-1">Давление max</label><input name="pressure_max" type="number" step="any" class="form-control form-control-sm" /></div>
+                <div class="col-md-6"><label class="form-label mb-1">Давление raw</label><input name="pressure_raw" class="form-control form-control-sm" /></div>
+              </div>
+            </div>
+            <div class="modal-footer">
+              <button type="button" class="btn btn-outline-dark btn-sm" data-bs-dismiss="modal">Отмена</button>
+              <button type="submit" class="btn btn-dark btn-sm">Сохранить</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+
+    <div class="modal fade" id="userModal" tabindex="-1" aria-hidden="true">
+      <div class="modal-dialog">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h2 class="modal-title h6" id="userModalTitle">Пользователь</h2>
+            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Закрыть"></button>
+          </div>
+          <form id="userForm">
+            <div class="modal-body vstack gap-2">
+              <input type="hidden" name="user_id" />
+              <input name="email" type="email" class="form-control form-control-sm" placeholder="E-mail" required />
+              <input name="password" type="password" class="form-control form-control-sm" placeholder="Пароль" />
+              <span id="userPasswordHint" class="small text-secondary"></span>
+              <input name="name" class="form-control form-control-sm" placeholder="ФИО" />
+              <input name="company" class="form-control form-control-sm" placeholder="Компания" />
+              <input name="phone" class="form-control form-control-sm" placeholder="Телефон" />
+              <select name="role" class="form-select form-select-sm">
+                <option value="user">user</option>
+                <option value="admin">admin</option>
+              </select>
+              <div class="form-check">
+                <input class="form-check-input" type="checkbox" name="is_active" id="userIsActive" checked />
+                <label class="form-check-label" for="userIsActive">Активен</label>
+              </div>
+            </div>
+            <div class="modal-footer">
+              <button type="button" class="btn btn-outline-dark btn-sm" data-bs-dismiss="modal">Отмена</button>
+              <button type="submit" class="btn btn-dark btn-sm">Сохранить</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js" crossorigin="anonymous"></script>
+    <script src="config.js?v=20260424-1"></script>
+    <script src="auth.js?v=20260524-10"></script>
+    <script src="site-auth.js?v=20260524-10"></script>
+    <script src="admin.js?v=20260524-11"></script>
+    <script src="admin-page.js?v=20260524-10"></script>
+  </body>
+</html>

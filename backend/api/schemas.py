@@ -163,6 +163,102 @@ class HTTPValidationErrorOut(BaseModel):
     )
 
 
+class AuthRegisterIn(BaseModel):
+    email: str = Field(..., min_length=3, max_length=254)
+    password: str = Field(..., min_length=6, max_length=128)
+    name: str = Field(default="", max_length=200)
+    company: str = Field(default="", max_length=200)
+    phone: str = Field(default="", max_length=50)
+
+
+class AuthLoginIn(BaseModel):
+    email: str = Field(..., min_length=3, max_length=254)
+    password: str = Field(..., min_length=1, max_length=128)
+
+
+class UserOut(BaseModel):
+    id: int
+    email: str
+    name: str = ""
+    company: str = ""
+    phone: str = ""
+    role: str = "user"
+    is_active: bool = True
+    is_protected: bool = False
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+
+
+class AuthTokenOut(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    user: UserOut
+
+
+class UserListPageOut(BaseModel):
+    items: List[UserOut] = Field(default_factory=list)
+    total: int
+    limit: int
+    offset: int
+
+
+class AdminUserIn(BaseModel):
+    email: str = Field(..., min_length=3, max_length=254)
+    password: str = Field(..., min_length=6, max_length=128)
+    name: str = Field(default="", max_length=200)
+    company: str = Field(default="", max_length=200)
+    phone: str = Field(default="", max_length=50)
+    role: str = Field(default="user", pattern="^(user|admin)$")
+
+
+class AdminUserUpdateIn(BaseModel):
+    email: Optional[str] = Field(default=None, max_length=254)
+    password: Optional[str] = Field(default=None, min_length=6, max_length=128)
+    name: Optional[str] = Field(default=None, max_length=200)
+    company: Optional[str] = Field(default=None, max_length=200)
+    phone: Optional[str] = Field(default=None, max_length=50)
+    role: Optional[str] = Field(default=None, pattern="^(user|admin)$")
+    is_active: Optional[bool] = None
+
+
+class BulkDeleteProductsIn(BaseModel):
+    ids: List[str] = Field(..., min_length=1, max_length=500)
+
+
+class BulkDeleteUsersIn(BaseModel):
+    ids: List[int] = Field(..., min_length=1, max_length=500)
+
+
+class BulkDeleteOut(BaseModel):
+    deleted: int = Field(..., ge=0)
+    errors: List[dict] = Field(default_factory=list)
+
+
+class AdminProductIn(BaseModel):
+    id: str = Field(..., min_length=1, max_length=64)
+    number: str = Field(default="", max_length=64)
+    type: str = Field(default="", max_length=64)
+    model: str = Field(default="", max_length=256)
+    size: str = Field(default="", max_length=256)
+    diameter: Optional[float] = None
+    airflow_min: Optional[float] = None
+    airflow_max: Optional[float] = None
+    airflow_raw: str = ""
+    pressure_min: Optional[float] = None
+    pressure_max: Optional[float] = None
+    pressure_raw: str = ""
+    power: Optional[float] = None
+    noise_level: Optional[float] = None
+    price: Optional[float] = None
+    raw_diameter: str = ""
+    raw_efficiency: str = ""
+    raw_pressure: str = ""
+    raw_power: str = ""
+    raw_noise_level: str = ""
+    raw_price: str = ""
+    model_slug: str = ""
+
+
 class PdfExportRequest(BaseModel):
     model_config = ConfigDict(
         json_schema_extra={
