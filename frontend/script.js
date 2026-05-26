@@ -266,140 +266,172 @@ function getRangeNominal(range) {
   return max ?? min;
 }
 
-function buildQpDatasetsShared(products) {
-  const colors = ["#246bb3", "#e74c3c", "#2ecc71", "#9b59b6", "#f39c12", "#16a085"];
-  return products.map((p, idx) => {
-    const qMax = getRangePeak(p.airflow) || 0;
-    const pMax = getRangePeak(p.pressure) || 0;
-    const points = [];
-    const steps = 300;
-    for (let i = 0; i <= steps; i += 1) {
-      const q = (qMax / steps) * i;
-      const pressure = pMax * (1 - (q / Math.max(qMax, 1)) ** 2);
-      points.push({ x: q, y: Math.max(pressure, 0) });
-    }
-    return {
-      label: p.model || p.id,
-      data: points,
-      borderColor: colors[idx % colors.length],
-      backgroundColor: colors[idx % colors.length],
-      pointRadius: 0,
-      pointHoverRadius: 4,
-      pointHitRadius: 18,
-      borderWidth: 2.5,
-      fill: false,
-      tension: 0.42,
-    };
-  });
+// Параметры α по типу — синхронизированы с backend/qp_model.py
+const ALPHA_BY_TYPE = {
+  "ВО": 0.18, "ВКОП": 0.15, "УВО": 0.18,
+  "ВЦ": 0.05, "ВР": 0.05, "Ц": 0.05,
+};
+const ALPHA_DEFAULT = 0.10;
+
+function alphaForType(t) {
+  if (!t) return ALPHA_DEFAULT;
+  return ALPHA_BY_TYPE[String(t).trim()] ?? ALPHA_DEFAULT;
 }
 
-function renderQpChartShared(canvas, chartRef, products) {
-  if (!canvas || typeof Chart === "undefined") return chartRef;
-  if (chartRef) chartRef.destroy();
-  const qpChartFontFamily =
-    'system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", "Helvetica Neue", Arial, sans-serif';
-  const qpChartFontSize = 11;
-  const qpTicks = {
-    callback: (v) => formatNumber(v),
-    font: { family: qpChartFontFamily, size: qpChartFontSize - 1 },
-  };
-  const qpAxisTitleFont = {
-    display: true,
-    font: { family: qpChartFontFamily, size: qpChartFontSize, weight: "600" },
-  };
-  return new Chart(canvas, {
-    type: "line",
-    data: { datasets: buildQpDatasetsShared(products) },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      font: { family: qpChartFontFamily, size: qpChartFontSize },
-      interaction: {
-        mode: "nearest",
-        axis: "xy",
-        intersect: false,
-      },
-      scales: {
-        x: {
-          type: "linear",
-          title: { ...qpAxisTitleFont, text: "Расход воздуха, м³/ч" },
-          ticks: qpTicks,
-        },
-        y: {
-          title: { ...qpAxisTitleFont, text: "Давление, Па" },
-          ticks: { font: { family: qpChartFontFamily, size: qpChartFontSize - 1 } },
-        },
-      },
-      plugins: {
-        legend: {
-          position: "bottom",
-          labels: {
-            font: { family: qpChartFontFamily, size: qpChartFontSize },
-          },
-        },
-        tooltip: {
-          enabled: true,
-          displayColors: true,
-          titleFont: { family: qpChartFontFamily, size: qpChartFontSize },
-          bodyFont: { family: qpChartFontFamily, size: qpChartFontSize - 1 },
-          callbacks: {
-            title(items) {
-              if (!items?.length) return "";
-              if (items.length === 1) {
-                const item = items[0];
-                return item?.dataset?.label ? `Модель: ${item.dataset.label}` : "";
-              }
-              return "Пересечение кривых";
-            },
-            label(context) {
-              const model = context?.dataset?.label || "Модель";
-              const q = context?.parsed?.x;
-              const p = context?.parsed?.y;
-              return `${model}: P ${formatNumber(p)} Па (Q ${formatNumber(q)} м³/ч)`;
-            },
-          },
-        },
-      },
-      onHover(event, _active, chart) {
-        const nearest = chart.getElementsAtEventForMode(
-          event,
-          "nearest",
-          { intersect: false, axis: "xy" },
-          false,
-        );
-        if (!nearest.length) {
-          chart.setActiveElements([]);
-          chart.tooltip.setActiveElements([], { x: 0, y: 0 });
-          chart.update("none");
-          return;
-        }
+function buildQpDatasetsShared(products, targetRpm = null, targetPoint = null) {
+  const colors = ["#246bb3", "#e74c3c", "#2ecc71", "#9b59b6", "#f39c12", "#16a085"];
+  const series = [];
 
-        const base = nearest[0];
-        const sameIndex = chart.getElementsAtEventForMode(
-          event,
-          "index",
-          { intersect: false, axis: "x" },
-          false,
-        );
-        const baseMeta = chart.getDatasetMeta(base.datasetIndex);
-        const basePoint = baseMeta?.data?.[base.index];
-        const baseY = basePoint?.y;
-        const thresholdPx = 8;
-
-        const active = sameIndex.filter((item) => {
-          const meta = chart.getDatasetMeta(item.datasetIndex);
-          const point = meta?.data?.[item.index];
-          if (!point || baseY == null) return false;
-          return Math.abs(point.y - baseY) <= thresholdPx;
-        });
-
-        const selected = active.length ? active : [base];
-        chart.setActiveElements(selected);
-        chart.tooltip.setActiveElements(selected, { x: event.x, y: event.y });
-        chart.update("none");
-      },
-    },
+  products.forEach((p, idx) => {
+    let qMin = toNumber(p.airflow?.min) ?? 0;
+    let qMax = toNumber(p.airflow?.max) ?? 0;
+    let pMin = toNumber(p.pressure?.min) ?? 0;
+    let pMax = toNumber(p.pressure?.max) ?? 0;
+    
+    let scaleFactor = 1.0;
+    if (targetRpm && p.nominal_rpm) {
+      scaleFactor = targetRpm / p.nominal_rpm;
+    }
+    
+    const alpha = alphaForType(p.type);
+    const qCtrl = qMin + 0.5 * (qMax - qMin);
+    const pCtrl = Math.max(pMin, pMax) + alpha * (Math.max(pMin, pMax) - Math.min(pMin, pMax));
+    const pStart = Math.max(pMin, pMax);
+    const pEnd = Math.min(pMin, pMax);
+    
+    const coeffs = p.pressure_coefficients;
+    
+    const steps = 200;
+    const points = [];
+    for (let i = 0; i <= steps; i += 1) {
+      const t = i / steps;
+      let qNom, pNom;
+      
+      if (coeffs && Array.isArray(coeffs) && coeffs.length > 0) {
+        qNom = qMin + (qMax - qMin) * t;
+        pNom = coeffs.reduce((acc, c, idx) => acc + c * Math.pow(qNom, idx), 0);
+      } else {
+        const omt = 1 - t;
+        qNom = omt * omt * qMin + 2 * t * omt * qCtrl + t * t * qMax;
+        pNom = omt * omt * pStart + 2 * t * omt * pCtrl + t * t * pEnd;
+      }
+      
+      const qScaled = qNom * scaleFactor;
+      const pScaled = Math.max(pNom * (scaleFactor * scaleFactor), 0);
+      points.push([qScaled, pScaled]);
+    }
+    
+    series.push({
+      name: p.model || p.id,
+      type: 'line',
+      smooth: true,
+      symbol: 'none',
+      data: points,
+      lineStyle: { width: 3, color: colors[idx % colors.length] },
+      itemStyle: { color: colors[idx % colors.length] }
+    });
   });
+
+  if (targetPoint && targetPoint.q > 0 && targetPoint.p > 0) {
+    const k = targetPoint.p / Math.pow(targetPoint.q, 2);
+    const maxQ = Math.max(...series.map(s => s.data[s.data.length - 1][0]), targetPoint.q * 1.5);
+    const systemPoints = [];
+    for (let i = 0; i <= 100; i++) {
+      const q = (maxQ * i) / 100;
+      systemPoints.push([q, k * Math.pow(q, 2)]);
+    }
+
+    series.push({
+      name: 'Кривая сети',
+      type: 'line',
+      smooth: true,
+      symbol: 'none',
+      lineStyle: { type: 'dashed', color: '#7f7f7f', width: 2 },
+      itemStyle: { color: '#7f7f7f' },
+      data: systemPoints
+    });
+
+    series.push({
+      name: 'Рабочая точка',
+      type: 'scatter',
+      symbolSize: 12,
+      itemStyle: { color: '#d62728' },
+      data: [[targetPoint.q, targetPoint.p]],
+      label: { show: true, formatter: 'Рабочая точка', position: 'top', color: '#d62728', fontWeight: 'bold' },
+      zlevel: 10
+    });
+  }
+
+  return series;
+}
+
+function renderQpChartShared(container, chartRef, products, targetRpm = null, targetPoint = null) {
+  if (!container || typeof echarts === "undefined") return chartRef;
+  
+  if (!chartRef) {
+    chartRef = echarts.init(container);
+  } else {
+    chartRef.clear();
+  }
+
+  const qpChartFontFamily = 'system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", "Helvetica Neue", Arial, sans-serif';
+
+  const option = {
+    tooltip: {
+      trigger: 'axis',
+      axisPointer: { type: 'cross', label: { backgroundColor: '#6a7985' } },
+      textStyle: { fontFamily: qpChartFontFamily, fontSize: 12 },
+      valueFormatter: (value) => formatNumber(value)
+    },
+    legend: {
+      bottom: 0,
+      textStyle: { fontFamily: qpChartFontFamily, fontSize: 12 }
+    },
+    toolbox: {
+      feature: {
+        dataZoom: { yAxisIndex: 'none', title: { zoom: 'Лупа', back: 'Сброс лупы' } },
+        saveAsImage: { title: 'Скачать PNG', name: 'ventsearch-chart' }
+      },
+      right: 20,
+      top: 0
+    },
+    grid: {
+      left: '3%',
+      right: '4%',
+      bottom: '12%',
+      top: '10%',
+      containLabel: true
+    },
+    xAxis: {
+      name: 'Расход воздуха (Q), м³/ч',
+      nameLocation: 'middle',
+      nameGap: 30,
+      type: 'value',
+      splitLine: { show: true, lineStyle: { type: 'dashed', color: '#eee' } },
+      minorSplitLine: { show: true, lineStyle: { color: '#f5f5f5' } },
+      axisLabel: { fontFamily: qpChartFontFamily, formatter: (val) => formatNumber(val) },
+      nameTextStyle: { fontFamily: qpChartFontFamily, fontWeight: '600', fontSize: 13 }
+    },
+    yAxis: {
+      name: 'Давление (P), Па',
+      nameLocation: 'end',
+      type: 'value',
+      splitLine: { show: true, lineStyle: { color: '#e0e0e0' } },
+      minorSplitLine: { show: true, lineStyle: { color: '#f5f5f5' } },
+      axisLabel: { fontFamily: qpChartFontFamily, formatter: (val) => formatNumber(val) },
+      nameTextStyle: { fontFamily: qpChartFontFamily, fontWeight: '600', fontSize: 13 }
+    },
+    series: buildQpDatasetsShared(products, targetRpm, targetPoint)
+  };
+
+  chartRef.setOption(option);
+
+  // Resize chart on window resize
+  window.addEventListener('resize', () => {
+    chartRef.resize();
+  });
+
+  return chartRef;
 }
 
 function describeQuery(filters) {
@@ -968,7 +1000,7 @@ async function initComparePage() {
     hideError();
     try {
       const ids = products.map((p) => String(p.id)).filter(Boolean);
-      const chartImageDataUrl = qpChartCanvas?.toDataURL?.("image/png", 1.0) || null;
+      const chartImageDataUrl = compareChart ? compareChart.getDataURL({ type: 'png', backgroundColor: '#fff', pixelRatio: 2 }) : null;
       const response = await fetch(apiUrl("/api/export/pdf"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },

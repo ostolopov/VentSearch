@@ -1,22 +1,6 @@
-from contextlib import contextmanager
-
-from fastapi.testclient import TestClient
-
-import app as app_module
-
-
-def _make_client(monkeypatch):
-    monkeypatch.setattr(app_module, "_startup_db", lambda: None)
-    monkeypatch.setattr(app_module, "shutdown_database", lambda: None)
-    monkeypatch.setattr(app_module, "_ensure_catalog_sync_with_reindex", lambda: None)
-    monkeypatch.setattr(app_module, "set_catalog_index", lambda _: None)
-
-    @contextmanager
-    def _fake_db_session():
-        yield object()
-
-    monkeypatch.setattr(app_module, "db_session", _fake_db_session)
-    return TestClient(app_module.app, raise_server_exceptions=False)
+from infrastructure.db.product_repository import PgProductRepository
+from presentation.app import _pick_fonts
+from tests.conftest import make_test_client
 
 
 def test_export_pdf_returns_file(monkeypatch):
@@ -35,10 +19,10 @@ def test_export_pdf_returns_file(monkeypatch):
         "_raw": {},
         "_meta": {"model_slug": "вц-30-160-016-5"},
     }
-    monkeypatch.setattr(app_module, "get_by_id", lambda *args, **kwargs: sample)
-    monkeypatch.setattr(app_module, "get_by_model_or_slug", lambda *args, **kwargs: None)
+    monkeypatch.setattr(PgProductRepository, "get_by_id", lambda self, id_value: sample)
+    monkeypatch.setattr(PgProductRepository, "get_by_model_or_slug", lambda self, m, s: None)
 
-    client = _make_client(monkeypatch)
+    client = make_test_client(monkeypatch)
     response = client.post("/api/export/pdf", json={"ids": ["3037"], "filename": "check.pdf"})
 
     assert response.status_code == 200
@@ -49,18 +33,17 @@ def test_export_pdf_returns_file(monkeypatch):
 
 def test_pdf_fonts_prefers_builtin_dejavu():
     """Helvetica не поддерживает кириллицу; в образе приложения должен лежать DejaVu под backend/fonts/."""
-    reg, bold = app_module._pick_pdf_fonts()
+    reg, bold = _pick_fonts()
     assert reg.startswith("VentPdfRegular-")
     assert bold.startswith("VentPdfBold-") or bold == reg
 
 
 def test_export_pdf_returns_404_when_not_found(monkeypatch):
-    monkeypatch.setattr(app_module, "get_by_id", lambda *args, **kwargs: None)
-    monkeypatch.setattr(app_module, "get_by_model_or_slug", lambda *args, **kwargs: None)
+    monkeypatch.setattr(PgProductRepository, "get_by_id", lambda self, id_value: None)
+    monkeypatch.setattr(PgProductRepository, "get_by_model_or_slug", lambda self, m, s: None)
 
-    client = _make_client(monkeypatch)
+    client = make_test_client(monkeypatch)
     response = client.post("/api/export/pdf", json={"ids": ["missing"]})
 
     assert response.status_code == 404
     assert "Product not found" in str(response.json())
-

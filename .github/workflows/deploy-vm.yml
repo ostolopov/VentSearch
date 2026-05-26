@@ -5,6 +5,24 @@ on:
     branches: ["main"]
   workflow_dispatch:
 
+# ============================================================================
+# Как это работает:
+#
+# 1. secrets/ папка ВРУЧНУЮ скопирована на сервер один раз:
+#      scp -r secrets/ user@server:~/apps/ventsearch/secrets/
+#    В ней находится secrets/.env.prod с реальными паролями и ключами.
+#    Папка НЕ хранится в git и НЕ передаётся через CI.
+#
+# 2. GitHub Actions деплоит только код (без секретов).
+#    deploy/compose.prod.yml читает ../secrets/.env.prod из файловой системы сервера.
+#
+# 3. Необходимые GitHub Secrets (Settings → Secrets → Actions):
+#    VM_HOST     — IP или hostname сервера
+#    VM_USER     — пользователь SSH (например: ubuntu)
+#    VM_SSH_KEY  — приватный SSH-ключ (PEM, всё содержимое)
+#    VM_SSH_PORT — SSH-порт (по умолчанию 22, опционально)
+# ============================================================================
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
@@ -13,21 +31,21 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Copy project to VM
+      - name: Copy application code to VM
         uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.VM_HOST }}
           username: ${{ secrets.VM_USER }}
           key: ${{ secrets.VM_SSH_KEY }}
           port: ${{ secrets.VM_SSH_PORT || '22' }}
-          source: "Dockerfile,compose.prod.yml,.dockerignore,backend/**,frontend/**,data/**,photos/**"
+          # secrets/ НЕ включена: она уже на сервере
+          source: "deploy/**,backend/**,frontend/**,data/**,photos/**"
           target: "~/apps/ventsearch"
           overwrite: true
-          rm: true
+          rm: false
           strip_components: 0
-          debug: true # <--- ВОТ СЮДА ДОБАВИЛИ ДЛЯ КОПИРОВАНИЯ
 
-      - name: Run deploy commands on VM
+      - name: Run deploy on VM
         uses: appleboy/ssh-action@v1.2.0
         with:
           host: ${{ secrets.VM_HOST }}
@@ -35,32 +53,35 @@ jobs:
           key: ${{ secrets.VM_SSH_KEY }}
           port: ${{ secrets.VM_SSH_PORT || '22' }}
           script_stop: true
-          debug: true # <--- И СЮДА НА ВСЯКИЙ СЛУЧАЙ ДЛЯ КОМАНД
           script: |
             set -eu
             APP_DIR="$HOME/apps/ventsearch"
+            SECRETS_FILE="$APP_DIR/secrets/.env.prod"
+
             cd "$APP_DIR"
 
-            mkdir -p "$HOME/apps"
-            cat > "$APP_DIR/.env.prod" <<EOF
-            POSTGRES_DB=${{ secrets.POSTGRES_DB }}
-            POSTGRES_USER=${{ secrets.POSTGRES_USER }}
-            POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }}
-            CORS_ORIGINS=${{ secrets.CORS_ORIGINS }}
-            EOF
+            # Проверяем наличие секретов
+            if [ ! -f "$SECRETS_FILE" ]; then
+              echo "ОШИБКА: файл $SECRETS_FILE не найден!"
+              echo "Скопируйте папку secrets/ на сервер вручную:"
+              echo "  scp -r secrets/ ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }}:$APP_DIR/secrets/"
+              exit 1
+            fi
 
-            docker compose --env-file .env.prod -f compose.prod.yml up -d --build
+            # Запуск через compose (файл в deploy/, secrets на уровень выше)
+            docker compose -f deploy/compose.prod.yml --env-file "$SECRETS_FILE" up -d --build
 
+            # Healthcheck
             for i in $(seq 1 20); do
               if curl -fsS http://127.0.0.1:8080/api/health >/dev/null; then
                 echo "Healthcheck OK"
                 exit 0
               fi
-              echo "Waiting for app..."
+              echo "Ожидание запуска приложения... ($i/20)"
               sleep 3
             done
 
-            echo "Healthcheck failed"
-            docker compose --env-file .env.prod -f compose.prod.yml ps
-            docker compose --env-file .env.prod -f compose.prod.yml logs --tail=100
+            echo "Healthcheck не прошёл — смотрите логи:"
+            docker compose -f deploy/compose.prod.yml ps
+            docker compose -f deploy/compose.prod.yml logs --tail=100
             exit 1
