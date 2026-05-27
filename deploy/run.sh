@@ -50,15 +50,25 @@ python -m pip install -q -r requirements.txt
 # --- LAN IP для удобства ---
 LAN_IP="$("$PY" - <<'PY'
 import socket
+ip = ""
 try:
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     s.connect(("8.8.8.8", 80))
     ip = s.getsockname()[0]
     s.close()
-    if not ip.startswith("127."):
-        print(ip)
 except Exception:
     pass
+if ip.startswith("127.") or ip.startswith("240.") or ip.startswith("169.254."):
+    ip = ""
+if not ip:
+    try:
+        ip = socket.gethostbyname(socket.gethostname())
+        if ip.startswith("127.") or ip.startswith("240.") or ip.startswith("169.254."):
+            ip = ""
+    except Exception:
+        pass
+if ip:
+    print(ip)
 PY
 )"
 

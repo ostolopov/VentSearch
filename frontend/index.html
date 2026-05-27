@@ -49,6 +49,9 @@
             <li class="nav-item d-none d-md-block">
               <a class="nav-link active" href="index.html">Каталог</a>
             </li>
+            <li class="nav-item d-none d-md-block">
+              <a class="nav-link" href="delivery.html">Доставка</a>
+            </li>
             <li class="nav-item">
               <a class="nav-link nav-link-project" href="project.html">
                 Мой проект
@@ -156,33 +159,33 @@
                   <div class="row g-2">
                     <div class="col-6">
                       <label for="minAirflow" class="form-label text-secondary small mb-1 fw-medium">Расход от</label>
-                      <input id="minAirflow" name="minAirflow" class="form-control rounded-3" inputmode="numeric" placeholder="м³/ч" />
+                      <input id="minAirflow" name="minAirflow" type="number" min="0" class="form-control rounded-3" placeholder="м³/ч" />
                     </div>
                     <div class="col-6">
                       <label for="maxAirflow" class="form-label text-secondary small mb-1 fw-medium">Расход до</label>
-                      <input id="maxAirflow" name="maxAirflow" class="form-control rounded-3" inputmode="numeric" placeholder="м³/ч" />
+                      <input id="maxAirflow" name="maxAirflow" type="number" min="0" class="form-control rounded-3" placeholder="м³/ч" />
                     </div>
                   </div>
 
                   <div class="row g-2">
                     <div class="col-6">
                       <label for="minPressure" class="form-label text-secondary small mb-1 fw-medium">Давление от</label>
-                      <input id="minPressure" name="minPressure" class="form-control rounded-3" inputmode="numeric" placeholder="Па" />
+                      <input id="minPressure" name="minPressure" type="number" min="0" class="form-control rounded-3" placeholder="Па" />
                     </div>
                     <div class="col-6">
                       <label for="maxPressure" class="form-label text-secondary small mb-1 fw-medium">Давление до</label>
-                      <input id="maxPressure" name="maxPressure" class="form-control rounded-3" inputmode="numeric" placeholder="Па" />
+                      <input id="maxPressure" name="maxPressure" type="number" min="0" class="form-control rounded-3" placeholder="Па" />
                     </div>
                   </div>
 
                   <div class="row g-2">
                     <div class="col-6">
                       <label for="minPrice" class="form-label text-secondary small mb-1 fw-medium">Цена от</label>
-                      <input id="minPrice" name="minPrice" class="form-control rounded-3" inputmode="numeric" placeholder="₽" />
+                      <input id="minPrice" name="minPrice" type="number" min="0" class="form-control rounded-3" placeholder="₽" />
                     </div>
                     <div class="col-6">
                       <label for="maxPrice" class="form-label text-secondary small mb-1 fw-medium">Цена до</label>
-                      <input id="maxPrice" name="maxPrice" class="form-control rounded-3" inputmode="numeric" placeholder="₽" />
+                      <input id="maxPrice" name="maxPrice" type="number" min="0" class="form-control rounded-3" placeholder="₽" />
                     </div>
                   </div>
 
@@ -195,7 +198,7 @@
                     </div>
                     <div class="col-6">
                       <label for="minPower" class="form-label text-secondary small mb-1 fw-medium">Мощность от</label>
-                      <input id="minPower" name="minPower" class="form-control rounded-3" inputmode="numeric" placeholder="Вт" />
+                      <input id="minPower" name="minPower" type="number" min="0" class="form-control rounded-3" placeholder="Вт" />
                     </div>
                   </div>
 
@@ -223,6 +226,7 @@
               </div>
             </div>
             <div class="d-flex align-items-center gap-2">
+              <label for="sort" class="form-label mb-0 me-2 fw-medium text-secondary d-none d-md-block">Сортировка:</label>
               <select id="sort" name="sort" class="form-select form-select-sm">
                 <option value="price_asc">Цена: по возрастанию</option>
                 <option value="price_desc">Цена: по убыванию</option>
@@ -244,53 +248,27 @@
             <span id="pageIndicator" class="text-secondary small text-center px-2"></span>
             <button type="button" id="nextPageBtn" class="btn btn-dark btn-sm">Вперёд</button>
           </nav>
+
+          <div id="emptyStateSection" class="d-none pt-2">
+            <div class="empty-state-card text-center mb-4">
+              <div class="h5 mb-2">По заданным параметрам ничего не нашлось, измените параметры или очистите значения поиска 🕵️‍♂️</div>
+              <p class="text-secondary mb-3">Ниже — ближайшие модели по сходству параметров.</p>
+              <button id="backToFiltersBtn" class="btn btn-dark btn-sm" type="button">Изменить фильтры</button>
+            </div>
+
+            <div class="analogs-section">
+              <div class="analogs-title">
+                Ближайшие аналоги
+                <span class="badge-analog">F-07</span>
+              </div>
+              <div id="analogsList" class="vstack gap-2"></div>
+            </div>
+          </div>
         </section>
       </div>
-
-      <section id="emptyStateSection" class="d-none pt-3">
-        <div class="search-params-summary mb-3">
-          <div class="label">Параметры запроса:</div>
-          <div id="emptyQuerySummary" class="params"></div>
-        </div>
-
-        <div class="empty-state-card text-center mb-4">
-          <div class="h5 mb-2">Точного совпадения не найдено</div>
-          <p class="text-secondary mb-3">Показаны ближайшие модели по близости параметров.</p>
-          <button id="backToFiltersBtn" class="btn btn-dark btn-sm" type="button">Изменить фильтры</button>
-        </div>
-
-        <div class="analogs-section">
-          <div class="analogs-title">
-            Ближайшие аналоги
-            <span class="badge-analog">F-07</span>
-          </div>
-          <div id="analogsList" class="vstack gap-2"></div>
-        </div>
-      </section>
 
       <!-- Сравнение вынесено на отдельную страницу compare.html -->
-      <div class="container-fluid px-0 mt-5">
-        <hr class="my-5" />
-
-        <section id="about" class="mb-5">
-          <h2 class="h5">О проекте</h2>
-          <p class="text-secondary mb-0">
-            VENTSEARCH — веб-сервис для подбора промышленных вентиляторов по техническим параметрам. Платформа
-            помогает инженерам и закупкам быстро находить подходящие модели, сравнивать характеристики на графике Q–P
-            и формировать PDF-отчёт для согласования внутри компании. Официальные домены: ventsearch.ru, ventsearch.online. (.online не имеет протокола)
-          </p>
-        </section>
-
-        <section id="contact" class="mb-2">
-          <h2 class="h5">Контакты</h2>
-          <p class="text-secondary mb-0">
-            Проектная команда VENTSEARCH. По вопросам демонстрации, внедрения и доработок:
-            <a href="mailto:ventsearch.team@gmail.com">ventsearch.team@gmail.com</a>.
-            Официальные домены: ventsearch.ru, ventsearch.online. Также вы можете использовать кнопку «Поделиться», чтобы
-            отправить локальную ссылку коллегам в одной сети.
-          </p>
-        </section>
-      </div>
+      <div id="siteFooterMount" class="container-fluid px-0 mt-5"></div>
     </main>
 
     <div class="modal fade" id="authModal" tabindex="-1" aria-hidden="true">
@@ -320,11 +298,11 @@
               </div>
               <div class="tab-pane fade" id="authModalRegister">
                 <form id="authModalRegisterForm" class="vstack gap-2">
-                  <input id="authModalRegEmail" type="email" class="form-control form-control-sm" placeholder="E-mail" required />
+                  <input id="authModalRegEmail" type="email" class="form-control form-control-sm" placeholder="E-mail" required pattern="^[a-zA-Z0-9._%\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$" title="Введите корректный email" />
                   <input id="authModalRegPassword" type="password" class="form-control form-control-sm" placeholder="Пароль (мин. 6)" required minlength="6" />
-                  <input id="authModalRegName" class="form-control form-control-sm" placeholder="ФИО" />
+                  <input id="authModalRegName" class="form-control form-control-sm" placeholder="ФИО" pattern="^[a-zA-Zа-яА-ЯёЁ\s\-]+$" title="Только буквы, пробелы и дефисы" />
                   <input id="authModalRegCompany" class="form-control form-control-sm" placeholder="Компания" />
-                  <input id="authModalRegPhone" class="form-control form-control-sm" placeholder="Телефон" />
+                  <input id="authModalRegPhone" type="tel" class="form-control form-control-sm" placeholder="Телефон" pattern="^\+?[0-9\s\-\(\)]{10,20}$" title="Введите корректный номер телефона" />
                   <button class="btn btn-dark btn-sm" type="submit">Зарегистрироваться</button>
                 </form>
               </div>
@@ -344,6 +322,15 @@
       Фильтры
     </button>
 
+    <div id="cookieConsentBanner" class="position-fixed bottom-0 start-0 w-100 bg-dark text-white p-3 d-none" style="z-index: 1050; border-top-left-radius: 12px; border-top-right-radius: 12px;">
+      <div class="container-fluid d-flex flex-column flex-md-row align-items-center justify-content-between gap-3">
+        <div class="small">
+          Мы используем файлы cookie для улучшения работы сайта, анализа трафика и персонализации. Продолжая использовать сайт, вы соглашаетесь с нашей политикой использования cookie.
+        </div>
+        <button id="acceptCookiesBtn" class="btn btn-primary btn-sm text-nowrap">Согласиться</button>
+      </div>
+    </div>
+
     <script
       src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"
       integrity="sha384-YvpcrYf0tY3lHB60NNkmXc5s9fDVZLESaAA55NDzOxhy9GkcIdslK1eN7N6jIeHz"
@@ -355,5 +342,6 @@
     <script src="auth.js?v=20260524-9"></script>
     <script src="script.js?v=20260524-9"></script>
     <script src="site-auth.js?v=20260524-9"></script>
+    <script src="site-layout.js?v=20260527-1"></script>
   </body>
 </html>

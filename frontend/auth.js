@@ -35,6 +35,10 @@ function setAuthSession(token, user) {
 function clearAuthSession() {
   localStorage.removeItem(AUTH_TOKEN_KEY);
   localStorage.removeItem(AUTH_USER_KEY);
+  localStorage.removeItem("ventsearch.project.ids");
+  localStorage.removeItem("ventsearch.compare.ids");
+  localStorage.removeItem("ventsearch.user.profile");
+  localStorage.removeItem("ventsearch.project.meta");
 }
 
 function authHeaders(extra = {}) {

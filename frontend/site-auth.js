@@ -210,7 +210,7 @@
 
         }
 
-        if (document.body.dataset.page === "catalog") {
+        if (document.body.dataset.page === "catalog" || document.body.dataset.page === "delivery") {
 
           await applySession(data.user);
 
@@ -268,7 +268,7 @@
 
         bootstrap.Modal.getInstance($("authModal"))?.hide();
 
-        if (document.body.dataset.page === "catalog") {
+        if (document.body.dataset.page === "catalog" || document.body.dataset.page === "delivery") {
 
           await applySession(data.user);
 
@@ -305,7 +305,8 @@
       renderNavGuest();
 
       if (document.body.dataset.page === "auth") window.location.href = "index.html";
-      if (document.body.dataset.page === "admin") window.location.href = "auth.html";
+      else if (document.body.dataset.page === "admin") window.location.href = "auth.html";
+      else window.location.reload();
     });
 
 

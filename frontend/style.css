@@ -40,6 +40,7 @@ h1, h2, h3, h4, h5, h6 {
   box-shadow: 0 2px 12px rgba(0, 0, 0, 0.04);
   padding-top: 0.75rem;
   padding-bottom: 0.75rem;
+  z-index: 1040;
 }
 
 .navbar-brand {
@@ -468,6 +469,9 @@ h1, h2, h3, h4, h5, h6 {
   font-weight: 600;
   padding: 1rem;
   border-bottom: 2px solid var(--vs-border);
+  position: sticky;
+  top: var(--vs-navbar-height);
+  z-index: 10;
 }
 
 .compare-table td {
