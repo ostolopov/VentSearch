@@ -210,7 +210,7 @@
 
         }
 
-        if (document.body.dataset.page === "catalog") {
+        if (document.body.dataset.page === "catalog" || document.body.dataset.page === "delivery") {
 
           await applySession(data.user);
 
@@ -268,7 +268,7 @@
 
         bootstrap.Modal.getInstance($("authModal"))?.hide();
 
-        if (document.body.dataset.page === "catalog") {
+        if (document.body.dataset.page === "catalog" || document.body.dataset.page === "delivery") {
 
           await applySession(data.user);
 

@@ -16,3 +16,4 @@ secrets/*.env
 # Старые .env файлы на случай если остались
 .env
 backend/.env
+.gitattributes

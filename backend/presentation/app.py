@@ -483,9 +483,10 @@ def create_app() -> FastAPI:
 
     for name in [
         "index.html", "product.html", "compare.html", "project.html",
-        "admin.html", "auth.html",
+        "admin.html", "auth.html", "delivery.html",
         "admin-page.js", "auth-page.js", "site-auth.js",
         "admin.js", "auth.js", "style.css", "script.js", "config.js",
+        "site-layout.js",
     ]:
         _make_static_route(app, name)
 

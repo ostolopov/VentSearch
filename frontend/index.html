@@ -248,66 +248,27 @@
             <span id="pageIndicator" class="text-secondary small text-center px-2"></span>
             <button type="button" id="nextPageBtn" class="btn btn-dark btn-sm">Вперёд</button>
           </nav>
+
+          <div id="emptyStateSection" class="d-none pt-2">
+            <div class="empty-state-card text-center mb-4">
+              <div class="h5 mb-2">По заданным параметрам ничего не нашлось, измените параметры или очистите значения поиска 🕵️‍♂️</div>
+              <p class="text-secondary mb-3">Ниже — ближайшие модели по сходству параметров.</p>
+              <button id="backToFiltersBtn" class="btn btn-dark btn-sm" type="button">Изменить фильтры</button>
+            </div>
+
+            <div class="analogs-section">
+              <div class="analogs-title">
+                Ближайшие аналоги
+                <span class="badge-analog">F-07</span>
+              </div>
+              <div id="analogsList" class="vstack gap-2"></div>
+            </div>
+          </div>
         </section>
       </div>
-
-      <section id="emptyStateSection" class="d-none pt-3">
-        <div class="search-params-summary mb-3">
-          <div class="label">Параметры запроса:</div>
-          <div id="emptyQuerySummary" class="params"></div>
-        </div>
-
-        <div class="empty-state-card text-center mb-4">
-          <div class="h5 mb-2">Точного совпадения не найдено</div>
-          <p class="text-secondary mb-3">Показаны ближайшие модели по близости параметров.</p>
-          <button id="backToFiltersBtn" class="btn btn-dark btn-sm" type="button">Изменить фильтры</button>
-        </div>
-
-        <div class="analogs-section">
-          <div class="analogs-title">
-            Ближайшие аналоги
-            <span class="badge-analog">F-07</span>
-          </div>
-          <div id="analogsList" class="vstack gap-2"></div>
-        </div>
-      </section>
 
       <!-- Сравнение вынесено на отдельную страницу compare.html -->
-      <div class="container-fluid px-0 mt-5">
-        <hr class="my-5" />
-
-        <section id="about" class="mb-5">
-          <h2 class="h5">О проекте</h2>
-          <p class="text-secondary mb-0">
-            VENTSEARCH — веб-сервис для подбора промышленных вентиляторов по техническим параметрам. Платформа
-            помогает инженерам и закупкам быстро находить подходящие модели, сравнивать характеристики на графике Q–P
-            и формировать PDF-отчёт для согласования внутри компании. Официальные домены: ventsearch.ru, ventsearch.online. (.online не имеет протокола)
-          </p>
-        </section>
-
-        <section id="contact" class="mb-2">
-          <h2 class="h5">Контакты</h2>
-          <p class="text-secondary mb-0">
-            Проектная команда VENTSEARCH. По вопросам демонстрации, внедрения и доработок:
-            <a href="mailto:ventsearch.team@gmail.com">ventsearch.team@gmail.com</a>.
-            Официальные домены: ventsearch.ru, ventsearch.online. Также вы можете использовать кнопку «Поделиться», чтобы
-            отправить локальную ссылку коллегам в одной сети.
-          </p>
-        </section>
-
-        <footer class="mt-5 pt-4 border-top text-secondary small">
-          <div class="d-flex flex-column flex-md-row justify-content-between align-items-center gap-3">
-            <div>
-              &copy; 2026 VENTSEARCH. Все права защищены.
-            </div>
-            <div class="d-flex gap-3">
-              <a href="#" class="text-secondary text-decoration-none">Пользовательское соглашение</a>
-              <a href="#" class="text-secondary text-decoration-none">Политика конфиденциальности</a>
-              <a href="#" class="text-secondary text-decoration-none">Лицензии</a>
-            </div>
-          </div>
-        </footer>
-      </div>
+      <div id="siteFooterMount" class="container-fluid px-0 mt-5"></div>
     </main>
 
     <div class="modal fade" id="authModal" tabindex="-1" aria-hidden="true">
@@ -381,5 +342,6 @@
     <script src="auth.js?v=20260524-9"></script>
     <script src="script.js?v=20260524-9"></script>
     <script src="site-auth.js?v=20260524-9"></script>
+    <script src="site-layout.js?v=20260527-1"></script>
   </body>
 </html>

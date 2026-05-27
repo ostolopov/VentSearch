@@ -506,7 +506,6 @@ async function initCatalogPage() {
   const headerSearchBtn = $("#headerSearchBtn");
   const resultsCount = $("#resultsCount");
   const querySummary = $("#querySummary");
-  const emptyQuerySummary = $("#emptyQuerySummary");
   const filtersForm = $("#filtersForm");
   const resetBtn = $("#resetBtn");
   const paginationNav = $("#paginationNav");
@@ -548,12 +547,14 @@ async function initCatalogPage() {
 
   function showCatalogResults() {
     emptySection?.classList.add("d-none");
-    grid?.parentElement?.classList.remove("d-none");
   }
 
   function showEmptyState() {
+    if (grid) grid.innerHTML = "";
+    if (loading) loading.style.display = "none";
+    state.currentItems = [];
+    if (paginationNav) paginationNav.classList.add("d-none");
     emptySection?.classList.remove("d-none");
-    grid?.parentElement?.classList.remove("d-none");
   }
 
   function getSelectedProducts() {
@@ -788,7 +789,6 @@ async function initCatalogPage() {
     state.filters = parseFilters(filtersForm);
     state.querySummaryText = describeQuery(state.filters);
     if (querySummary) querySummary.textContent = state.querySummaryText;
-    if (emptyQuerySummary) emptyQuerySummary.textContent = state.querySummaryText;
 
     try {
       const requestedSort = sortSelect?.value || "price_asc";
@@ -807,13 +807,10 @@ async function initCatalogPage() {
       const limit = Number.isFinite(Number(data?.limit)) ? Number(data.limit) : PAGE_SIZE;
 
       if (items.length === 0) {
+        showEmptyState();
+        if (resultsCount) resultsCount.textContent = "0";
         state.analogs = await buildAnalogs();
         renderAnalogs(state.analogs);
-        showEmptyState();
-        if (paginationNav) paginationNav.classList.add("d-none");
-        if (resultsCount) resultsCount.textContent = "0";
-        const emptyStateText = document.querySelector(".empty-state-card .h5");
-        if (emptyStateText) emptyStateText.textContent = "По заданным параметрам ничего не нашлось, измените параметры или очистите значения поиска 🕵️‍♂️";
       } else {
         showCatalogResults();
         renderProducts(items, { total, page, limit });
@@ -899,7 +896,12 @@ async function initCatalogPage() {
   });
 
   backToFiltersBtn?.addEventListener("click", () => {
-    showCatalogResults();
+    emptySection?.classList.add("d-none");
+    const filtersEl = document.getElementById("filtersOffcanvas");
+    if (filtersEl && typeof bootstrap !== "undefined" && bootstrap.Offcanvas) {
+      const instance = bootstrap.Offcanvas.getOrCreateInstance(filtersEl);
+      instance.show();
+    }
     window.scrollTo({ top: 0, behavior: "smooth" });
   });
   // Экспорт и график сравнения теперь на compare.html
@@ -950,7 +952,6 @@ async function initCatalogPage() {
     setLoading(true);
     await loadFacets();
     await loadPage(1);
-    showCatalogResults();
     syncSelectionUi();
     updateProjectNavBadge();
     updateCompareNavBadge();
