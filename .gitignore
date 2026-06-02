@@ -6,12 +6,7 @@ node_modules/
 
 # Все секреты в secrets/ — папка НЕ хранится в git
 # Шаблоны (*.example) разрешены: они не содержат реальных значений
-secrets/.env.local
-secrets/.env.prod
-secrets/*.env
-# Разрешить шаблоны
-!secrets/*.example
-!secrets/README.md
+secrets/*
 
 # Старые .env файлы на случай если остались
 .env
