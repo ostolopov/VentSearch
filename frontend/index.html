@@ -10,7 +10,7 @@
       integrity="sha384-QWTKZyjpPEjISv5WaRU9OFeRpok6YctnYmDr5pNlyT2bRjXh0JMhjY6hW+ALEwIH"
       crossorigin="anonymous"
     />
-    <link rel="stylesheet" href="style.css?v=20260524-1" />
+    <link rel="stylesheet" href="style.css?v=20260708-1" />
         
 <!-- Yandex.Metrika counter -->
 <script type="text/javascript">
@@ -145,20 +145,24 @@
 
                 <form id="pointForm" class="vstack gap-2 mb-3">
                   <div class="row g-2">
-                    <div class="col-6">
+                    <div class="col-4">
                       <label for="pointQ" class="form-label text-secondary small mb-1 fw-medium">Расход Q</label>
                       <input id="pointQ" name="pointQ" type="number" min="1" step="any" class="form-control rounded-3" placeholder="м³/ч" />
                     </div>
-                    <div class="col-6">
+                    <div class="col-4">
                       <label for="pointP" class="form-label text-secondary small mb-1 fw-medium">Давление P</label>
                       <input id="pointP" name="pointP" type="number" min="1" step="any" class="form-control rounded-3" placeholder="Па" />
                     </div>
+                    <div class="col-4">
+                      <label for="pointTol" class="form-label text-secondary small mb-1 fw-medium">Допуск</label>
+                      <input id="pointTol" name="pointTol" type="number" min="0" max="50" step="any" class="form-control rounded-3" placeholder="± %" />
+                    </div>
                   </div>
                   <div class="d-flex gap-2">
-                    <button type="submit" class="btn btn-dark btn-sm flex-grow-1">Подобрать</button>
+                    <button type="submit" class="btn btn-primary btn-sm flex-grow-1">Подобрать</button>
                     <button type="button" id="pointResetBtn" class="btn btn-outline-dark btn-sm">Сброс</button>
                   </div>
-                  <div class="form-text small">Найдём вентиляторы, чья характеристика обеспечивает точку, — от точного попадания к запасу.</div>
+                  <div class="form-text small">Допуск разрешает лёгкий недобор давления: с ним покажем и модели чуть ниже точки (со знаком «−»).</div>
                 </form>
 
                 <hr class="my-2" />
@@ -364,8 +368,8 @@
     <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
     <script src="config.js?v=20260424-1"></script>
     <script src="auth.js?v=20260524-9"></script>
-    <script src="script.js?v=20260524-9"></script>
+    <script src="script.js?v=20260708-1"></script>
     <script src="site-auth.js?v=20260524-9"></script>
-    <script src="site-layout.js?v=20260527-1"></script>
+    <script src="site-layout.js?v=20260708-1"></script>
   </body>
 </html>

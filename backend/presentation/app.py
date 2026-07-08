@@ -277,11 +277,13 @@ def _build_compare_pdf(products: list[dict[str, Any]], chart_png: Optional[bytes
             pdf.drawString(x + 1.2 * mm, y - 4.9 * mm, (_normalize_ws(text))[:36] or "—")
         y -= row_h
 
+    single = len(products) == 1
     pdf.setAuthor("VENTSEARCH API")
-    pdf.setTitle("VENTSEARCH Сравнение моделей")
+    pdf.setTitle("VENTSEARCH Карточка модели" if single else "VENTSEARCH Сравнение моделей")
     card_header(
-        "VENTSEARCH — отчет по сравнению",
-        f"Дата: {datetime.now().strftime('%d.%m.%Y %H:%M')}   |   Моделей: {len(products)}",
+        "VENTSEARCH — карточка модели" if single else "VENTSEARCH — отчет по сравнению",
+        f"Дата: {datetime.now().strftime('%d.%m.%Y %H:%M')}"
+        + ("" if single else f"   |   Моделей: {len(products)}"),
     )
 
     if chart_png:
@@ -501,7 +503,9 @@ def create_app() -> FastAPI:
 
     @app.get("/", include_in_schema=False)
     def serve_index():
-        return FileResponse(FRONTEND_DIR / "index.html")
+        # HTML не кэшируем: браузер хранит страницы с query-string (product.html?id=…)
+        # по отдельности и после обновлений показывает смесь старой и новой вёрстки
+        return FileResponse(FRONTEND_DIR / "index.html", headers={"Cache-Control": "no-cache"})
 
     for name in [
         "index.html", "product.html", "compare.html", "project.html",
@@ -517,10 +521,13 @@ def create_app() -> FastAPI:
 
 def _make_static_route(app: FastAPI, filename: str) -> None:
     path = f"/{filename}"
+    # no-cache заставляет браузер перепроверять файл (ETag/304) — после обновления
+    # кода не остаётся закэшированных страниц со старой вёрсткой
+    headers = {"Cache-Control": "no-cache"} if filename.endswith((".html", ".js", ".css")) else None
 
     @app.get(path, include_in_schema=False)
-    def _serve(f=filename):
-        return FileResponse(FRONTEND_DIR / f)
+    def _serve(f=filename, h=headers):
+        return FileResponse(FRONTEND_DIR / f, headers=h)
 
     _serve.__name__ = f"serve_{filename.replace('.', '_').replace('-', '_')}"
 

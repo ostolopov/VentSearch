@@ -190,6 +190,7 @@ def api_products_facets():
 def api_products_select_point(
     point_q: Annotated[float, Query(description="Требуемый расход, м³/ч.", gt=0)],
     point_p: Annotated[float, Query(description="Требуемое давление, Па.", gt=0)],
+    tolerance: Annotated[float, Query(description="Допустимый недобор давления, %.", ge=0, le=50)] = 0.0,
     limit: Annotated[int, Query(description="Максимум результатов.", ge=1, le=100)] = 20,
 ):
     from config import CSV_PATH
@@ -198,7 +199,9 @@ def api_products_select_point(
     with _db_session() as conn:
         repo = PgProductRepository(conn)
         uc = SelectByPointUseCase(repo)
-        result = uc.execute(SelectByPointQuery(point_q=point_q, point_p=point_p, limit=limit))
+        result = uc.execute(SelectByPointQuery(
+            point_q=point_q, point_p=point_p, tolerance=tolerance, limit=limit,
+        ))
 
     return SelectPointOut(
         items=[

@@ -9,7 +9,7 @@
       rel="stylesheet"
       crossorigin="anonymous"
     />
-    <link rel="stylesheet" href="style.css?v=20260524-1" />
+    <link rel="stylesheet" href="style.css?v=20260708-1" />
 
 <!-- Yandex.Metrika counter -->
 <script type="text/javascript">
@@ -93,8 +93,8 @@
           </div>
         </div>
         <div class="d-flex gap-2">
-          <button id="clearCompareBtn" class="btn btn-dark btn-sm" type="button" style="background: var(--vs-text); color: var(--vs-accent);">Очистить</button>
-          <button id="exportPdfBtn" class="btn btn-dark btn-sm" type="button" style="background: var(--vs-text); color: var(--vs-accent);">Экспорт в PDF</button>
+          <button id="clearCompareBtn" class="btn btn-outline-light btn-sm" type="button">Очистить</button>
+          <button id="exportPdfBtn" class="btn btn-danger btn-sm fw-semibold px-3" type="button">Скачать PDF</button>
         </div>
       </div>
     </header>
@@ -102,29 +102,29 @@
     <main class="container-fluid px-3 px-lg-4 py-4">
       <div id="alertBox" class="alert alert-danger d-none mb-3" role="alert"></div>
 
-      <div class="row g-4">
-        <div class="col-12">
-          <div class="card shadow-sm border-0 mb-4" style="border-radius: 20px; overflow: hidden;">
+      <div class="row g-4 align-items-stretch">
+        <div class="col-12 col-xxl-6">
+          <div class="card shadow-sm border-0 h-100" style="border-radius: 20px; overflow: hidden;">
             <div class="card-header bg-white border-bottom-0 pt-4 px-4 pb-0">
-              <h2 class="h5 fw-bold mb-0">Сравнение аэродинамических характеристик (Q–P)</h2>
+              <h2 class="h5 fw-bold mb-0">Аэродинамика (Q–P)</h2>
             </div>
             <div class="card-body p-4">
-              <div class="chart-canvas-wrap bg-light rounded-4 p-3 border">
-                <div id="qpChart" style="height: 400px; width: 100%;"></div>
+              <div class="chart-canvas-wrap bg-light rounded-4 p-3 border h-100" style="min-height: 480px;">
+                <div id="qpChart" style="height: 100%; width: 100%; min-height: 450px;"></div>
               </div>
             </div>
           </div>
         </div>
 
-        <div class="col-12">
-          <div class="card shadow-sm border-0 mb-4" style="border-radius: 20px; overflow: hidden;">
-            <div class="card-header bg-white border-bottom-0 pt-4 px-4 pb-0 d-flex justify-content-between align-items-center">
+        <div class="col-12 col-xxl-6">
+          <div class="card shadow-sm border-0 h-100" style="border-radius: 20px; overflow: hidden;">
+            <div class="card-header bg-white border-bottom-0 pt-4 px-4 pb-0 d-flex justify-content-between align-items-center flex-wrap gap-2">
               <h2 class="h5 fw-bold mb-0">Сводная таблица параметров</h2>
               <span class="badge bg-success bg-opacity-10 text-success px-3 py-2" style="font-size: 0.85rem;">Зелёным выделен лучший показатель</span>
             </div>
             <div class="card-body p-0 mt-3">
               <div class="table-responsive">
-                <table class="table table-hover align-middle compare-table mb-0 bg-white" style="min-width: 800px;">
+                <table class="table table-hover align-middle compare-table mb-0 bg-white">
                   <thead id="compareTableHead" class="bg-light text-secondary"></thead>
                   <tbody id="compareTableBody"></tbody>
                 </table>
@@ -143,8 +143,8 @@
     <script src="config.js?v=20260424-1"></script>
     <script src="auth.js?v=20260524-10"></script>
     <script src="site-auth.js?v=20260524-10"></script>
-    <script src="script.js?v=20260524-10"></script>
-    <script src="site-layout.js?v=20260527-1"></script>
+    <script src="script.js?v=20260708-1"></script>
+    <script src="site-layout.js?v=20260708-1"></script>
   </body>
 </html>
 

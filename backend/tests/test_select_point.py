@@ -104,6 +104,25 @@ def test_select_point_filters_and_sorts(monkeypatch):
         assert it["p_available"] >= 150
 
 
+def test_select_point_tolerance_allows_small_deficit(monkeypatch):
+    fan = _vo_product("sub", 900, 3600, 60, 160)
+    p_avail = pressure_at_flow(2000, q_min=900, q_max=3600, p_min=60, p_max=160, fan_type="Осевой")
+    assert p_avail is not None
+    point_p = round(p_avail * 1.10, 1)  # точка на 10% выше кривой → дефицит ~9%
+
+    monkeypatch.setattr(PgProductRepository, "list_products", lambda self, **kw: [fan])
+    client = make_test_client(monkeypatch)
+
+    base = f"/api/products/select-point?point_q=2000&point_p={point_p}"
+    assert client.get(base).json()["items"] == [], "без допуска модель ниже точки не проходит"
+
+    data = client.get(base + "&tolerance=15").json()
+    assert [it["product"]["id"] for it in data["items"]] == ["sub"]
+    assert data["items"][0]["reserve_percent"] < 0, "дефицит — отрицательный запас"
+
+    assert client.get(base + "&tolerance=99").status_code == 422
+
+
 def test_select_point_validation(monkeypatch):
     client = make_test_client(monkeypatch)
     assert client.get("/api/products/select-point").status_code == 422

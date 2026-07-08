@@ -18,10 +18,11 @@ from domain.services.qp_service import pressure_at_flow
 
 @dataclass
 class SelectByPointQuery:
-    """Рабочая точка и ограничение размера выдачи."""
+    """Рабочая точка, допуск по давлению (%) и ограничение размера выдачи."""
 
     point_q: float
     point_p: float
+    tolerance: float = 0.0
     limit: int = 20
 
 
@@ -74,7 +75,12 @@ class SelectByPointUseCase:
                 pressure_coefficients=p.get("pressure_coefficients"),
                 nominal_rpm=p.get("nominal_rpm"),
             )
-            if p_avail is None or p_avail < query.point_p:
+            if p_avail is None:
+                continue
+
+            # Допуск разрешает недобор давления до tolerance % (запас будет < 0)
+            min_pressure = query.point_p * (1.0 - max(query.tolerance, 0.0) / 100.0)
+            if p_avail < min_pressure:
                 continue
 
             reserve = (p_avail - query.point_p) / query.point_p * 100.0
@@ -82,7 +88,9 @@ class SelectByPointUseCase:
                 product=p, p_available=round(p_avail, 1), reserve_percent=round(reserve, 1),
             ))
 
-        items.sort(key=lambda it: it.reserve_percent)
+        # По точности попадания: |запас| по возрастанию — точная модель первой,
+        # дальше — с растущим запасом или дефицитом
+        items.sort(key=lambda it: abs(it.reserve_percent))
         return SelectByPointResult(
             items=items[: query.limit],
             total_considered=len(candidates),

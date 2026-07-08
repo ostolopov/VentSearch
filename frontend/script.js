@@ -125,7 +125,9 @@ function loadWorkingPoint() {
     const raw = localStorage.getItem(POINT_STORAGE_KEY);
     const data = raw ? JSON.parse(raw) : null;
     if (data && Number(data.q) > 0 && Number(data.p) > 0) {
-      return { q: Number(data.q), p: Number(data.p) };
+      const point = { q: Number(data.q), p: Number(data.p) };
+      if (Number(data.tol) > 0) point.tol = Number(data.tol);
+      return point;
     }
     return null;
   } catch {
@@ -136,7 +138,9 @@ function loadWorkingPoint() {
 function saveWorkingPoint(point) {
   try {
     if (point && Number(point.q) > 0 && Number(point.p) > 0) {
-      localStorage.setItem(POINT_STORAGE_KEY, JSON.stringify({ q: Number(point.q), p: Number(point.p) }));
+      const data = { q: Number(point.q), p: Number(point.p) };
+      if (Number(point.tol) > 0) data.tol = Number(point.tol);
+      localStorage.setItem(POINT_STORAGE_KEY, JSON.stringify(data));
     } else {
       localStorage.removeItem(POINT_STORAGE_KEY);
     }
@@ -408,29 +412,33 @@ function buildQpDatasetsShared(products, targetRpm = null, targetPoint = null) {
       data: systemPoints
     });
 
-    // Одиночная модель (карточка): зона допуска ±7.5% по давлению вокруг
-    // участка кривой Q ± 15% от точки + процент запаса в подписи точки.
+    // Одиночная модель (карточка): зона допуска по давлению вокруг участка
+    // кривой Q ± 15% от точки + процент запаса в подписи точки.
     // В сравнении (2+ моделей) зоны не рисуем — превращается в кашу.
     let pointLabel = 'Рабочая точка';
     if (products.length === 1 && series[0] && series[0].data.length >= 2) {
       const fanPts = series[0].data;
-      const TOL_P = 0.075;
+      const tolPct = Number(targetPoint.tol) > 0 ? Number(targetPoint.tol) : 7.5;
+      const TOL_P = tolPct / 100;
       const seg = fanPts.filter(([q]) => q >= targetPoint.q * 0.85 && q <= targetPoint.q * 1.15);
       if (seg.length >= 2) {
-        // Приём «полоса через stack»: нижняя граница невидима, вторая серия —
-        // толщина полосы, закрашенная areaStyle (стыкуются по индексам точек)
+        // Полигон через custom-серию: stack у ECharts на двух числовых осях
+        // складывает координаты и уводит полосу в сторону — рисуем контур сами
+        const upper = seg.map(([q, p]) => [q, p * (1 + TOL_P)]);
+        const lower = seg.map(([q, p]) => [q, p * (1 - TOL_P)]);
+        const outline = upper.concat(lower.slice().reverse());
         series.push({
-          name: 'tol-base', type: 'line', stack: 'tol', smooth: false,
-          symbol: 'none', silent: true, z: 1,
-          lineStyle: { opacity: 0 },
-          data: seg.map(([q, p]) => [q, p * (1 - TOL_P)])
-        });
-        series.push({
-          name: 'tol-band', type: 'line', stack: 'tol', smooth: false,
-          symbol: 'none', silent: true, z: 1,
-          lineStyle: { opacity: 0 },
-          areaStyle: { color: 'rgba(2, 123, 243, 0.16)' },
-          data: seg.map(([q, p]) => [q, p * 2 * TOL_P])
+          name: 'tol-band',
+          type: 'custom',
+          silent: true,
+          z: 1,
+          clip: true,
+          renderItem: (params, api) => ({
+            type: 'polygon',
+            shape: { points: outline.map((pt) => api.coord(pt)) },
+            style: { fill: 'rgba(2, 123, 243, 0.16)' }
+          }),
+          data: [0]
         });
       }
 
@@ -569,6 +577,29 @@ function renderQpChartShared(container, chartRef, products, targetRpm = null, ta
   }
 
   return chartRef;
+}
+
+// Запросить у бэкенда PDF по списку моделей и скачать файл.
+// Используется и в сравнении (2+ моделей), и на карточке одиночной модели.
+async function requestPdfExport(ids, filename, chart) {
+  const chartImageDataUrl = chart ? captureChartPngForPdf(chart) : null;
+  const response = await fetch(apiUrl("/api/export/pdf"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ids, filename, chart_image_data_url: chartImageDataUrl }),
+  });
+  if (!response.ok) {
+    throw new Error(`PDF export failed: ${response.status}`);
+  }
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
 }
 
 // PNG для вставки в PDF: офф-скрин рендер с пропорциями блока отчёта (~2.5:1),
@@ -843,7 +874,7 @@ async function initCatalogPage() {
           <dt class="col-6 text-secondary">Мощн.</dt><dd class="col-6 mb-1">${p.power != null ? `${escapeHtml(p.power)} Вт` : "—"}</dd>
           <dt class="col-6 text-secondary">Шум</dt><dd class="col-6 mb-1">${p.noise_level != null ? `${escapeHtml(p.noise_level)} дБ` : "—"}</dd>
         </dl>
-        ${p._point ? `<div class="mb-2"><span class="badge ${p._point.reserve_percent <= 15 ? "text-bg-success" : "text-bg-secondary"}">В точке: ${escapeHtml(formatNumber(p._point.p_available))} Па · запас ${escapeHtml(p._point.reserve_percent)}%</span></div>` : ""}
+        ${p._point ? `<div class="mb-2"><span class="badge ${p._point.reserve_percent < 0 ? "text-bg-warning" : (p._point.reserve_percent <= 15 ? "text-bg-success" : "text-bg-secondary")}">В точке: ${escapeHtml(formatNumber(p._point.p_available))} Па · ${p._point.reserve_percent < 0 ? "дефицит " + escapeHtml(Math.abs(p._point.reserve_percent)) : "запас " + escapeHtml(p._point.reserve_percent)}%</span></div>` : ""}
         <div class="mt-auto">
           <div class="product-price">${escapeHtml(formatPrice(p.price))}</div>
           <a class="btn btn-sm btn-dark product-open-btn mt-2" href="product.html?id=${encodeURIComponent(p.id)}">Открыть</a>
@@ -1045,23 +1076,26 @@ async function initCatalogPage() {
   const pointForm = $("#pointForm");
   const pointQInput = $("#pointQ");
   const pointPInput = $("#pointP");
+  const pointTolInput = $("#pointTol");
   const pointResetBtn = $("#pointResetBtn");
 
-  async function runPointSearch(pointQ, pointP) {
+  async function runPointSearch(pointQ, pointP, pointTol) {
     hideError();
     setLoading(true);
-    state.querySummaryText = `Рабочая точка: Q = ${formatNumber(pointQ)} м³/ч · P = ${formatNumber(pointP)} Па`;
+    const tolText = pointTol > 0 ? ` · допуск ±${formatNumber(pointTol)}%` : "";
+    state.querySummaryText = `Рабочая точка: Q = ${formatNumber(pointQ)} м³/ч · P = ${formatNumber(pointP)} Па${tolText}`;
     if (querySummary) querySummary.textContent = state.querySummaryText;
     try {
       const params = new URLSearchParams({
         point_q: String(pointQ), point_p: String(pointP), limit: String(PAGE_SIZE),
       });
+      if (pointTol > 0) params.set("tolerance", String(pointTol));
       const data = await fetchJson(apiUrl(`/api/products/select-point?${params.toString()}`));
       const items = (Array.isArray(data?.items) ? data.items : []).map((it) => ({
         ...it.product,
         _point: { p_available: it.p_available, reserve_percent: it.reserve_percent },
       }));
-      saveWorkingPoint({ q: pointQ, p: pointP });
+      saveWorkingPoint({ q: pointQ, p: pointP, tol: pointTol > 0 ? pointTol : undefined });
       if (!items.length) {
         showEmptyState();
         if (resultsCount) resultsCount.textContent = "0";
@@ -1085,17 +1119,19 @@ async function initCatalogPage() {
     e.preventDefault();
     const pointQ = toNumber(pointQInput?.value);
     const pointP = toNumber(pointPInput?.value);
+    const pointTol = Math.min(Math.max(toNumber(pointTolInput?.value) || 0, 0), 50);
     if (!pointQ || pointQ <= 0 || !pointP || pointP <= 0) {
       showError("Укажите расход Q (м³/ч) и давление P (Па) — оба значения должны быть больше нуля.");
       return;
     }
-    runPointSearch(pointQ, pointP);
+    runPointSearch(pointQ, pointP, pointTol);
     closeFiltersOffcanvasIfMobile();
   });
 
   pointResetBtn?.addEventListener("click", () => {
     if (pointQInput) pointQInput.value = "";
     if (pointPInput) pointPInput.value = "";
+    if (pointTolInput) pointTolInput.value = "";
     saveWorkingPoint(null);
     loadPage(1);
   });
@@ -1106,6 +1142,7 @@ async function initCatalogPage() {
     if (storedPoint) {
       if (pointQInput) pointQInput.value = String(storedPoint.q);
       if (pointPInput) pointPInput.value = String(storedPoint.p);
+      if (pointTolInput && storedPoint.tol) pointTolInput.value = String(storedPoint.tol);
     }
   }
 
@@ -1285,28 +1322,7 @@ async function initComparePage() {
     hideError();
     try {
       const ids = products.map((p) => String(p.id)).filter(Boolean);
-      const chartImageDataUrl = compareChart ? captureChartPngForPdf(compareChart) : null;
-      const response = await fetch(apiUrl("/api/export/pdf"), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          ids,
-          filename: "ventmash-compare.pdf",
-          chart_image_data_url: chartImageDataUrl,
-        }),
-      });
-      if (!response.ok) {
-        throw new Error(`PDF export failed: ${response.status}`);
-      }
-      const blob = await response.blob();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = "ventmash-compare.pdf";
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(url);
+      await requestPdfExport(ids, "ventsearch-compare.pdf", compareChart);
     } catch (err) {
       console.error(err);
       showError("Не удалось экспортировать PDF. Проверьте доступность API.");
@@ -1438,6 +1454,16 @@ async function initProductPage() {
       opt.textContent = `${item.model || item.id} · ${formatPrice(item.price)}`;
       compareWithSelect.appendChild(opt);
     }
+
+    $("#exportProductPdfBtn")?.addEventListener("click", async () => {
+      try {
+        const slug = currentProduct?._meta?.model_slug || currentProduct?.meta?.model_slug || currentProduct.id;
+        await requestPdfExport([String(currentProduct.id)], `ventsearch-${slug}.pdf`, productChart);
+      } catch (err) {
+        console.error(err);
+        window.alert("Не удалось экспортировать PDF. Проверьте доступность API.");
+      }
+    });
 
     compareOnProductBtn?.addEventListener("click", async () => {
       const otherId = compareWithSelect.value;
