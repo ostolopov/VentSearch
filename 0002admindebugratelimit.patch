@@ -1,0 +1,640 @@
+From 5eb10c7718b4f585a0c45a102a9729e18540a5bb Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Wed, 8 Jul 2026 16:50:16 +0000
+Subject: [PATCH 2/2] =?UTF-8?q?=D0=90=D0=B4=D0=BC=D0=B8=D0=BD-=D0=B4=D0=B8?=
+ =?UTF-8?q?=D0=B0=D0=B3=D0=BD=D0=BE=D1=81=D1=82=D0=B8=D0=BA=D0=B0=20=D0=B8?=
+ =?UTF-8?q?=20=D0=B7=D0=B0=D1=89=D0=B8=D1=82=D0=B0=20=D0=B2=D1=85=D0=BE?=
+ =?UTF-8?q?=D0=B4=D0=B0=20=D0=BE=D1=82=20=D0=BF=D0=B5=D1=80=D0=B5=D0=B1?=
+ =?UTF-8?q?=D0=BE=D1=80=D0=B0=20=D0=BF=D0=B0=D1=80=D0=BE=D0=BB=D0=B5=D0=B9?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+- GET /api/admin/debug (только для admin): состояние сервера, БД,
+  CSV-каталога, поискового индекса + флаги безопасности (дефолтный
+  JWT_SECRET/пароль админа — без значений самих секретов)
+- вкладка «Диагностика» в админ-панели с карточками состояния
+  и предупреждением о небезопасной конфигурации
+- лимит неудачных попыток входа: 5 за 15 минут на IP+email, ответ 429
+  с Retry-After (in-memory, достаточно для локального LAN-развёртывания)
+- предупреждения в лог при старте с секретами по умолчанию
+- обработчик HTTP-исключений теперь прокидывает заголовки (Retry-After)
+- тесты: 401/403/200 для /api/admin/debug, отсутствие секретов в ответе,
+  блокировка логина после N неудач
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01Xo2pb2FaYb5UENKMhgVboE
+---
+ backend/infrastructure/auth/rate_limit.py |  66 +++++++++++
+ backend/presentation/api/routes/admin.py  | 121 +++++++++++++++++++-
+ backend/presentation/api/routes/auth.py   |  25 ++++-
+ backend/presentation/app.py               |  24 +++-
+ backend/tests/test_admin_debug.py         |  96 ++++++++++++++++
+ frontend/admin.html                       |  13 +++
+ frontend/admin.js                         | 131 ++++++++++++++++++++++
+ 7 files changed, 471 insertions(+), 5 deletions(-)
+ create mode 100644 backend/infrastructure/auth/rate_limit.py
+ create mode 100644 backend/tests/test_admin_debug.py
+
+diff --git a/backend/infrastructure/auth/rate_limit.py b/backend/infrastructure/auth/rate_limit.py
+new file mode 100644
+index 0000000..eb7407a
+--- /dev/null
++++ b/backend/infrastructure/auth/rate_limit.py
+@@ -0,0 +1,66 @@
++"""
++Ограничитель неудачных попыток входа (защита от перебора паролей).
++
++Скользящее окно неудачных попыток на ключ (IP + email). После MAX_ATTEMPTS
++неудач в течение WINDOW_SECONDS вход блокируется до «остывания» окна.
++Хранение — в памяти процесса: для локального развёртывания в LAN
++(один процесс uvicorn) этого достаточно; при переходе на несколько
++воркеров лимитер нужно вынести в БД или Redis.
++
++Зависимости: только стандартная библиотека.
++"""
++from __future__ import annotations
++
++import threading
++import time
++from collections import deque
++from typing import Deque, Dict
++
++MAX_ATTEMPTS = 5
++WINDOW_SECONDS = 15 * 60
++
++
++class LoginRateLimiter:
++    """Потокобезопасный лимитер по скользящему окну."""
++
++    def __init__(self, max_attempts: int = MAX_ATTEMPTS, window_seconds: int = WINDOW_SECONDS) -> None:
++        self.max_attempts = max_attempts
++        self.window_seconds = window_seconds
++        self._failures: Dict[str, Deque[float]] = {}
++        self._lock = threading.Lock()
++
++    def _prune(self, key: str, now: float) -> Deque[float]:
++        attempts = self._failures.setdefault(key, deque())
++        while attempts and now - attempts[0] > self.window_seconds:
++            attempts.popleft()
++        if not attempts:
++            # не копим пустые ключи бесконечно
++            self._failures.pop(key, None)
++            attempts = self._failures.setdefault(key, deque())
++        return attempts
++
++    def seconds_until_allowed(self, key: str) -> int:
++        """0 — вход разрешён; иначе через сколько секунд можно повторить."""
++        now = time.monotonic()
++        with self._lock:
++            attempts = self._prune(key, now)
++            if len(attempts) < self.max_attempts:
++                return 0
++            oldest = attempts[0]
++            return max(1, int(self.window_seconds - (now - oldest)) + 1)
++
++    def register_failure(self, key: str) -> None:
++        now = time.monotonic()
++        with self._lock:
++            attempts = self._prune(key, now)
++            attempts.append(now)
++
++    def reset(self, key: str) -> None:
++        """Успешный вход сбрасывает счётчик неудач."""
++        with self._lock:
++            self._failures.pop(key, None)
++
++    def clear(self) -> None:
++        """Полный сброс (используется в тестах)."""
++        with self._lock:
++            self._failures.clear()
+diff --git a/backend/presentation/api/routes/admin.py b/backend/presentation/api/routes/admin.py
+index 26a0108..1185ed8 100644
+--- a/backend/presentation/api/routes/admin.py
++++ b/backend/presentation/api/routes/admin.py
+@@ -1,7 +1,11 @@
+-"""Админ API: каталог вентиляторов и пользователи."""
++"""Админ API: каталог вентиляторов, пользователи и диагностика."""
+ from __future__ import annotations
+ 
+-from typing import Annotated, Optional
++import platform
++import sys
++import time
++from datetime import datetime, timezone
++from typing import Annotated, Any, Dict, Optional
+ 
+ from fastapi import APIRouter, Depends, HTTPException, Query
+ 
+@@ -41,6 +45,9 @@ from infrastructure.db.user_repository import (
+ 
+ router = APIRouter(prefix="/api/admin", tags=["admin"])
+ 
++# Момент импорта модуля ≈ момент старта процесса — для аптайма в диагностике
++_STARTED_AT = time.time()
++
+ 
+ def _rebuild_catalog_index() -> None:
+     from infrastructure.db.connection import get_connection, put_connection
+@@ -236,3 +243,113 @@ def admin_users_bulk_delete(payload: BulkDeleteUsersIn, admin: Annotated[dict, D
+     with db_session() as conn:
+         deleted, errors = delete_users_bulk(conn, payload.ids, acting_admin_id=admin["id"])
+     return BulkDeleteOut(deleted=deleted, errors=errors)
++
++
++# ---------------------------------------------------------------------------
++# Диагностика
++# ---------------------------------------------------------------------------
++
++def _debug_database_section() -> Dict[str, Any]:
++    from infrastructure.db.product_repository import count_products
++    from infrastructure.db.user_repository import count_admins
++
++    with db_session() as conn:
++        with conn.cursor() as cur:
++            cur.execute("SELECT version();")
++            row = cur.fetchone()
++            version = (row[0].split(",")[0].strip()) if row and row[0] else "unknown"
++            cur.execute("SELECT COUNT(*) FROM users;")
++            users_total = int(cur.fetchone()[0])
++        products_total = count_products(conn)
++        admins_total = count_admins(conn)
++    return {
++        "ok": True,
++        "version": version,
++        "products_total": products_total,
++        "users_total": users_total,
++        "admins_total": admins_total,
++    }
++
++
++def _debug_catalog_section() -> Dict[str, Any]:
++    from config import CSV_PATH
++    from infrastructure.csv.sync import _get_state
++
++    info: Dict[str, Any] = {
++        "csv_path": str(CSV_PATH),
++        "csv_exists": CSV_PATH.exists(),
++    }
++    if info["csv_exists"]:
++        st = CSV_PATH.stat()
++        info["csv_size_bytes"] = st.st_size
++        info["csv_mtime"] = datetime.fromtimestamp(st.st_mtime, tz=timezone.utc).isoformat()
++    with db_session() as conn:
++        state = _get_state(conn)
++    if state:
++        info["synced"] = True
++        info["synced_size_bytes"] = state["size_bytes"]
++        info["synced_sha256"] = state["sha256_hex"][:12] + "…"
++        info["in_sync"] = bool(
++            info.get("csv_exists")
++            and state["size_bytes"] == info.get("csv_size_bytes")
++        )
++    else:
++        info["synced"] = False
++    return info
++
++
++def _debug_index_section() -> Dict[str, Any]:
++    from infrastructure.search.catalog_index import get_catalog_index
++
++    idx = get_catalog_index()
++    if idx is None:
++        return {"built": False}
++    return {"built": True, "rows": len(getattr(idx, "_rows", []) or [])}
++
++
++def _debug_security_section() -> Dict[str, Any]:
++    from config import ADMIN_PASSWORD, CORS_ORIGINS, JWT_EXPIRE_HOURS, JWT_SECRET
++    from presentation.api.routes.auth import login_limiter
++
++    return {
++        # Только флаги — сами значения секретов наружу не отдаём никогда
++        "jwt_secret_is_default": JWT_SECRET == "change-me-in-production",
++        "admin_password_is_default": ADMIN_PASSWORD == "admin123",
++        "jwt_expire_hours": JWT_EXPIRE_HOURS,
++        "cors_origins": CORS_ORIGINS,
++        "login_rate_limit": {
++            "max_attempts": login_limiter.max_attempts,
++            "window_seconds": login_limiter.window_seconds,
++        },
++    }
++
++
++@router.get("/debug", summary="Диагностика системы (админ)")
++def admin_debug(_: Annotated[dict, Depends(require_admin)]) -> Dict[str, Any]:
++    """
++    Состояние сервера, БД, каталога и поискового индекса + проверки безопасности.
++    Секретные значения (пароли, ключи) в ответ не попадают — только флаги.
++    Каждая секция собирается независимо: сбой одной не валит остальные.
++    """
++    from config import PORT
++
++    report: Dict[str, Any] = {
++        "server": {
++            "python": sys.version.split()[0],
++            "platform": platform.platform(),
++            "port": PORT,
++            "uptime_seconds": int(time.time() - _STARTED_AT),
++            "time_utc": datetime.now(timezone.utc).isoformat(),
++        }
++    }
++    for name, builder in (
++        ("database", _debug_database_section),
++        ("catalog", _debug_catalog_section),
++        ("search_index", _debug_index_section),
++        ("security", _debug_security_section),
++    ):
++        try:
++            report[name] = builder()
++        except Exception as exc:  # диагностика не должна падать целиком
++            report[name] = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
++    return report
+diff --git a/backend/presentation/api/routes/auth.py b/backend/presentation/api/routes/auth.py
+index f8d5330..1fcf165 100644
+--- a/backend/presentation/api/routes/auth.py
++++ b/backend/presentation/api/routes/auth.py
+@@ -3,15 +3,24 @@ from __future__ import annotations
+ 
+ from typing import Annotated
+ 
+-from fastapi import APIRouter, Depends, HTTPException
++from fastapi import APIRouter, Depends, HTTPException, Request
+ 
+ from presentation.api.deps import db_session, get_current_user
+ from presentation.api.schemas import AuthLoginIn, AuthRegisterIn, AuthTokenOut, UserOut
+ from infrastructure.auth.jwt_service import create_access_token, hash_password, verify_password
++from infrastructure.auth.rate_limit import LoginRateLimiter
+ from infrastructure.db.user_repository import _public_user, create_user, get_user_by_email
+ 
+ router = APIRouter(prefix="/api/auth", tags=["auth"])
+ 
++# Общий на процесс лимитер неудачных входов (IP + email)
++login_limiter = LoginRateLimiter()
++
++
++def _login_key(request: Request, email: str) -> str:
++    ip = request.client.host if request.client else "unknown"
++    return f"{ip}|{email}"
++
+ 
+ def _token_response(user: dict) -> AuthTokenOut:
+     token = create_access_token(user["id"], user["email"], user["role"])
+@@ -44,14 +53,26 @@ def auth_register(payload: AuthRegisterIn):
+ 
+ 
+ @router.post("/login", response_model=AuthTokenOut, summary="Вход")
+-def auth_login(payload: AuthLoginIn):
++def auth_login(payload: AuthLoginIn, request: Request):
+     email = payload.email.strip().lower()
++    key = _login_key(request, email)
++
++    retry_after = login_limiter.seconds_until_allowed(key)
++    if retry_after > 0:
++        raise HTTPException(
++            status_code=429,
++            detail={"error": "Too many failed attempts, try again later"},
++            headers={"Retry-After": str(retry_after)},
++        )
++
+     with db_session() as conn:
+         row = get_user_by_email(conn, email)
+     if not row or not verify_password(payload.password, row["password_hash"]):
++        login_limiter.register_failure(key)
+         raise HTTPException(status_code=401, detail={"error": "Invalid email or password"})
+     if not row.get("is_active"):
+         raise HTTPException(status_code=403, detail={"error": "Account is disabled"})
++    login_limiter.reset(key)
+     return _token_response(_public_user(row))
+ 
+ 
+diff --git a/backend/presentation/app.py b/backend/presentation/app.py
+index 28fff18..a2ee8b9 100644
+--- a/backend/presentation/app.py
++++ b/backend/presentation/app.py
+@@ -102,8 +102,25 @@ def _startup_db() -> None:
+         put_connection(conn)
+ 
+ 
++def _warn_insecure_defaults() -> None:
++    """Громко предупредить, если секреты не изменены с дефолтных значений."""
++    from config import ADMIN_PASSWORD, JWT_SECRET
++
++    if JWT_SECRET == "change-me-in-production":
++        logger.warning(
++            "SECURITY: JWT_SECRET имеет значение по умолчанию — любой в сети "
++            "может подделать токен. Задайте JWT_SECRET в secrets/.env.local (или .env.prod)."
++        )
++    if ADMIN_PASSWORD == "admin123":
++        logger.warning(
++            "SECURITY: пароль админа по умолчанию (admin123). "
++            "Задайте ADMIN_PASSWORD в secrets/.env.local (или .env.prod)."
++        )
++
++
+ @asynccontextmanager
+ async def lifespan(app: FastAPI):
++    _warn_insecure_defaults()
+     _startup_db()
+     yield
+     set_catalog_index(None)
+@@ -397,7 +414,12 @@ def create_app() -> FastAPI:
+             page = FRONTEND_DIR / "404.html"
+             if page.exists():
+                 return FileResponse(page, status_code=404)
+-        return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
++        # headers исключения (например, Retry-After у 429) должны дойти до клиента
++        return JSONResponse(
++            status_code=exc.status_code,
++            content={"detail": exc.detail},
++            headers=getattr(exc, "headers", None),
++        )
+ 
+     @app.exception_handler(Exception)
+     async def unhandled_exception_handler(request: Request, exc: Exception):
+diff --git a/backend/tests/test_admin_debug.py b/backend/tests/test_admin_debug.py
+new file mode 100644
+index 0000000..15c40a3
+--- /dev/null
++++ b/backend/tests/test_admin_debug.py
+@@ -0,0 +1,96 @@
++"""Тесты диагностики (/api/admin/debug) и лимита попыток входа."""
++from __future__ import annotations
++
++import pytest
++
++from infrastructure.auth.jwt_service import create_access_token
++from infrastructure.auth.rate_limit import LoginRateLimiter
++from tests.conftest import make_test_client
++
++
++def _fake_user_row(role: str) -> dict:
++    return {
++        "id": 1,
++        "email": "test@ventsearch.local",
++        "password_hash": "x",
++        "name": "Test",
++        "company": "",
++        "phone": "",
++        "role": role,
++        "is_active": True,
++        "created_at": None,
++        "updated_at": None,
++    }
++
++
++def _auth_headers(role: str) -> dict:
++    token = create_access_token(1, "test@ventsearch.local", role)
++    return {"Authorization": f"Bearer {token}"}
++
++
++def test_debug_requires_auth(monkeypatch):
++    client = make_test_client(monkeypatch)
++    assert client.get("/api/admin/debug").status_code == 401
++
++
++def test_debug_forbidden_for_regular_user(monkeypatch):
++    monkeypatch.setattr(
++        "presentation.api.deps.get_user_by_id", lambda conn, uid: _fake_user_row("user")
++    )
++    client = make_test_client(monkeypatch)
++    r = client.get("/api/admin/debug", headers=_auth_headers("user"))
++    assert r.status_code == 403
++
++
++def test_debug_returns_report_for_admin(monkeypatch):
++    monkeypatch.setattr(
++        "presentation.api.deps.get_user_by_id", lambda conn, uid: _fake_user_row("admin")
++    )
++    client = make_test_client(monkeypatch)
++    r = client.get("/api/admin/debug", headers=_auth_headers("admin"))
++    assert r.status_code == 200
++    report = r.json()
++
++    # Все секции присутствуют, даже если какая-то собралась с ошибкой
++    for section in ("server", "database", "catalog", "search_index", "security"):
++        assert section in report
++
++    sec = report["security"]
++    assert "jwt_secret_is_default" in sec
++    assert "admin_password_is_default" in sec
++    # Секретов в ответе быть не должно — только флаги
++    assert "admin123" not in r.text
++    assert "change-me-in-production" not in r.text
++
++
++def test_login_rate_limiter_blocks_after_max_attempts():
++    limiter = LoginRateLimiter(max_attempts=3, window_seconds=60)
++    key = "1.2.3.4|user@test.local"
++
++    assert limiter.seconds_until_allowed(key) == 0
++    for _ in range(3):
++        limiter.register_failure(key)
++    assert limiter.seconds_until_allowed(key) > 0
++
++    # Успешный вход сбрасывает счётчик
++    limiter.reset(key)
++    assert limiter.seconds_until_allowed(key) == 0
++
++
++def test_login_endpoint_returns_429_after_failures(monkeypatch):
++    import presentation.api.routes.auth as auth_mod
++
++    monkeypatch.setattr(auth_mod, "get_user_by_email", lambda conn, email: None)
++    auth_mod.login_limiter.clear()
++
++    client = make_test_client(monkeypatch)
++    body = {"email": "bruteforce@test.local", "password": "wrong-pass"}
++
++    for _ in range(auth_mod.login_limiter.max_attempts):
++        assert client.post("/api/auth/login", json=body).status_code == 401
++
++    r = client.post("/api/auth/login", json=body)
++    assert r.status_code == 429
++    assert "Retry-After" in r.headers
++
++    auth_mod.login_limiter.clear()
+diff --git a/frontend/admin.html b/frontend/admin.html
+index 96e0419..aa0121f 100644
+--- a/frontend/admin.html
++++ b/frontend/admin.html
+@@ -95,6 +95,9 @@
+           <li class="nav-item" role="presentation">
+             <button class="nav-link" data-bs-toggle="tab" data-bs-target="#tabUsers" type="button">Пользователи</button>
+           </li>
++          <li class="nav-item" role="presentation">
++            <button class="nav-link" id="debugTabBtn" data-bs-toggle="tab" data-bs-target="#tabDebug" type="button">Диагностика</button>
++          </li>
+         </ul>
+         <div class="tab-content">
+           <div class="tab-pane fade show active" id="tabProducts" role="tabpanel">
+@@ -180,6 +183,16 @@
+               </div>
+             </div>
+           </div>
++          <div class="tab-pane fade" id="tabDebug" role="tabpanel">
++            <div class="d-flex flex-wrap gap-2 align-items-center mb-2">
++              <button id="debugRefreshBtn" class="btn btn-outline-dark btn-sm" type="button">Обновить</button>
++              <span id="debugMeta" class="small text-secondary ms-auto"></span>
++            </div>
++            <div id="debugSecurityAlert" class="alert alert-warning d-none" role="alert"></div>
++            <div id="debugContent" class="row g-3">
++              <div class="text-secondary small py-4 text-center">Откройте вкладку, чтобы загрузить диагностику…</div>
++            </div>
++          </div>
+         </div>
+       </section>
+     </main>
+diff --git a/frontend/admin.js b/frontend/admin.js
+index 656123a..db90f1c 100644
+--- a/frontend/admin.js
++++ b/frontend/admin.js
+@@ -167,7 +167,16 @@ function bindAdminEvents() {
+   if (!root || root.dataset.bound === "1") return;
+   root.dataset.bound = "1";
+ 
++  // Диагностика: загружаем при первом открытии вкладки и по кнопке «Обновить»
++  document.getElementById("debugTabBtn")?.addEventListener("shown.bs.tab", () => {
++    loadDebug().catch((err) => showAdminError(err.message));
++  });
++
+   root.addEventListener("click", (e) => {
++    if (e.target.closest("#debugRefreshBtn")) {
++      loadDebug().catch((err) => showAdminError(err.message));
++      return;
++    }
+     if (e.target.closest("#productSearchBtn")) {
+       state.products.q = $("#productSearch")?.value.trim() || "";
+       state.products.offset = 0;
+@@ -527,6 +536,128 @@ async function loadUsers() {
+   if (next) next.disabled = state.users.offset + PAGE_SIZE >= (data.total || 0);
+ }
+ 
++function formatUptime(totalSeconds) {
++  const s = Number(totalSeconds) || 0;
++  const d = Math.floor(s / 86400);
++  const h = Math.floor((s % 86400) / 3600);
++  const m = Math.floor((s % 3600) / 60);
++  if (d > 0) return `${d} д ${h} ч ${m} мин`;
++  if (h > 0) return `${h} ч ${m} мин`;
++  return `${m} мин ${s % 60} с`;
++}
++
++function formatBytes(bytes) {
++  const n = Number(bytes);
++  if (!Number.isFinite(n)) return "—";
++  if (n >= 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} МБ`;
++  if (n >= 1024) return `${(n / 1024).toFixed(1)} КБ`;
++  return `${n} Б`;
++}
++
++function debugBoolBadge(value, { trueIsBad = false, trueLabel = "да", falseLabel = "нет" } = {}) {
++  const bad = trueIsBad ? value === true : value === false;
++  const cls = bad ? "text-bg-danger" : "text-bg-success";
++  return `<span class="badge ${cls}">${value ? trueLabel : falseLabel}</span>`;
++}
++
++function renderDebugCard(title, rows) {
++  const body = rows
++    .filter(([, v]) => v !== undefined)
++    .map(
++      ([label, valueHtml]) =>
++        `<tr><th class="text-secondary fw-normal w-50">${escapeHtml(label)}</th><td>${valueHtml}</td></tr>`,
++    )
++    .join("");
++  return `
++    <div class="col-12 col-lg-6">
++      <div class="card shadow-sm h-100">
++        <div class="card-header py-2 fw-semibold">${escapeHtml(title)}</div>
++        <table class="table table-sm mb-0"><tbody>${body}</tbody></table>
++      </div>
++    </div>`;
++}
++
++async function loadDebug() {
++  hideAdminMessages();
++  const content = $("#debugContent");
++  if (!content) return;
++  content.innerHTML = '<div class="text-secondary small py-4 text-center">Загрузка…</div>';
++
++  const d = await va().apiAuthFetch("/api/admin/debug");
++  const cards = [];
++
++  const srv = d.server || {};
++  cards.push(renderDebugCard("Сервер", [
++    ["Python", escapeHtml(srv.python ?? "—")],
++    ["Платформа", escapeHtml(srv.platform ?? "—")],
++    ["Порт API", escapeHtml(srv.port ?? "—")],
++    ["Аптайм", escapeHtml(formatUptime(srv.uptime_seconds))],
++    ["Время сервера (UTC)", escapeHtml(srv.time_utc ?? "—")],
++  ]));
++
++  const db = d.database || {};
++  cards.push(renderDebugCard("База данных", db.error ? [
++    ["Статус", debugBoolBadge(false, { falseLabel: "ошибка" })],
++    ["Ошибка", escapeHtml(db.error)],
++  ] : [
++    ["Статус", debugBoolBadge(true, { trueLabel: "подключена" })],
++    ["Версия", escapeHtml(db.version ?? "—")],
++    ["Вентиляторов", escapeHtml(db.products_total ?? "—")],
++    ["Пользователей", escapeHtml(db.users_total ?? "—")],
++    ["Администраторов", escapeHtml(db.admins_total ?? "—")],
++  ]));
++
++  const cat = d.catalog || {};
++  cards.push(renderDebugCard("Каталог (CSV)", cat.error ? [
++    ["Ошибка", escapeHtml(cat.error)],
++  ] : [
++    ["Файл", `<code class="small">${escapeHtml(cat.csv_path ?? "—")}</code>`],
++    ["Файл существует", debugBoolBadge(cat.csv_exists === true)],
++    ["Размер", escapeHtml(formatBytes(cat.csv_size_bytes))],
++    ["Загружен в БД", debugBoolBadge(cat.synced === true)],
++    cat.synced ? ["Синхронизирован", debugBoolBadge(cat.in_sync === true)] : undefined,
++    cat.synced ? ["SHA-256 (нач.)", `<code class="small">${escapeHtml(cat.synced_sha256 ?? "—")}</code>`] : undefined,
++  ].filter(Boolean)));
++
++  const idx = d.search_index || {};
++  cards.push(renderDebugCard("Поисковый индекс", idx.error ? [
++    ["Ошибка", escapeHtml(idx.error)],
++  ] : [
++    ["Построен (Bloom + оси)", debugBoolBadge(idx.built === true)],
++    idx.built ? ["Записей", escapeHtml(idx.rows ?? "—")] : undefined,
++  ].filter(Boolean)));
++
++  const sec = d.security || {};
++  const rl = sec.login_rate_limit || {};
++  cards.push(renderDebugCard("Безопасность", sec.error ? [
++    ["Ошибка", escapeHtml(sec.error)],
++  ] : [
++    ["JWT-секрет по умолчанию", debugBoolBadge(sec.jwt_secret_is_default === true, { trueIsBad: true })],
++    ["Пароль админа по умолчанию", debugBoolBadge(sec.admin_password_is_default === true, { trueIsBad: true })],
++    ["Срок жизни токена", escapeHtml(`${sec.jwt_expire_hours ?? "—"} ч`)],
++    ["Лимит попыток входа", escapeHtml(`${rl.max_attempts ?? "—"} за ${Math.round((rl.window_seconds ?? 0) / 60)} мин`)],
++    ["CORS origins", `<code class="small">${escapeHtml((sec.cors_origins || []).join(", ") || "—")}</code>`],
++  ]));
++
++  content.innerHTML = cards.join("");
++
++  const alertEl = $("#debugSecurityAlert");
++  if (alertEl) {
++    const problems = [];
++    if (sec.jwt_secret_is_default) problems.push("JWT_SECRET не изменён со значения по умолчанию");
++    if (sec.admin_password_is_default) problems.push("пароль администратора по умолчанию (admin123)");
++    if (problems.length) {
++      alertEl.textContent = `⚠ Небезопасная конфигурация: ${problems.join("; ")}. Задайте значения в secrets/.env.local и перезапустите сервер.`;
++      alertEl.classList.remove("d-none");
++    } else {
++      alertEl.classList.add("d-none");
++    }
++  }
++
++  const meta = $("#debugMeta");
++  if (meta) meta.textContent = `Обновлено: ${new Date().toLocaleTimeString("ru-RU")}`;
++}
++
+ function openProductModal(product, isCreate) {
+   ensureAdminModals();
+   const form = $("#productForm");
+-- 
+2.43.0
+

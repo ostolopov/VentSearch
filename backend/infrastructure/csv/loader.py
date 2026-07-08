@@ -10,6 +10,7 @@ import re
 from pathlib import Path
 
 
+
 def norm_header(h: str) -> str:
     if h is None:
         return ""
@@ -111,7 +112,49 @@ def load_csv_into_db(conn, csv_path: Path) -> int:
     if not csv_path.exists():
         raise FileNotFoundError(f"CSV не найден: {csv_path}")
 
-    with csv_path.open("r", encoding="utf-8") as f:
+    # Пробуем разные кодировки
+    encodings = ['utf-8', 'cp1251', 'windows-1251', 'latin-1', 'cp866']
+    file_content = None
+    used_encoding = None
+
+    for encoding in encodings:
+        try:
+            with csv_path.open("r", encoding=encoding) as f:
+                # Пытаемся прочитать первые строки
+                sample = f.read(1024)
+                f.seek(0)
+                # Если дошли сюда - кодировка подошла
+                file_content = f
+                used_encoding = encoding
+                break
+        except (UnicodeDecodeError, UnicodeError):
+            continue
+
+    if file_content is None or used_encoding is None:
+        # Если ни одна кодировка не подошла, пробуем определить автоматически
+        try:
+            import chardet
+            with csv_path.open("rb") as f:
+                raw_data = f.read(10000)
+                result = chardet.detect(raw_data)
+                detected_encoding = result['encoding']
+                if detected_encoding:
+                    with csv_path.open("r", encoding=detected_encoding) as f:
+                        file_content = f
+                        used_encoding = detected_encoding
+        except ImportError:
+            # Если chardet не установлен, используем utf-8 с заменой
+            with csv_path.open("r", encoding="utf-8", errors="replace") as f:
+                file_content = f
+                used_encoding = "utf-8"
+
+    if file_content is None:
+        raise ValueError(f"Не удалось определить кодировку файла {csv_path}")
+
+    print(f"Используется кодировка: {used_encoding}")
+
+    # Читаем файл с правильной кодировкой
+    with csv_path.open("r", encoding=used_encoding) as f:
         sample = f.read(1024)
         f.seek(0)
         try:
