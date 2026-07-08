@@ -332,6 +332,7 @@ function buildQpDatasetsShared(products, targetRpm = null, targetPoint = null) {
       lineStyle: { width: 3, color: colors[idx % colors.length] },
       itemStyle: { color: colors[idx % colors.length] }
     });
+  });
 
   if (targetPoint && targetPoint.q > 0 && targetPoint.p > 0) {
     const k = targetPoint.p / Math.pow(targetPoint.q, 2);
@@ -1194,6 +1195,11 @@ async function initProductPage() {
       tr.innerHTML = `<th scope="row" class="w-50 text-secondary">${escapeHtml(label)}</th><td>${escapeHtml(value ?? "—")}</td>`;
       specBody.appendChild(tr);
     }
+    
+    container.classList.remove("d-none");
+    alertBox.classList.add("d-none");
+
+    
     productChart = renderQpChartShared(chartCanvas, productChart, [data]);
     productCompareMeta.textContent = `Сейчас показана характеристика модели ${data.model || data.id}.`;
 
@@ -1230,8 +1236,8 @@ async function initProductPage() {
       syncProductProjectButton(addToProjectBtn, data.id);
     });
 
-    container.classList.remove("d-none");
-    alertBox.classList.add("d-none");
+    
+    
   } catch (err) {
     console.error(err);
     showError("Не удалось загрузить данные вентилятора. Возможно, он не найден.");
