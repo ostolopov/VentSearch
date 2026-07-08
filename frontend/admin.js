@@ -167,7 +167,16 @@ function bindAdminEvents() {
   if (!root || root.dataset.bound === "1") return;
   root.dataset.bound = "1";
 
+  // Диагностика: загружаем при первом открытии вкладки и по кнопке «Обновить»
+  document.getElementById("debugTabBtn")?.addEventListener("shown.bs.tab", () => {
+    loadDebug().catch((err) => showAdminError(err.message));
+  });
+
   root.addEventListener("click", (e) => {
+    if (e.target.closest("#debugRefreshBtn")) {
+      loadDebug().catch((err) => showAdminError(err.message));
+      return;
+    }
     if (e.target.closest("#productSearchBtn")) {
       state.products.q = $("#productSearch")?.value.trim() || "";
       state.products.offset = 0;
@@ -525,6 +534,128 @@ async function loadUsers() {
   const next = $("#usersNextBtn");
   if (prev) prev.disabled = state.users.offset <= 0;
   if (next) next.disabled = state.users.offset + PAGE_SIZE >= (data.total || 0);
+}
+
+function formatUptime(totalSeconds) {
+  const s = Number(totalSeconds) || 0;
+  const d = Math.floor(s / 86400);
+  const h = Math.floor((s % 86400) / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  if (d > 0) return `${d} д ${h} ч ${m} мин`;
+  if (h > 0) return `${h} ч ${m} мин`;
+  return `${m} мин ${s % 60} с`;
+}
+
+function formatBytes(bytes) {
+  const n = Number(bytes);
+  if (!Number.isFinite(n)) return "—";
+  if (n >= 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} МБ`;
+  if (n >= 1024) return `${(n / 1024).toFixed(1)} КБ`;
+  return `${n} Б`;
+}
+
+function debugBoolBadge(value, { trueIsBad = false, trueLabel = "да", falseLabel = "нет" } = {}) {
+  const bad = trueIsBad ? value === true : value === false;
+  const cls = bad ? "text-bg-danger" : "text-bg-success";
+  return `<span class="badge ${cls}">${value ? trueLabel : falseLabel}</span>`;
+}
+
+function renderDebugCard(title, rows) {
+  const body = rows
+    .filter(([, v]) => v !== undefined)
+    .map(
+      ([label, valueHtml]) =>
+        `<tr><th class="text-secondary fw-normal w-50">${escapeHtml(label)}</th><td>${valueHtml}</td></tr>`,
+    )
+    .join("");
+  return `
+    <div class="col-12 col-lg-6">
+      <div class="card shadow-sm h-100">
+        <div class="card-header py-2 fw-semibold">${escapeHtml(title)}</div>
+        <table class="table table-sm mb-0"><tbody>${body}</tbody></table>
+      </div>
+    </div>`;
+}
+
+async function loadDebug() {
+  hideAdminMessages();
+  const content = $("#debugContent");
+  if (!content) return;
+  content.innerHTML = '<div class="text-secondary small py-4 text-center">Загрузка…</div>';
+
+  const d = await va().apiAuthFetch("/api/admin/debug");
+  const cards = [];
+
+  const srv = d.server || {};
+  cards.push(renderDebugCard("Сервер", [
+    ["Python", escapeHtml(srv.python ?? "—")],
+    ["Платформа", escapeHtml(srv.platform ?? "—")],
+    ["Порт API", escapeHtml(srv.port ?? "—")],
+    ["Аптайм", escapeHtml(formatUptime(srv.uptime_seconds))],
+    ["Время сервера (UTC)", escapeHtml(srv.time_utc ?? "—")],
+  ]));
+
+  const db = d.database || {};
+  cards.push(renderDebugCard("База данных", db.error ? [
+    ["Статус", debugBoolBadge(false, { falseLabel: "ошибка" })],
+    ["Ошибка", escapeHtml(db.error)],
+  ] : [
+    ["Статус", debugBoolBadge(true, { trueLabel: "подключена" })],
+    ["Версия", escapeHtml(db.version ?? "—")],
+    ["Вентиляторов", escapeHtml(db.products_total ?? "—")],
+    ["Пользователей", escapeHtml(db.users_total ?? "—")],
+    ["Администраторов", escapeHtml(db.admins_total ?? "—")],
+  ]));
+
+  const cat = d.catalog || {};
+  cards.push(renderDebugCard("Каталог (CSV)", cat.error ? [
+    ["Ошибка", escapeHtml(cat.error)],
+  ] : [
+    ["Файл", `<code class="small">${escapeHtml(cat.csv_path ?? "—")}</code>`],
+    ["Файл существует", debugBoolBadge(cat.csv_exists === true)],
+    ["Размер", escapeHtml(formatBytes(cat.csv_size_bytes))],
+    ["Загружен в БД", debugBoolBadge(cat.synced === true)],
+    cat.synced ? ["Синхронизирован", debugBoolBadge(cat.in_sync === true)] : undefined,
+    cat.synced ? ["SHA-256 (нач.)", `<code class="small">${escapeHtml(cat.synced_sha256 ?? "—")}</code>`] : undefined,
+  ].filter(Boolean)));
+
+  const idx = d.search_index || {};
+  cards.push(renderDebugCard("Поисковый индекс", idx.error ? [
+    ["Ошибка", escapeHtml(idx.error)],
+  ] : [
+    ["Построен (Bloom + оси)", debugBoolBadge(idx.built === true)],
+    idx.built ? ["Записей", escapeHtml(idx.rows ?? "—")] : undefined,
+  ].filter(Boolean)));
+
+  const sec = d.security || {};
+  const rl = sec.login_rate_limit || {};
+  cards.push(renderDebugCard("Безопасность", sec.error ? [
+    ["Ошибка", escapeHtml(sec.error)],
+  ] : [
+    ["JWT-секрет по умолчанию", debugBoolBadge(sec.jwt_secret_is_default === true, { trueIsBad: true })],
+    ["Пароль админа по умолчанию", debugBoolBadge(sec.admin_password_is_default === true, { trueIsBad: true })],
+    ["Срок жизни токена", escapeHtml(`${sec.jwt_expire_hours ?? "—"} ч`)],
+    ["Лимит попыток входа", escapeHtml(`${rl.max_attempts ?? "—"} за ${Math.round((rl.window_seconds ?? 0) / 60)} мин`)],
+    ["CORS origins", `<code class="small">${escapeHtml((sec.cors_origins || []).join(", ") || "—")}</code>`],
+  ]));
+
+  content.innerHTML = cards.join("");
+
+  const alertEl = $("#debugSecurityAlert");
+  if (alertEl) {
+    const problems = [];
+    if (sec.jwt_secret_is_default) problems.push("JWT_SECRET не изменён со значения по умолчанию");
+    if (sec.admin_password_is_default) problems.push("пароль администратора по умолчанию (admin123)");
+    if (problems.length) {
+      alertEl.textContent = `⚠ Небезопасная конфигурация: ${problems.join("; ")}. Задайте значения в secrets/.env.local и перезапустите сервер.`;
+      alertEl.classList.remove("d-none");
+    } else {
+      alertEl.classList.add("d-none");
+    }
+  }
+
+  const meta = $("#debugMeta");
+  if (meta) meta.textContent = `Обновлено: ${new Date().toLocaleTimeString("ru-RU")}`;
 }
 
 function openProductModal(product, isCreate) {

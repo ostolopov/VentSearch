@@ -3,14 +3,23 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 
 from presentation.api.deps import db_session, get_current_user
 from presentation.api.schemas import AuthLoginIn, AuthRegisterIn, AuthTokenOut, UserOut
 from infrastructure.auth.jwt_service import create_access_token, hash_password, verify_password
+from infrastructure.auth.rate_limit import LoginRateLimiter
 from infrastructure.db.user_repository import _public_user, create_user, get_user_by_email
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
+
+# Общий на процесс лимитер неудачных входов (IP + email)
+login_limiter = LoginRateLimiter()
+
+
+def _login_key(request: Request, email: str) -> str:
+    ip = request.client.host if request.client else "unknown"
+    return f"{ip}|{email}"
 
 
 def _token_response(user: dict) -> AuthTokenOut:
@@ -44,14 +53,26 @@ def auth_register(payload: AuthRegisterIn):
 
 
 @router.post("/login", response_model=AuthTokenOut, summary="Вход")
-def auth_login(payload: AuthLoginIn):
+def auth_login(payload: AuthLoginIn, request: Request):
     email = payload.email.strip().lower()
+    key = _login_key(request, email)
+
+    retry_after = login_limiter.seconds_until_allowed(key)
+    if retry_after > 0:
+        raise HTTPException(
+            status_code=429,
+            detail={"error": "Too many failed attempts, try again later"},
+            headers={"Retry-After": str(retry_after)},
+        )
+
     with db_session() as conn:
         row = get_user_by_email(conn, email)
     if not row or not verify_password(payload.password, row["password_hash"]):
+        login_limiter.register_failure(key)
         raise HTTPException(status_code=401, detail={"error": "Invalid email or password"})
     if not row.get("is_active"):
         raise HTTPException(status_code=403, detail={"error": "Account is disabled"})
+    login_limiter.reset(key)
     return _token_response(_public_user(row))
 
 

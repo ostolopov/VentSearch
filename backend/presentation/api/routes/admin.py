@@ -1,7 +1,11 @@
-"""Админ API: каталог вентиляторов и пользователи."""
+"""Админ API: каталог вентиляторов, пользователи и диагностика."""
 from __future__ import annotations
 
-from typing import Annotated, Optional
+import platform
+import sys
+import time
+from datetime import datetime, timezone
+from typing import Annotated, Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
@@ -40,6 +44,9 @@ from infrastructure.db.user_repository import (
 )
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
+
+# Момент импорта модуля ≈ момент старта процесса — для аптайма в диагностике
+_STARTED_AT = time.time()
 
 
 def _rebuild_catalog_index() -> None:
@@ -236,3 +243,113 @@ def admin_users_bulk_delete(payload: BulkDeleteUsersIn, admin: Annotated[dict, D
     with db_session() as conn:
         deleted, errors = delete_users_bulk(conn, payload.ids, acting_admin_id=admin["id"])
     return BulkDeleteOut(deleted=deleted, errors=errors)
+
+
+# ---------------------------------------------------------------------------
+# Диагностика
+# ---------------------------------------------------------------------------
+
+def _debug_database_section() -> Dict[str, Any]:
+    from infrastructure.db.product_repository import count_products
+    from infrastructure.db.user_repository import count_admins
+
+    with db_session() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT version();")
+            row = cur.fetchone()
+            version = (row[0].split(",")[0].strip()) if row and row[0] else "unknown"
+            cur.execute("SELECT COUNT(*) FROM users;")
+            users_total = int(cur.fetchone()[0])
+        products_total = count_products(conn)
+        admins_total = count_admins(conn)
+    return {
+        "ok": True,
+        "version": version,
+        "products_total": products_total,
+        "users_total": users_total,
+        "admins_total": admins_total,
+    }
+
+
+def _debug_catalog_section() -> Dict[str, Any]:
+    from config import CSV_PATH
+    from infrastructure.csv.sync import _get_state
+
+    info: Dict[str, Any] = {
+        "csv_path": str(CSV_PATH),
+        "csv_exists": CSV_PATH.exists(),
+    }
+    if info["csv_exists"]:
+        st = CSV_PATH.stat()
+        info["csv_size_bytes"] = st.st_size
+        info["csv_mtime"] = datetime.fromtimestamp(st.st_mtime, tz=timezone.utc).isoformat()
+    with db_session() as conn:
+        state = _get_state(conn)
+    if state:
+        info["synced"] = True
+        info["synced_size_bytes"] = state["size_bytes"]
+        info["synced_sha256"] = state["sha256_hex"][:12] + "…"
+        info["in_sync"] = bool(
+            info.get("csv_exists")
+            and state["size_bytes"] == info.get("csv_size_bytes")
+        )
+    else:
+        info["synced"] = False
+    return info
+
+
+def _debug_index_section() -> Dict[str, Any]:
+    from infrastructure.search.catalog_index import get_catalog_index
+
+    idx = get_catalog_index()
+    if idx is None:
+        return {"built": False}
+    return {"built": True, "rows": len(getattr(idx, "_rows", []) or [])}
+
+
+def _debug_security_section() -> Dict[str, Any]:
+    from config import ADMIN_PASSWORD, CORS_ORIGINS, JWT_EXPIRE_HOURS, JWT_SECRET
+    from presentation.api.routes.auth import login_limiter
+
+    return {
+        # Только флаги — сами значения секретов наружу не отдаём никогда
+        "jwt_secret_is_default": JWT_SECRET == "change-me-in-production",
+        "admin_password_is_default": ADMIN_PASSWORD == "admin123",
+        "jwt_expire_hours": JWT_EXPIRE_HOURS,
+        "cors_origins": CORS_ORIGINS,
+        "login_rate_limit": {
+            "max_attempts": login_limiter.max_attempts,
+            "window_seconds": login_limiter.window_seconds,
+        },
+    }
+
+
+@router.get("/debug", summary="Диагностика системы (админ)")
+def admin_debug(_: Annotated[dict, Depends(require_admin)]) -> Dict[str, Any]:
+    """
+    Состояние сервера, БД, каталога и поискового индекса + проверки безопасности.
+    Секретные значения (пароли, ключи) в ответ не попадают — только флаги.
+    Каждая секция собирается независимо: сбой одной не валит остальные.
+    """
+    from config import PORT
+
+    report: Dict[str, Any] = {
+        "server": {
+            "python": sys.version.split()[0],
+            "platform": platform.platform(),
+            "port": PORT,
+            "uptime_seconds": int(time.time() - _STARTED_AT),
+            "time_utc": datetime.now(timezone.utc).isoformat(),
+        }
+    }
+    for name, builder in (
+        ("database", _debug_database_section),
+        ("catalog", _debug_catalog_section),
+        ("search_index", _debug_index_section),
+        ("security", _debug_security_section),
+    ):
+        try:
+            report[name] = builder()
+        except Exception as exc:  # диагностика не должна падать целиком
+            report[name] = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+    return report

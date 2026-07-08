@@ -95,6 +95,9 @@
           <li class="nav-item" role="presentation">
             <button class="nav-link" data-bs-toggle="tab" data-bs-target="#tabUsers" type="button">Пользователи</button>
           </li>
+          <li class="nav-item" role="presentation">
+            <button class="nav-link" id="debugTabBtn" data-bs-toggle="tab" data-bs-target="#tabDebug" type="button">Диагностика</button>
+          </li>
         </ul>
         <div class="tab-content">
           <div class="tab-pane fade show active" id="tabProducts" role="tabpanel">
@@ -178,6 +181,16 @@
                 <button id="usersPrevBtn" class="btn btn-outline-dark btn-sm" type="button">Назад</button>
                 <button id="usersNextBtn" class="btn btn-outline-dark btn-sm" type="button">Вперёд</button>
               </div>
+            </div>
+          </div>
+          <div class="tab-pane fade" id="tabDebug" role="tabpanel">
+            <div class="d-flex flex-wrap gap-2 align-items-center mb-2">
+              <button id="debugRefreshBtn" class="btn btn-outline-dark btn-sm" type="button">Обновить</button>
+              <span id="debugMeta" class="small text-secondary ms-auto"></span>
+            </div>
+            <div id="debugSecurityAlert" class="alert alert-warning d-none" role="alert"></div>
+            <div id="debugContent" class="row g-3">
+              <div class="text-secondary small py-4 text-center">Откройте вкладку, чтобы загрузить диагностику…</div>
             </div>
           </div>
         </div>

@@ -102,8 +102,25 @@ def _startup_db() -> None:
         put_connection(conn)
 
 
+def _warn_insecure_defaults() -> None:
+    """Громко предупредить, если секреты не изменены с дефолтных значений."""
+    from config import ADMIN_PASSWORD, JWT_SECRET
+
+    if JWT_SECRET == "change-me-in-production":
+        logger.warning(
+            "SECURITY: JWT_SECRET имеет значение по умолчанию — любой в сети "
+            "может подделать токен. Задайте JWT_SECRET в secrets/.env.local (или .env.prod)."
+        )
+    if ADMIN_PASSWORD == "admin123":
+        logger.warning(
+            "SECURITY: пароль админа по умолчанию (admin123). "
+            "Задайте ADMIN_PASSWORD в secrets/.env.local (или .env.prod)."
+        )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    _warn_insecure_defaults()
     _startup_db()
     yield
     set_catalog_index(None)
@@ -397,7 +414,12 @@ def create_app() -> FastAPI:
             page = FRONTEND_DIR / "404.html"
             if page.exists():
                 return FileResponse(page, status_code=404)
-        return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+        # headers исключения (например, Retry-After у 429) должны дойти до клиента
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"detail": exc.detail},
+            headers=getattr(exc, "headers", None),
+        )
 
     @app.exception_handler(Exception)
     async def unhandled_exception_handler(request: Request, exc: Exception):
