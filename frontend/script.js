@@ -408,13 +408,56 @@ function buildQpDatasetsShared(products, targetRpm = null, targetPoint = null) {
       data: systemPoints
     });
 
+    // Одиночная модель (карточка): зона допуска ±7.5% по давлению вокруг
+    // участка кривой Q ± 15% от точки + процент запаса в подписи точки.
+    // В сравнении (2+ моделей) зоны не рисуем — превращается в кашу.
+    let pointLabel = 'Рабочая точка';
+    if (products.length === 1 && series[0] && series[0].data.length >= 2) {
+      const fanPts = series[0].data;
+      const TOL_P = 0.075;
+      const seg = fanPts.filter(([q]) => q >= targetPoint.q * 0.85 && q <= targetPoint.q * 1.15);
+      if (seg.length >= 2) {
+        // Приём «полоса через stack»: нижняя граница невидима, вторая серия —
+        // толщина полосы, закрашенная areaStyle (стыкуются по индексам точек)
+        series.push({
+          name: 'tol-base', type: 'line', stack: 'tol', smooth: false,
+          symbol: 'none', silent: true, z: 1,
+          lineStyle: { opacity: 0 },
+          data: seg.map(([q, p]) => [q, p * (1 - TOL_P)])
+        });
+        series.push({
+          name: 'tol-band', type: 'line', stack: 'tol', smooth: false,
+          symbol: 'none', silent: true, z: 1,
+          lineStyle: { opacity: 0 },
+          areaStyle: { color: 'rgba(2, 123, 243, 0.16)' },
+          data: seg.map(([q, p]) => [q, p * 2 * TOL_P])
+        });
+      }
+
+      // Давление на кривой при Q точки — для процента запаса
+      let pAvail = null;
+      for (let i = 1; i < fanPts.length; i++) {
+        const [qa, pa] = fanPts[i - 1];
+        const [qb, pb] = fanPts[i];
+        if (qa <= targetPoint.q && targetPoint.q <= qb) {
+          pAvail = qb === qa ? pa : pa + ((targetPoint.q - qa) / (qb - qa)) * (pb - pa);
+          break;
+        }
+      }
+      if (pAvail != null && pAvail > 0) {
+        const reservePct = ((pAvail - targetPoint.p) / targetPoint.p) * 100;
+        const sign = reservePct >= 0 ? '+' : '';
+        pointLabel = `Рабочая точка · запас ${sign}${reservePct.toFixed(1)}%`;
+      }
+    }
+
     series.push({
       name: 'Рабочая точка',
       type: 'scatter',
       symbolSize: 12,
       itemStyle: { color: '#d62728' },
       data: [[targetPoint.q, targetPoint.p]],
-      label: { show: true, formatter: 'Рабочая точка', position: 'top', color: '#d62728', fontWeight: 'bold' },
+      label: { show: true, formatter: pointLabel, position: 'top', color: '#d62728', fontWeight: 'bold' },
       zlevel: 10
     });
   }
@@ -435,17 +478,38 @@ function renderQpChartShared(container, chartRef, products, targetRpm = null, ta
 
   const qpChartFontFamily = 'system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", "Helvetica Neue", Arial, sans-serif';
 
+  const series = buildQpDatasetsShared(products, targetRpm, targetPoint);
+
   const option = {
     tooltip: {
       trigger: 'axis',
       axisPointer: { type: 'cross', label: { backgroundColor: '#6a7985' } },
       textStyle: { fontFamily: qpChartFontFamily, fontSize: 12 },
-      valueFormatter: (value) => formatNumber(value)
+      // Служебные серии зоны допуска (tol-*) в подсказку не попадают
+      formatter: (params) => {
+        const list = (Array.isArray(params) ? params : [params])
+          .filter((pr) => pr && pr.seriesName && !pr.seriesName.startsWith('tol-'));
+        if (!list.length) return '';
+        const first = Array.isArray(list[0].value) ? list[0].value[0] : null;
+        const head = first != null ? `Q = ${formatNumber(first)} м³/ч` : '';
+        const rows = list.map((pr) => {
+          const v = Array.isArray(pr.value) ? pr.value[1] : pr.value;
+          return `${pr.marker} ${escapeHtml(pr.seriesName)}: <b>${formatNumber(v)} Па</b>`;
+        });
+        return [head, ...rows].filter(Boolean).join('<br/>');
+      }
     },
     legend: {
       bottom: 0,
+      data: series.map((s) => s.name).filter((n) => n && !String(n).startsWith('tol-')),
       textStyle: { fontFamily: qpChartFontFamily, fontSize: 12 }
     },
+    // Зум: колесо/пинч по оси Q + ползунок под графиком (filterMode 'none'
+    // не обрезает линии на краях видимой области)
+    dataZoom: [
+      { type: 'inside', xAxisIndex: 0, filterMode: 'none' },
+      { type: 'slider', xAxisIndex: 0, filterMode: 'none', height: 16, bottom: 26, brushSelect: false }
+    ],
     toolbox: {
       feature: {
         dataZoom: { yAxisIndex: 'none', title: { zoom: 'Лупа', back: 'Сброс лупы' } },
@@ -457,7 +521,7 @@ function renderQpChartShared(container, chartRef, products, targetRpm = null, ta
     grid: {
       left: '3%',
       right: '4%',
-      bottom: '12%',
+      bottom: 76,
       top: '10%',
       containLabel: true
     },
@@ -480,7 +544,7 @@ function renderQpChartShared(container, chartRef, products, targetRpm = null, ta
       axisLabel: { fontFamily: qpChartFontFamily, formatter: (val) => formatNumber(val) },
       nameTextStyle: { fontFamily: qpChartFontFamily, fontWeight: '600', fontSize: 13 }
     },
-    series: buildQpDatasetsShared(products, targetRpm, targetPoint)
+    series
   };
 
   chartRef.setOption(option);
@@ -492,9 +556,45 @@ function renderQpChartShared(container, chartRef, products, targetRpm = null, ta
     window.addEventListener('resize', () => {
       chart.resize();
     });
+    // Контейнер мог быть скрыт (вкладка, d-none) в момент init — тогда canvas
+    // получает нулевой размер. Наблюдаем за контейнером и подгоняем график,
+    // как только у него появляется реальная ширина/высота.
+    if (typeof ResizeObserver !== 'undefined') {
+      const observer = new ResizeObserver(() => {
+        if (container.clientWidth > 0 && container.clientHeight > 0) chart.resize();
+      });
+      observer.observe(container);
+      chart.on('disposed', () => observer.disconnect());
+    }
   }
 
   return chartRef;
+}
+
+// PNG для вставки в PDF: офф-скрин рендер с пропорциями блока отчёта (~2.5:1),
+// без ползунка зума и тулбокса — прямой снимок экранного canvas (очень широкого
+// и низкого) в PDF выглядит мелкой узкой полосой
+function captureChartPngForPdf(sourceChart) {
+  if (!sourceChart || typeof echarts === 'undefined') return null;
+  const holder = document.createElement('div');
+  holder.style.cssText = 'position:fixed;left:-99999px;top:0;width:1400px;height:560px;';
+  document.body.appendChild(holder);
+  let chart = null;
+  try {
+    chart = echarts.init(holder);
+    const opts = sourceChart.getOption();
+    opts.animation = false;
+    opts.dataZoom = [];
+    opts.toolbox = [];
+    chart.setOption(opts);
+    return chart.getDataURL({ type: 'png', backgroundColor: '#fff', pixelRatio: 2 });
+  } catch (err) {
+    console.error(err);
+    return sourceChart.getDataURL({ type: 'png', backgroundColor: '#fff', pixelRatio: 2 });
+  } finally {
+    if (chart) chart.dispose();
+    holder.remove();
+  }
 }
 
 function describeQuery(filters) {
@@ -1185,7 +1285,7 @@ async function initComparePage() {
     hideError();
     try {
       const ids = products.map((p) => String(p.id)).filter(Boolean);
-      const chartImageDataUrl = compareChart ? compareChart.getDataURL({ type: 'png', backgroundColor: '#fff', pixelRatio: 2 }) : null;
+      const chartImageDataUrl = compareChart ? captureChartPngForPdf(compareChart) : null;
       const response = await fetch(apiUrl("/api/export/pdf"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },

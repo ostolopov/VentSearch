@@ -27,27 +27,20 @@
 <!-- /Yandex.Metrika counter -->
 
     <style>
-      /* Fix active tabs style specific to product.html */
-      .nav-tabs .nav-link.active {
-        color: var(--vs-accent) !important;
-        border-bottom-color: var(--vs-accent) !important;
-        background: transparent !important;
-      }
-      .nav-tabs .nav-link:hover:not(.active) {
-        color: var(--vs-text) !important;
-        border-bottom-color: var(--vs-border) !important;
-      }
       #specTableBody th {
         font-weight: 500;
         color: var(--vs-text-muted);
         border-bottom: 1px solid var(--vs-border);
-        padding: 1rem;
+        padding: 0.55rem 0.75rem;
         background: transparent;
       }
       #specTableBody td {
         font-weight: 600;
         border-bottom: 1px solid var(--vs-border);
-        padding: 1rem;
+        padding: 0.55rem 0.75rem;
+      }
+      #productImage .fan-photo {
+        padding: 0.5rem;
       }
     </style>
   </head>
@@ -120,110 +113,72 @@
       </div>
 
       <div id="productContainer" class="d-none">
-        <div class="row g-4 mb-5">
-          <div class="col-lg-6 col-xl-5">
-            <div class="card shadow-sm border-0" style="border-radius: 20px; overflow: hidden;">
-              <div
-                id="productImage"
-                class="ratio ratio-4x3 bg-white d-flex align-items-center justify-content-center p-4"
-              >
-                <span class="text-secondary small">Фото скоро появится</span>
+        <div class="row g-4 mb-4">
+          <div class="col-lg-5 col-xl-4">
+            <div class="card shadow-sm border-0" style="border-radius: 20px;">
+              <div class="card-body p-4">
+                <div class="d-flex gap-3 align-items-start mb-3">
+                  <div
+                    id="productImage"
+                    class="rounded-3 border bg-white d-flex align-items-center justify-content-center overflow-hidden flex-shrink-0"
+                    style="width: 110px; height: 110px;"
+                  >
+                    <span class="text-secondary small">Фото</span>
+                  </div>
+                  <div style="min-width: 0;">
+                    <h1 id="productTitle" class="h4 fw-bold mb-1"></h1>
+                    <p id="productSubtitle" class="text-secondary small mb-0"></p>
+                  </div>
+                </div>
+                <div class="d-flex align-items-baseline justify-content-between gap-2 border-top pt-3 mb-3">
+                  <span class="text-secondary small fw-semibold">Розничная цена</span>
+                  <div id="productPrice" class="h4 fw-bold text-dark mb-0" style="letter-spacing: -0.02em;"></div>
+                </div>
+                <div class="d-flex flex-column gap-2">
+                  <button id="addToProjectBtn" class="btn btn-primary" style="border-radius: 12px; font-weight: 600;" type="button">
+                    В проект
+                  </button>
+                  <a class="btn btn-outline-dark" href="project.html" style="border-radius: 12px; font-weight: 600;">Перейти в проект</a>
+                </div>
+              </div>
+            </div>
+
+            <div class="card shadow-sm border-0 mt-4" style="border-radius: 20px;">
+              <div class="card-body p-4">
+                <h2 class="h6 fw-bold mb-2">Характеристики</h2>
+                <div class="table-responsive">
+                  <table class="table table-sm align-middle mb-0" style="width: 100%;">
+                    <tbody id="specTableBody"></tbody>
+                  </table>
+                </div>
               </div>
             </div>
           </div>
-          <div class="col-lg-6 col-xl-7 d-flex flex-column justify-content-center">
-            <h1 id="productTitle" class="display-6 fw-bold mb-2"></h1>
-            <p id="productSubtitle" class="text-secondary fs-5 mb-4"></p>
-            
-            <div class="card shadow-sm border-0 bg-white" style="border-radius: 16px;">
-              <div class="card-body p-4 p-xl-5">
-                <div class="mb-4">
-                  <span class="text-secondary d-block mb-1 fw-semibold">Розничная цена</span>
-                  <div id="productPrice" class="display-5 fw-bold text-dark" style="letter-spacing: -0.02em;"></div>
+
+          <div class="col-lg-7 col-xl-8">
+            <div class="card shadow-sm border-0 h-100" style="border-radius: 20px;">
+              <div class="card-body p-4 d-flex flex-column">
+                <div class="d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-2 mb-3">
+                  <h2 class="h5 mb-0 fw-bold">Аэродинамика: график Q–P</h2>
+                  <div class="d-flex gap-2 align-items-center">
+                    <select id="compareWithSelect" class="form-select form-select-sm" style="min-width: 220px;">
+                      <option value="">Сравнить с другой моделью...</option>
+                    </select>
+                    <button id="compareOnProductBtn" type="button" class="btn btn-dark btn-sm">Сравнить</button>
+                  </div>
                 </div>
-                <div class="d-flex flex-column flex-sm-row gap-3 mt-4">
-                  <button id="addToProjectBtn" class="btn btn-primary btn-lg flex-grow-1" style="border-radius: 12px; font-weight: 600;" type="button">
-                    В проект
-                  </button>
-                  <a class="btn btn-outline-dark btn-lg flex-grow-1" href="project.html" style="border-radius: 12px; font-weight: 600;">Перейти в проект</a>
+                <div class="product-chart-wrap flex-grow-1" style="min-height: 460px;">
+                  <div id="productQpChart" style="height: 100%; width: 100%; min-height: 460px;"></div>
                 </div>
+                <div id="productCompareMeta" class="small text-secondary mt-2 text-center"></div>
               </div>
             </div>
           </div>
         </div>
 
-        <div class="card tabs-card border-0 shadow-sm" style="border-radius: 20px;">
-          <div class="card-body p-0">
-            <ul class="nav nav-tabs px-4 pt-3 border-bottom-0 bg-light" id="productTabs" role="tablist">
-              <li class="nav-item" role="presentation">
-                <button
-                  class="nav-link active px-4 py-3 border-0 bg-transparent"
-                  id="specs-tab"
-                  data-bs-toggle="tab"
-                  data-bs-target="#specs-pane"
-                  type="button"
-                  role="tab"
-                  style="border-bottom: 3px solid transparent; font-weight: 600; color: var(--vs-text-muted);"
-                >
-                  Характеристики
-                </button>
-              </li>
-              <li class="nav-item" role="presentation">
-                <button
-                  class="nav-link px-4 py-3 border-0 bg-transparent"
-                  id="aero-tab"
-                  data-bs-toggle="tab"
-                  data-bs-target="#aero-pane"
-                  type="button"
-                  role="tab"
-                  style="border-bottom: 3px solid transparent; font-weight: 600; color: var(--vs-text-muted);"
-                >
-                  Аэродинамика
-                </button>
-              </li>
-              <li class="nav-item" role="presentation">
-                <button
-                  class="nav-link px-4 py-3 border-0 bg-transparent"
-                  id="docs-tab"
-                  data-bs-toggle="tab"
-                  data-bs-target="#docs-pane"
-                  type="button"
-                  role="tab"
-                  style="border-bottom: 3px solid transparent; font-weight: 600; color: var(--vs-text-muted);"
-                >
-                  Документация
-                </button>
-              </li>
-            </ul>
-
-            <div class="tab-content p-4 p-xl-5">
-              <div class="tab-pane fade show active" id="specs-pane" role="tabpanel">
-                <div class="table-responsive">
-                  <table class="table align-middle mb-0" style="width: 100%; max-width: 800px;">
-                    <tbody id="specTableBody"></tbody>
-                  </table>
-                </div>
-              </div>
-
-              <div class="tab-pane fade" id="aero-pane" role="tabpanel">
-                <div class="d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-3 mb-4">
-                  <h2 class="h5 mb-0 fw-bold">График Q–P для модели</h2>
-                  <div class="d-flex gap-2 align-items-center bg-light p-2 rounded-3">
-                    <select id="compareWithSelect" class="form-select border-0 bg-white shadow-sm" style="min-width: 250px;">
-                      <option value="">Сравнить с другой моделью...</option>
-                    </select>
-                    <button id="compareOnProductBtn" type="button" class="btn btn-dark shadow-sm">
-                      Сравнить
-                    </button>
-                  </div>
-                </div>
-                <div class="product-chart-wrap bg-white border shadow-sm rounded-4 p-4" style="height: 400px;">
-                  <div id="productQpChart" style="height: 100%; width: 100%;"></div>
-                </div>
-                <div id="productCompareMeta" class="small text-secondary mt-3 text-center"></div>
-              </div>
-
-              <div class="tab-pane fade" id="docs-pane" role="tabpanel">
+        <div class="card shadow-sm border-0" style="border-radius: 20px;">
+          <div class="card-body p-4">
+            <h2 class="h6 fw-bold mb-3">Документация</h2>
                 <div class="row g-4">
                   <div class="col-md-4">
                     <div class="card h-100 border bg-light shadow-sm" style="border-radius: 12px;">
@@ -253,8 +208,6 @@
                     </div>
                   </div>
                 </div>
-              </div>
-            </div>
           </div>
         </div>
       </div>
