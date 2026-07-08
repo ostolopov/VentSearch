@@ -1,0 +1,418 @@
+From caed6c60249b1ba3a78ee4a508ff8f07f7974dad Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Wed, 8 Jul 2026 19:15:05 +0000
+Subject: [PATCH] =?UTF-8?q?=D0=9A=D0=BE=D0=BC=D0=BF=D0=B0=D0=BA=D1=82?=
+ =?UTF-8?q?=D0=BD=D0=B0=D1=8F=20=D0=BA=D0=B0=D1=80=D1=82=D0=BE=D1=87=D0=BA?=
+ =?UTF-8?q?=D0=B0,=20=D0=B7=D0=BE=D0=BD=D0=B0=20=D0=B4=D0=BE=D0=BF=D1=83?=
+ =?UTF-8?q?=D1=81=D0=BA=D0=B0=20=D1=83=20=D1=82=D0=BE=D1=87=D0=BA=D0=B8,?=
+ =?UTF-8?q?=20=D1=84=D0=B8=D0=BA=D1=81=20=D0=BC=D0=B5=D0=BB=D0=BA=D0=B8?=
+ =?UTF-8?q?=D1=85=20=D0=B3=D1=80=D0=B0=D1=84=D0=B8=D0=BA=D0=BE=D0=B2=20?=
+ =?UTF-8?q?=D0=B8=20PDF?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+- product.html: двухколоночная вёрстка без вкладок — фото 110px в углу
+  над названием, цена и заказ слева, график Q-P и характеристики компактно;
+  документация отдельной карточкой ниже
+- ResizeObserver в renderQpChartShared: график, созданный в скрытом
+  контейнере (вкладка, d-none), сам подгоняет размер при появлении —
+  больше не нужен зум страницы
+- экспорт PDF: снимок графика рендерится офф-скрин 1400×560 под пропорции
+  блока отчёта, без ползунка зума и тулбокса — картинка не мелкая/узкая
+- ползунки масштаба: колесо/пинч по оси Q + слайдер под графиком
+- зона допуска ±7.5% по давлению вокруг участка кривой (Q ± 15% от точки)
+  на карточке одиночной модели + процент запаса в подписи рабочей точки;
+  в сравнении зоны не рисуются
+- тултип фильтрует служебные серии tol-*, легенда тоже
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01Xo2pb2FaYb5UENKMhgVboE
+---
+ frontend/product.html | 149 +++++++++++++++---------------------------
+ frontend/script.js    | 110 +++++++++++++++++++++++++++++--
+ 2 files changed, 156 insertions(+), 103 deletions(-)
+
+diff --git a/frontend/product.html b/frontend/product.html
+index 34761a5..1906edd 100644
+--- a/frontend/product.html
++++ b/frontend/product.html
+@@ -27,27 +27,20 @@
+ <!-- /Yandex.Metrika counter -->
+ 
+     <style>
+-      /* Fix active tabs style specific to product.html */
+-      .nav-tabs .nav-link.active {
+-        color: var(--vs-accent) !important;
+-        border-bottom-color: var(--vs-accent) !important;
+-        background: transparent !important;
+-      }
+-      .nav-tabs .nav-link:hover:not(.active) {
+-        color: var(--vs-text) !important;
+-        border-bottom-color: var(--vs-border) !important;
+-      }
+       #specTableBody th {
+         font-weight: 500;
+         color: var(--vs-text-muted);
+         border-bottom: 1px solid var(--vs-border);
+-        padding: 1rem;
++        padding: 0.55rem 0.75rem;
+         background: transparent;
+       }
+       #specTableBody td {
+         font-weight: 600;
+         border-bottom: 1px solid var(--vs-border);
+-        padding: 1rem;
++        padding: 0.55rem 0.75rem;
++      }
++      #productImage .fan-photo {
++        padding: 0.5rem;
+       }
+     </style>
+   </head>
+@@ -120,110 +113,72 @@
+       </div>
+ 
+       <div id="productContainer" class="d-none">
+-        <div class="row g-4 mb-5">
+-          <div class="col-lg-6 col-xl-5">
+-            <div class="card shadow-sm border-0" style="border-radius: 20px; overflow: hidden;">
+-              <div
+-                id="productImage"
+-                class="ratio ratio-4x3 bg-white d-flex align-items-center justify-content-center p-4"
+-              >
+-                <span class="text-secondary small">Фото скоро появится</span>
+-              </div>
+-            </div>
+-          </div>
+-          <div class="col-lg-6 col-xl-7 d-flex flex-column justify-content-center">
+-            <h1 id="productTitle" class="display-6 fw-bold mb-2"></h1>
+-            <p id="productSubtitle" class="text-secondary fs-5 mb-4"></p>
+-            
+-            <div class="card shadow-sm border-0 bg-white" style="border-radius: 16px;">
+-              <div class="card-body p-4 p-xl-5">
+-                <div class="mb-4">
+-                  <span class="text-secondary d-block mb-1 fw-semibold">Розничная цена</span>
+-                  <div id="productPrice" class="display-5 fw-bold text-dark" style="letter-spacing: -0.02em;"></div>
++        <div class="row g-4 mb-4">
++          <div class="col-lg-5 col-xl-4">
++            <div class="card shadow-sm border-0" style="border-radius: 20px;">
++              <div class="card-body p-4">
++                <div class="d-flex gap-3 align-items-start mb-3">
++                  <div
++                    id="productImage"
++                    class="rounded-3 border bg-white d-flex align-items-center justify-content-center overflow-hidden flex-shrink-0"
++                    style="width: 110px; height: 110px;"
++                  >
++                    <span class="text-secondary small">Фото</span>
++                  </div>
++                  <div style="min-width: 0;">
++                    <h1 id="productTitle" class="h4 fw-bold mb-1"></h1>
++                    <p id="productSubtitle" class="text-secondary small mb-0"></p>
++                  </div>
+                 </div>
+-                <div class="d-flex flex-column flex-sm-row gap-3 mt-4">
+-                  <button id="addToProjectBtn" class="btn btn-primary btn-lg flex-grow-1" style="border-radius: 12px; font-weight: 600;" type="button">
++                <div class="d-flex align-items-baseline justify-content-between gap-2 border-top pt-3 mb-3">
++                  <span class="text-secondary small fw-semibold">Розничная цена</span>
++                  <div id="productPrice" class="h4 fw-bold text-dark mb-0" style="letter-spacing: -0.02em;"></div>
++                </div>
++                <div class="d-flex flex-column gap-2">
++                  <button id="addToProjectBtn" class="btn btn-primary" style="border-radius: 12px; font-weight: 600;" type="button">
+                     В проект
+                   </button>
+-                  <a class="btn btn-outline-dark btn-lg flex-grow-1" href="project.html" style="border-radius: 12px; font-weight: 600;">Перейти в проект</a>
++                  <a class="btn btn-outline-dark" href="project.html" style="border-radius: 12px; font-weight: 600;">Перейти в проект</a>
+                 </div>
+               </div>
+             </div>
+-          </div>
+-        </div>
+-
+-        <div class="card tabs-card border-0 shadow-sm" style="border-radius: 20px;">
+-          <div class="card-body p-0">
+-            <ul class="nav nav-tabs px-4 pt-3 border-bottom-0 bg-light" id="productTabs" role="tablist">
+-              <li class="nav-item" role="presentation">
+-                <button
+-                  class="nav-link active px-4 py-3 border-0 bg-transparent"
+-                  id="specs-tab"
+-                  data-bs-toggle="tab"
+-                  data-bs-target="#specs-pane"
+-                  type="button"
+-                  role="tab"
+-                  style="border-bottom: 3px solid transparent; font-weight: 600; color: var(--vs-text-muted);"
+-                >
+-                  Характеристики
+-                </button>
+-              </li>
+-              <li class="nav-item" role="presentation">
+-                <button
+-                  class="nav-link px-4 py-3 border-0 bg-transparent"
+-                  id="aero-tab"
+-                  data-bs-toggle="tab"
+-                  data-bs-target="#aero-pane"
+-                  type="button"
+-                  role="tab"
+-                  style="border-bottom: 3px solid transparent; font-weight: 600; color: var(--vs-text-muted);"
+-                >
+-                  Аэродинамика
+-                </button>
+-              </li>
+-              <li class="nav-item" role="presentation">
+-                <button
+-                  class="nav-link px-4 py-3 border-0 bg-transparent"
+-                  id="docs-tab"
+-                  data-bs-toggle="tab"
+-                  data-bs-target="#docs-pane"
+-                  type="button"
+-                  role="tab"
+-                  style="border-bottom: 3px solid transparent; font-weight: 600; color: var(--vs-text-muted);"
+-                >
+-                  Документация
+-                </button>
+-              </li>
+-            </ul>
+ 
+-            <div class="tab-content p-4 p-xl-5">
+-              <div class="tab-pane fade show active" id="specs-pane" role="tabpanel">
++            <div class="card shadow-sm border-0 mt-4" style="border-radius: 20px;">
++              <div class="card-body p-4">
++                <h2 class="h6 fw-bold mb-2">Характеристики</h2>
+                 <div class="table-responsive">
+-                  <table class="table align-middle mb-0" style="width: 100%; max-width: 800px;">
++                  <table class="table table-sm align-middle mb-0" style="width: 100%;">
+                     <tbody id="specTableBody"></tbody>
+                   </table>
+                 </div>
+               </div>
++            </div>
++          </div>
+ 
+-              <div class="tab-pane fade" id="aero-pane" role="tabpanel">
+-                <div class="d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-3 mb-4">
+-                  <h2 class="h5 mb-0 fw-bold">График Q–P для модели</h2>
+-                  <div class="d-flex gap-2 align-items-center bg-light p-2 rounded-3">
+-                    <select id="compareWithSelect" class="form-select border-0 bg-white shadow-sm" style="min-width: 250px;">
++          <div class="col-lg-7 col-xl-8">
++            <div class="card shadow-sm border-0 h-100" style="border-radius: 20px;">
++              <div class="card-body p-4 d-flex flex-column">
++                <div class="d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-2 mb-3">
++                  <h2 class="h5 mb-0 fw-bold">Аэродинамика: график Q–P</h2>
++                  <div class="d-flex gap-2 align-items-center">
++                    <select id="compareWithSelect" class="form-select form-select-sm" style="min-width: 220px;">
+                       <option value="">Сравнить с другой моделью...</option>
+                     </select>
+-                    <button id="compareOnProductBtn" type="button" class="btn btn-dark shadow-sm">
+-                      Сравнить
+-                    </button>
++                    <button id="compareOnProductBtn" type="button" class="btn btn-dark btn-sm">Сравнить</button>
+                   </div>
+                 </div>
+-                <div class="product-chart-wrap bg-white border shadow-sm rounded-4 p-4" style="height: 400px;">
+-                  <div id="productQpChart" style="height: 100%; width: 100%;"></div>
++                <div class="product-chart-wrap flex-grow-1" style="min-height: 460px;">
++                  <div id="productQpChart" style="height: 100%; width: 100%; min-height: 460px;"></div>
+                 </div>
+-                <div id="productCompareMeta" class="small text-secondary mt-3 text-center"></div>
++                <div id="productCompareMeta" class="small text-secondary mt-2 text-center"></div>
+               </div>
++            </div>
++          </div>
++        </div>
+ 
+-              <div class="tab-pane fade" id="docs-pane" role="tabpanel">
++        <div class="card shadow-sm border-0" style="border-radius: 20px;">
++          <div class="card-body p-4">
++            <h2 class="h6 fw-bold mb-3">Документация</h2>
+                 <div class="row g-4">
+                   <div class="col-md-4">
+                     <div class="card h-100 border bg-light shadow-sm" style="border-radius: 12px;">
+@@ -253,8 +208,6 @@
+                     </div>
+                   </div>
+                 </div>
+-              </div>
+-            </div>
+           </div>
+         </div>
+       </div>
+diff --git a/frontend/script.js b/frontend/script.js
+index ac75793..14d492a 100644
+--- a/frontend/script.js
++++ b/frontend/script.js
+@@ -408,13 +408,56 @@ function buildQpDatasetsShared(products, targetRpm = null, targetPoint = null) {
+       data: systemPoints
+     });
+ 
++    // Одиночная модель (карточка): зона допуска ±7.5% по давлению вокруг
++    // участка кривой Q ± 15% от точки + процент запаса в подписи точки.
++    // В сравнении (2+ моделей) зоны не рисуем — превращается в кашу.
++    let pointLabel = 'Рабочая точка';
++    if (products.length === 1 && series[0] && series[0].data.length >= 2) {
++      const fanPts = series[0].data;
++      const TOL_P = 0.075;
++      const seg = fanPts.filter(([q]) => q >= targetPoint.q * 0.85 && q <= targetPoint.q * 1.15);
++      if (seg.length >= 2) {
++        // Приём «полоса через stack»: нижняя граница невидима, вторая серия —
++        // толщина полосы, закрашенная areaStyle (стыкуются по индексам точек)
++        series.push({
++          name: 'tol-base', type: 'line', stack: 'tol', smooth: false,
++          symbol: 'none', silent: true, z: 1,
++          lineStyle: { opacity: 0 },
++          data: seg.map(([q, p]) => [q, p * (1 - TOL_P)])
++        });
++        series.push({
++          name: 'tol-band', type: 'line', stack: 'tol', smooth: false,
++          symbol: 'none', silent: true, z: 1,
++          lineStyle: { opacity: 0 },
++          areaStyle: { color: 'rgba(2, 123, 243, 0.16)' },
++          data: seg.map(([q, p]) => [q, p * 2 * TOL_P])
++        });
++      }
++
++      // Давление на кривой при Q точки — для процента запаса
++      let pAvail = null;
++      for (let i = 1; i < fanPts.length; i++) {
++        const [qa, pa] = fanPts[i - 1];
++        const [qb, pb] = fanPts[i];
++        if (qa <= targetPoint.q && targetPoint.q <= qb) {
++          pAvail = qb === qa ? pa : pa + ((targetPoint.q - qa) / (qb - qa)) * (pb - pa);
++          break;
++        }
++      }
++      if (pAvail != null && pAvail > 0) {
++        const reservePct = ((pAvail - targetPoint.p) / targetPoint.p) * 100;
++        const sign = reservePct >= 0 ? '+' : '';
++        pointLabel = `Рабочая точка · запас ${sign}${reservePct.toFixed(1)}%`;
++      }
++    }
++
+     series.push({
+       name: 'Рабочая точка',
+       type: 'scatter',
+       symbolSize: 12,
+       itemStyle: { color: '#d62728' },
+       data: [[targetPoint.q, targetPoint.p]],
+-      label: { show: true, formatter: 'Рабочая точка', position: 'top', color: '#d62728', fontWeight: 'bold' },
++      label: { show: true, formatter: pointLabel, position: 'top', color: '#d62728', fontWeight: 'bold' },
+       zlevel: 10
+     });
+   }
+@@ -435,17 +478,38 @@ function renderQpChartShared(container, chartRef, products, targetRpm = null, ta
+ 
+   const qpChartFontFamily = 'system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", "Helvetica Neue", Arial, sans-serif';
+ 
++  const series = buildQpDatasetsShared(products, targetRpm, targetPoint);
++
+   const option = {
+     tooltip: {
+       trigger: 'axis',
+       axisPointer: { type: 'cross', label: { backgroundColor: '#6a7985' } },
+       textStyle: { fontFamily: qpChartFontFamily, fontSize: 12 },
+-      valueFormatter: (value) => formatNumber(value)
++      // Служебные серии зоны допуска (tol-*) в подсказку не попадают
++      formatter: (params) => {
++        const list = (Array.isArray(params) ? params : [params])
++          .filter((pr) => pr && pr.seriesName && !pr.seriesName.startsWith('tol-'));
++        if (!list.length) return '';
++        const first = Array.isArray(list[0].value) ? list[0].value[0] : null;
++        const head = first != null ? `Q = ${formatNumber(first)} м³/ч` : '';
++        const rows = list.map((pr) => {
++          const v = Array.isArray(pr.value) ? pr.value[1] : pr.value;
++          return `${pr.marker} ${escapeHtml(pr.seriesName)}: <b>${formatNumber(v)} Па</b>`;
++        });
++        return [head, ...rows].filter(Boolean).join('<br/>');
++      }
+     },
+     legend: {
+       bottom: 0,
++      data: series.map((s) => s.name).filter((n) => n && !String(n).startsWith('tol-')),
+       textStyle: { fontFamily: qpChartFontFamily, fontSize: 12 }
+     },
++    // Зум: колесо/пинч по оси Q + ползунок под графиком (filterMode 'none'
++    // не обрезает линии на краях видимой области)
++    dataZoom: [
++      { type: 'inside', xAxisIndex: 0, filterMode: 'none' },
++      { type: 'slider', xAxisIndex: 0, filterMode: 'none', height: 16, bottom: 26, brushSelect: false }
++    ],
+     toolbox: {
+       feature: {
+         dataZoom: { yAxisIndex: 'none', title: { zoom: 'Лупа', back: 'Сброс лупы' } },
+@@ -457,7 +521,7 @@ function renderQpChartShared(container, chartRef, products, targetRpm = null, ta
+     grid: {
+       left: '3%',
+       right: '4%',
+-      bottom: '12%',
++      bottom: 76,
+       top: '10%',
+       containLabel: true
+     },
+@@ -480,7 +544,7 @@ function renderQpChartShared(container, chartRef, products, targetRpm = null, ta
+       axisLabel: { fontFamily: qpChartFontFamily, formatter: (val) => formatNumber(val) },
+       nameTextStyle: { fontFamily: qpChartFontFamily, fontWeight: '600', fontSize: 13 }
+     },
+-    series: buildQpDatasetsShared(products, targetRpm, targetPoint)
++    series
+   };
+ 
+   chartRef.setOption(option);
+@@ -492,11 +556,47 @@ function renderQpChartShared(container, chartRef, products, targetRpm = null, ta
+     window.addEventListener('resize', () => {
+       chart.resize();
+     });
++    // Контейнер мог быть скрыт (вкладка, d-none) в момент init — тогда canvas
++    // получает нулевой размер. Наблюдаем за контейнером и подгоняем график,
++    // как только у него появляется реальная ширина/высота.
++    if (typeof ResizeObserver !== 'undefined') {
++      const observer = new ResizeObserver(() => {
++        if (container.clientWidth > 0 && container.clientHeight > 0) chart.resize();
++      });
++      observer.observe(container);
++      chart.on('disposed', () => observer.disconnect());
++    }
+   }
+ 
+   return chartRef;
+ }
+ 
++// PNG для вставки в PDF: офф-скрин рендер с пропорциями блока отчёта (~2.5:1),
++// без ползунка зума и тулбокса — прямой снимок экранного canvas (очень широкого
++// и низкого) в PDF выглядит мелкой узкой полосой
++function captureChartPngForPdf(sourceChart) {
++  if (!sourceChart || typeof echarts === 'undefined') return null;
++  const holder = document.createElement('div');
++  holder.style.cssText = 'position:fixed;left:-99999px;top:0;width:1400px;height:560px;';
++  document.body.appendChild(holder);
++  let chart = null;
++  try {
++    chart = echarts.init(holder);
++    const opts = sourceChart.getOption();
++    opts.animation = false;
++    opts.dataZoom = [];
++    opts.toolbox = [];
++    chart.setOption(opts);
++    return chart.getDataURL({ type: 'png', backgroundColor: '#fff', pixelRatio: 2 });
++  } catch (err) {
++    console.error(err);
++    return sourceChart.getDataURL({ type: 'png', backgroundColor: '#fff', pixelRatio: 2 });
++  } finally {
++    if (chart) chart.dispose();
++    holder.remove();
++  }
++}
++
+ function describeQuery(filters) {
+   const parts = [];
+   if (filters.type) parts.push(`Тип: ${filters.type}`);
+@@ -1185,7 +1285,7 @@ async function initComparePage() {
+     hideError();
+     try {
+       const ids = products.map((p) => String(p.id)).filter(Boolean);
+-      const chartImageDataUrl = compareChart ? compareChart.getDataURL({ type: 'png', backgroundColor: '#fff', pixelRatio: 2 }) : null;
++      const chartImageDataUrl = compareChart ? captureChartPngForPdf(compareChart) : null;
+       const response = await fetch(apiUrl("/api/export/pdf"), {
+         method: "POST",
+         headers: { "Content-Type": "application/json" },
+-- 
+2.43.0
+

@@ -1,0 +1,710 @@
+From 357d251f7a2b3b8d18d72af52340966f3abe41b5 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Wed, 8 Jul 2026 19:34:09 +0000
+Subject: [PATCH] =?UTF-8?q?=D0=A4=D0=B8=D0=BA=D1=81=20=D0=B7=D0=BE=D0=BD?=
+ =?UTF-8?q?=D1=8B=20=D0=B4=D0=BE=D0=BF=D1=83=D1=81=D0=BA=D0=B0,=20=D0=B2?=
+ =?UTF-8?q?=D0=B2=D0=BE=D0=B4=20=D0=B4=D0=BE=D0=BF=D1=83=D1=81=D0=BA=D0=B0?=
+ =?UTF-8?q?,=20PDF=20=D0=BE=D0=B4=D0=BD=D0=BE=D0=B9=20=D0=BC=D0=BE=D0=B4?=
+ =?UTF-8?q?=D0=B5=D0=BB=D0=B8,=20=D1=81=D1=80=D0=B0=D0=B2=D0=BD=D0=B5?=
+ =?UTF-8?q?=D0=BD=D0=B8=D0=B5=20=D0=B2=202=20=D0=BA=D0=BE=D0=BB=D0=BE?=
+ =?UTF-8?q?=D0=BD=D0=BA=D0=B8?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+- зона допуска рисовалась не у кривой: stack ECharts на двух числовых осях
+  складывает координаты по X — заменено на полигон через custom-серию
+- поле «Допуск ±%» в форме точки: с ним подбор показывает и модели чуть
+  ниже точки (жёлтый бейдж «дефицит X%»); параметр tolerance (0-50)
+  в /api/products/select-point; сортировка по |запасу| — точность первой;
+  допуск сохраняется с точкой и задаёт ширину зоны на графике карточки
+- «Скачать PDF» на карточке модели (красная кнопка) — тот же
+  /api/export/pdf с одним id; шапка отчёта «карточка модели»;
+  общий helper requestPdfExport для карточки и сравнения
+- сравнение: график и таблица бок о бок на широких экранах (col-xxl-6),
+  кнопка экспорта красная с белым текстом, «Очистить» — контурная
+- Cache-Control: no-cache для html/js/css (страницы product.html?id=…
+  кэшировались per-URL и показывали старую вёрстку) + bump ?v= в HTML
+- тест: tolerance пропускает дефицит в пределах допуска, 422 при >50
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01Xo2pb2FaYb5UENKMhgVboE
+---
+ .../application/use_cases/select_by_point.py  |  14 ++-
+ backend/presentation/api/routes/catalog.py    |   5 +-
+ backend/presentation/app.py                   |  19 ++-
+ backend/tests/test_select_point.py            |  19 +++
+ frontend/404.html                             |   6 +-
+ frontend/500.html                             |   6 +-
+ frontend/admin.html                           |   4 +-
+ frontend/auth.html                            |   6 +-
+ frontend/compare.html                         |  30 ++---
+ frontend/delivery.html                        |   6 +-
+ frontend/index.html                           |  18 +--
+ frontend/product.html                         |   7 +-
+ frontend/project.html                         |   6 +-
+ frontend/script.js                            | 116 +++++++++++-------
+ 14 files changed, 165 insertions(+), 97 deletions(-)
+
+diff --git a/backend/application/use_cases/select_by_point.py b/backend/application/use_cases/select_by_point.py
+index ceac033..ae6a403 100644
+--- a/backend/application/use_cases/select_by_point.py
++++ b/backend/application/use_cases/select_by_point.py
+@@ -18,10 +18,11 @@ from domain.services.qp_service import pressure_at_flow
+ 
+ @dataclass
+ class SelectByPointQuery:
+-    """Рабочая точка и ограничение размера выдачи."""
++    """Рабочая точка, допуск по давлению (%) и ограничение размера выдачи."""
+ 
+     point_q: float
+     point_p: float
++    tolerance: float = 0.0
+     limit: int = 20
+ 
+ 
+@@ -74,7 +75,12 @@ class SelectByPointUseCase:
+                 pressure_coefficients=p.get("pressure_coefficients"),
+                 nominal_rpm=p.get("nominal_rpm"),
+             )
+-            if p_avail is None or p_avail < query.point_p:
++            if p_avail is None:
++                continue
++
++            # Допуск разрешает недобор давления до tolerance % (запас будет < 0)
++            min_pressure = query.point_p * (1.0 - max(query.tolerance, 0.0) / 100.0)
++            if p_avail < min_pressure:
+                 continue
+ 
+             reserve = (p_avail - query.point_p) / query.point_p * 100.0
+@@ -82,7 +88,9 @@ class SelectByPointUseCase:
+                 product=p, p_available=round(p_avail, 1), reserve_percent=round(reserve, 1),
+             ))
+ 
+-        items.sort(key=lambda it: it.reserve_percent)
++        # По точности попадания: |запас| по возрастанию — точная модель первой,
++        # дальше — с растущим запасом или дефицитом
++        items.sort(key=lambda it: abs(it.reserve_percent))
+         return SelectByPointResult(
+             items=items[: query.limit],
+             total_considered=len(candidates),
+diff --git a/backend/presentation/api/routes/catalog.py b/backend/presentation/api/routes/catalog.py
+index 5fb2b60..7bc83c2 100644
+--- a/backend/presentation/api/routes/catalog.py
++++ b/backend/presentation/api/routes/catalog.py
+@@ -190,6 +190,7 @@ def api_products_facets():
+ def api_products_select_point(
+     point_q: Annotated[float, Query(description="Требуемый расход, м³/ч.", gt=0)],
+     point_p: Annotated[float, Query(description="Требуемое давление, Па.", gt=0)],
++    tolerance: Annotated[float, Query(description="Допустимый недобор давления, %.", ge=0, le=50)] = 0.0,
+     limit: Annotated[int, Query(description="Максимум результатов.", ge=1, le=100)] = 20,
+ ):
+     from config import CSV_PATH
+@@ -198,7 +199,9 @@ def api_products_select_point(
+     with _db_session() as conn:
+         repo = PgProductRepository(conn)
+         uc = SelectByPointUseCase(repo)
+-        result = uc.execute(SelectByPointQuery(point_q=point_q, point_p=point_p, limit=limit))
++        result = uc.execute(SelectByPointQuery(
++            point_q=point_q, point_p=point_p, tolerance=tolerance, limit=limit,
++        ))
+ 
+     return SelectPointOut(
+         items=[
+diff --git a/backend/presentation/app.py b/backend/presentation/app.py
+index a2ee8b9..9b4f3e5 100644
+--- a/backend/presentation/app.py
++++ b/backend/presentation/app.py
+@@ -277,11 +277,13 @@ def _build_compare_pdf(products: list[dict[str, Any]], chart_png: Optional[bytes
+             pdf.drawString(x + 1.2 * mm, y - 4.9 * mm, (_normalize_ws(text))[:36] or "—")
+         y -= row_h
+ 
++    single = len(products) == 1
+     pdf.setAuthor("VENTSEARCH API")
+-    pdf.setTitle("VENTSEARCH Сравнение моделей")
++    pdf.setTitle("VENTSEARCH Карточка модели" if single else "VENTSEARCH Сравнение моделей")
+     card_header(
+-        "VENTSEARCH — отчет по сравнению",
+-        f"Дата: {datetime.now().strftime('%d.%m.%Y %H:%M')}   |   Моделей: {len(products)}",
++        "VENTSEARCH — карточка модели" if single else "VENTSEARCH — отчет по сравнению",
++        f"Дата: {datetime.now().strftime('%d.%m.%Y %H:%M')}"
++        + ("" if single else f"   |   Моделей: {len(products)}"),
+     )
+ 
+     if chart_png:
+@@ -501,7 +503,9 @@ def create_app() -> FastAPI:
+ 
+     @app.get("/", include_in_schema=False)
+     def serve_index():
+-        return FileResponse(FRONTEND_DIR / "index.html")
++        # HTML не кэшируем: браузер хранит страницы с query-string (product.html?id=…)
++        # по отдельности и после обновлений показывает смесь старой и новой вёрстки
++        return FileResponse(FRONTEND_DIR / "index.html", headers={"Cache-Control": "no-cache"})
+ 
+     for name in [
+         "index.html", "product.html", "compare.html", "project.html",
+@@ -517,10 +521,13 @@ def create_app() -> FastAPI:
+ 
+ def _make_static_route(app: FastAPI, filename: str) -> None:
+     path = f"/{filename}"
++    # no-cache заставляет браузер перепроверять файл (ETag/304) — после обновления
++    # кода не остаётся закэшированных страниц со старой вёрсткой
++    headers = {"Cache-Control": "no-cache"} if filename.endswith((".html", ".js", ".css")) else None
+ 
+     @app.get(path, include_in_schema=False)
+-    def _serve(f=filename):
+-        return FileResponse(FRONTEND_DIR / f)
++    def _serve(f=filename, h=headers):
++        return FileResponse(FRONTEND_DIR / f, headers=h)
+ 
+     _serve.__name__ = f"serve_{filename.replace('.', '_').replace('-', '_')}"
+ 
+diff --git a/backend/tests/test_select_point.py b/backend/tests/test_select_point.py
+index 4c72655..2f85a90 100644
+--- a/backend/tests/test_select_point.py
++++ b/backend/tests/test_select_point.py
+@@ -104,6 +104,25 @@ def test_select_point_filters_and_sorts(monkeypatch):
+         assert it["p_available"] >= 150
+ 
+ 
++def test_select_point_tolerance_allows_small_deficit(monkeypatch):
++    fan = _vo_product("sub", 900, 3600, 60, 160)
++    p_avail = pressure_at_flow(2000, q_min=900, q_max=3600, p_min=60, p_max=160, fan_type="Осевой")
++    assert p_avail is not None
++    point_p = round(p_avail * 1.10, 1)  # точка на 10% выше кривой → дефицит ~9%
++
++    monkeypatch.setattr(PgProductRepository, "list_products", lambda self, **kw: [fan])
++    client = make_test_client(monkeypatch)
++
++    base = f"/api/products/select-point?point_q=2000&point_p={point_p}"
++    assert client.get(base).json()["items"] == [], "без допуска модель ниже точки не проходит"
++
++    data = client.get(base + "&tolerance=15").json()
++    assert [it["product"]["id"] for it in data["items"]] == ["sub"]
++    assert data["items"][0]["reserve_percent"] < 0, "дефицит — отрицательный запас"
++
++    assert client.get(base + "&tolerance=99").status_code == 422
++
++
+ def test_select_point_validation(monkeypatch):
+     client = make_test_client(monkeypatch)
+     assert client.get("/api/products/select-point").status_code == 422
+diff --git a/frontend/404.html b/frontend/404.html
+index a775eca..e2a87ca 100644
+--- a/frontend/404.html
++++ b/frontend/404.html
+@@ -9,7 +9,7 @@
+       rel="stylesheet"
+       crossorigin="anonymous"
+     />
+-    <link rel="stylesheet" href="style.css?v=20260524-1" />
++    <link rel="stylesheet" href="style.css?v=20260708-1" />
+   </head>
+   <body data-page="error">
+     <nav class="navbar navbar-expand-lg sticky-top">
+@@ -95,7 +95,7 @@
+     <script src="config.js?v=20260424-1"></script>
+     <script src="auth.js?v=20260524-9"></script>
+     <script src="site-auth.js?v=20260524-9"></script>
+-    <script src="script.js?v=20260524-9"></script>
+-    <script src="site-layout.js?v=20260527-1"></script>
++    <script src="script.js?v=20260708-1"></script>
++    <script src="site-layout.js?v=20260708-1"></script>
+   </body>
+ </html>
+diff --git a/frontend/500.html b/frontend/500.html
+index 84f5d50..cb27ae4 100644
+--- a/frontend/500.html
++++ b/frontend/500.html
+@@ -9,7 +9,7 @@
+       rel="stylesheet"
+       crossorigin="anonymous"
+     />
+-    <link rel="stylesheet" href="style.css?v=20260524-1" />
++    <link rel="stylesheet" href="style.css?v=20260708-1" />
+   </head>
+   <body data-page="error">
+     <nav class="navbar navbar-expand-lg sticky-top">
+@@ -95,7 +95,7 @@
+     <script src="config.js?v=20260424-1"></script>
+     <script src="auth.js?v=20260524-9"></script>
+     <script src="site-auth.js?v=20260524-9"></script>
+-    <script src="script.js?v=20260524-9"></script>
+-    <script src="site-layout.js?v=20260527-1"></script>
++    <script src="script.js?v=20260708-1"></script>
++    <script src="site-layout.js?v=20260708-1"></script>
+   </body>
+ </html>
+diff --git a/frontend/admin.html b/frontend/admin.html
+index aa0121f..231feee 100644
+--- a/frontend/admin.html
++++ b/frontend/admin.html
+@@ -9,7 +9,7 @@
+       rel="stylesheet"
+       crossorigin="anonymous"
+     />
+-    <link rel="stylesheet" href="style.css?v=20260524-1" />
++    <link rel="stylesheet" href="style.css?v=20260708-1" />
+   </head>
+   <body class="admin-page" data-page="admin">
+     <nav class="navbar navbar-expand-lg sticky-top">
+@@ -275,6 +275,6 @@
+     <script src="site-auth.js?v=20260524-10"></script>
+     <script src="admin.js?v=20260524-11"></script>
+     <script src="admin-page.js?v=20260524-10"></script>
+-    <script src="site-layout.js?v=20260527-1"></script>
++    <script src="site-layout.js?v=20260708-1"></script>
+   </body>
+ </html>
+diff --git a/frontend/auth.html b/frontend/auth.html
+index de14a1b..78003ce 100644
+--- a/frontend/auth.html
++++ b/frontend/auth.html
+@@ -9,7 +9,7 @@
+       rel="stylesheet"
+       crossorigin="anonymous"
+     />
+-    <link rel="stylesheet" href="style.css?v=20260524-4" />
++    <link rel="stylesheet" href="style.css?v=20260708-1" />
+   </head>
+   <body data-page="auth" class="auth-page">
+     <nav class="navbar navbar-expand-lg sticky-top">
+@@ -119,7 +119,7 @@
+     <script src="config.js?v=20260424-1"></script>
+     <script src="auth.js?v=20260524-4"></script>
+     <script src="auth-page.js?v=20260524-4"></script>
+-    <script src="script.js?v=20260524-4"></script>
+-    <script src="site-layout.js?v=20260527-1"></script>
++    <script src="script.js?v=20260708-1"></script>
++    <script src="site-layout.js?v=20260708-1"></script>
+   </body>
+ </html>
+diff --git a/frontend/compare.html b/frontend/compare.html
+index f8c2a5a..4a8b4ac 100644
+--- a/frontend/compare.html
++++ b/frontend/compare.html
+@@ -9,7 +9,7 @@
+       rel="stylesheet"
+       crossorigin="anonymous"
+     />
+-    <link rel="stylesheet" href="style.css?v=20260524-1" />
++    <link rel="stylesheet" href="style.css?v=20260708-1" />
+ 
+ <!-- Yandex.Metrika counter -->
+ <script type="text/javascript">
+@@ -93,8 +93,8 @@
+           </div>
+         </div>
+         <div class="d-flex gap-2">
+-          <button id="clearCompareBtn" class="btn btn-dark btn-sm" type="button" style="background: var(--vs-text); color: var(--vs-accent);">Очистить</button>
+-          <button id="exportPdfBtn" class="btn btn-dark btn-sm" type="button" style="background: var(--vs-text); color: var(--vs-accent);">Экспорт в PDF</button>
++          <button id="clearCompareBtn" class="btn btn-outline-light btn-sm" type="button">Очистить</button>
++          <button id="exportPdfBtn" class="btn btn-danger btn-sm fw-semibold px-3" type="button">Скачать PDF</button>
+         </div>
+       </div>
+     </header>
+@@ -102,29 +102,29 @@
+     <main class="container-fluid px-3 px-lg-4 py-4">
+       <div id="alertBox" class="alert alert-danger d-none mb-3" role="alert"></div>
+ 
+-      <div class="row g-4">
+-        <div class="col-12">
+-          <div class="card shadow-sm border-0 mb-4" style="border-radius: 20px; overflow: hidden;">
++      <div class="row g-4 align-items-stretch">
++        <div class="col-12 col-xxl-6">
++          <div class="card shadow-sm border-0 h-100" style="border-radius: 20px; overflow: hidden;">
+             <div class="card-header bg-white border-bottom-0 pt-4 px-4 pb-0">
+-              <h2 class="h5 fw-bold mb-0">Сравнение аэродинамических характеристик (Q–P)</h2>
++              <h2 class="h5 fw-bold mb-0">Аэродинамика (Q–P)</h2>
+             </div>
+             <div class="card-body p-4">
+-              <div class="chart-canvas-wrap bg-light rounded-4 p-3 border">
+-                <div id="qpChart" style="height: 400px; width: 100%;"></div>
++              <div class="chart-canvas-wrap bg-light rounded-4 p-3 border h-100" style="min-height: 480px;">
++                <div id="qpChart" style="height: 100%; width: 100%; min-height: 450px;"></div>
+               </div>
+             </div>
+           </div>
+         </div>
+ 
+-        <div class="col-12">
+-          <div class="card shadow-sm border-0 mb-4" style="border-radius: 20px; overflow: hidden;">
+-            <div class="card-header bg-white border-bottom-0 pt-4 px-4 pb-0 d-flex justify-content-between align-items-center">
++        <div class="col-12 col-xxl-6">
++          <div class="card shadow-sm border-0 h-100" style="border-radius: 20px; overflow: hidden;">
++            <div class="card-header bg-white border-bottom-0 pt-4 px-4 pb-0 d-flex justify-content-between align-items-center flex-wrap gap-2">
+               <h2 class="h5 fw-bold mb-0">Сводная таблица параметров</h2>
+               <span class="badge bg-success bg-opacity-10 text-success px-3 py-2" style="font-size: 0.85rem;">Зелёным выделен лучший показатель</span>
+             </div>
+             <div class="card-body p-0 mt-3">
+               <div class="table-responsive">
+-                <table class="table table-hover align-middle compare-table mb-0 bg-white" style="min-width: 800px;">
++                <table class="table table-hover align-middle compare-table mb-0 bg-white">
+                   <thead id="compareTableHead" class="bg-light text-secondary"></thead>
+                   <tbody id="compareTableBody"></tbody>
+                 </table>
+@@ -143,8 +143,8 @@
+     <script src="config.js?v=20260424-1"></script>
+     <script src="auth.js?v=20260524-10"></script>
+     <script src="site-auth.js?v=20260524-10"></script>
+-    <script src="script.js?v=20260524-10"></script>
+-    <script src="site-layout.js?v=20260527-1"></script>
++    <script src="script.js?v=20260708-1"></script>
++    <script src="site-layout.js?v=20260708-1"></script>
+   </body>
+ </html>
+ 
+diff --git a/frontend/delivery.html b/frontend/delivery.html
+index 5a94446..b7cd529 100644
+--- a/frontend/delivery.html
++++ b/frontend/delivery.html
+@@ -9,7 +9,7 @@
+       rel="stylesheet"
+       crossorigin="anonymous"
+     />
+-    <link rel="stylesheet" href="style.css?v=20260524-1" />
++    <link rel="stylesheet" href="style.css?v=20260708-1" />
+   </head>
+   <body data-page="delivery">
+     <nav class="navbar navbar-expand-lg sticky-top">
+@@ -176,7 +176,7 @@
+     <script src="config.js?v=20260424-1"></script>
+     <script src="auth.js?v=20260524-9"></script>
+     <script src="site-auth.js?v=20260524-9"></script>
+-    <script src="script.js?v=20260524-9"></script>
+-    <script src="site-layout.js?v=20260527-1"></script>
++    <script src="script.js?v=20260708-1"></script>
++    <script src="site-layout.js?v=20260708-1"></script>
+   </body>
+ </html>
+diff --git a/frontend/index.html b/frontend/index.html
+index b23dc8d..545830e 100644
+--- a/frontend/index.html
++++ b/frontend/index.html
+@@ -10,7 +10,7 @@
+       integrity="sha384-QWTKZyjpPEjISv5WaRU9OFeRpok6YctnYmDr5pNlyT2bRjXh0JMhjY6hW+ALEwIH"
+       crossorigin="anonymous"
+     />
+-    <link rel="stylesheet" href="style.css?v=20260524-1" />
++    <link rel="stylesheet" href="style.css?v=20260708-1" />
+         
+ <!-- Yandex.Metrika counter -->
+ <script type="text/javascript">
+@@ -145,20 +145,24 @@
+ 
+                 <form id="pointForm" class="vstack gap-2 mb-3">
+                   <div class="row g-2">
+-                    <div class="col-6">
++                    <div class="col-4">
+                       <label for="pointQ" class="form-label text-secondary small mb-1 fw-medium">Расход Q</label>
+                       <input id="pointQ" name="pointQ" type="number" min="1" step="any" class="form-control rounded-3" placeholder="м³/ч" />
+                     </div>
+-                    <div class="col-6">
++                    <div class="col-4">
+                       <label for="pointP" class="form-label text-secondary small mb-1 fw-medium">Давление P</label>
+                       <input id="pointP" name="pointP" type="number" min="1" step="any" class="form-control rounded-3" placeholder="Па" />
+                     </div>
++                    <div class="col-4">
++                      <label for="pointTol" class="form-label text-secondary small mb-1 fw-medium">Допуск</label>
++                      <input id="pointTol" name="pointTol" type="number" min="0" max="50" step="any" class="form-control rounded-3" placeholder="± %" />
++                    </div>
+                   </div>
+                   <div class="d-flex gap-2">
+-                    <button type="submit" class="btn btn-dark btn-sm flex-grow-1">Подобрать</button>
++                    <button type="submit" class="btn btn-primary btn-sm flex-grow-1">Подобрать</button>
+                     <button type="button" id="pointResetBtn" class="btn btn-outline-dark btn-sm">Сброс</button>
+                   </div>
+-                  <div class="form-text small">Найдём вентиляторы, чья характеристика обеспечивает точку, — от точного попадания к запасу.</div>
++                  <div class="form-text small">Допуск разрешает лёгкий недобор давления: с ним покажем и модели чуть ниже точки (со знаком «−»).</div>
+                 </form>
+ 
+                 <hr class="my-2" />
+@@ -364,8 +368,8 @@
+     <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
+     <script src="config.js?v=20260424-1"></script>
+     <script src="auth.js?v=20260524-9"></script>
+-    <script src="script.js?v=20260524-9"></script>
++    <script src="script.js?v=20260708-1"></script>
+     <script src="site-auth.js?v=20260524-9"></script>
+-    <script src="site-layout.js?v=20260527-1"></script>
++    <script src="site-layout.js?v=20260708-1"></script>
+   </body>
+ </html>
+diff --git a/frontend/product.html b/frontend/product.html
+index 1906edd..6608164 100644
+--- a/frontend/product.html
++++ b/frontend/product.html
+@@ -10,7 +10,7 @@
+       integrity="sha384-QWTKZyjpPEjISv5WaRU9OFeRpok6YctnYmDr5pNlyT2bRjXh0JMhjY6hW+ALEwIH"
+       crossorigin="anonymous"
+     />
+-    <link rel="stylesheet" href="style.css?v=20260524-1" />
++    <link rel="stylesheet" href="style.css?v=20260708-1" />
+     
+     <!-- Yandex.Metrika counter -->
+ <script type="text/javascript">
+@@ -165,6 +165,7 @@
+                       <option value="">Сравнить с другой моделью...</option>
+                     </select>
+                     <button id="compareOnProductBtn" type="button" class="btn btn-dark btn-sm">Сравнить</button>
++                    <button id="exportProductPdfBtn" type="button" class="btn btn-danger btn-sm text-nowrap">Скачать PDF</button>
+                   </div>
+                 </div>
+                 <div class="product-chart-wrap flex-grow-1" style="min-height: 460px;">
+@@ -223,7 +224,7 @@
+     <script src="config.js?v=20260424-1"></script>
+     <script src="auth.js?v=20260524-10"></script>
+     <script src="site-auth.js?v=20260524-10"></script>
+-    <script src="script.js?v=20260524-10"></script>
+-    <script src="site-layout.js?v=20260527-1"></script>
++    <script src="script.js?v=20260708-1"></script>
++    <script src="site-layout.js?v=20260708-1"></script>
+   </body>
+ </html>
+diff --git a/frontend/project.html b/frontend/project.html
+index c740baf..c6d6208 100644
+--- a/frontend/project.html
++++ b/frontend/project.html
+@@ -9,7 +9,7 @@
+       rel="stylesheet"
+       crossorigin="anonymous"
+     />
+-    <link rel="stylesheet" href="style.css?v=20260524-1" />
++    <link rel="stylesheet" href="style.css?v=20260708-1" />
+ 
+ <!-- Yandex.Metrika counter -->
+ <script type="text/javascript">
+@@ -209,7 +209,7 @@
+     <script src="config.js?v=20260424-1"></script>
+     <script src="auth.js?v=20260524-4"></script>
+     <script src="site-auth.js?v=20260524-4"></script>
+-    <script src="script.js?v=20260524-4"></script>
+-    <script src="site-layout.js?v=20260527-1"></script>
++    <script src="script.js?v=20260708-1"></script>
++    <script src="site-layout.js?v=20260708-1"></script>
+   </body>
+ </html>
+diff --git a/frontend/script.js b/frontend/script.js
+index 14d492a..4481bd3 100644
+--- a/frontend/script.js
++++ b/frontend/script.js
+@@ -125,7 +125,9 @@ function loadWorkingPoint() {
+     const raw = localStorage.getItem(POINT_STORAGE_KEY);
+     const data = raw ? JSON.parse(raw) : null;
+     if (data && Number(data.q) > 0 && Number(data.p) > 0) {
+-      return { q: Number(data.q), p: Number(data.p) };
++      const point = { q: Number(data.q), p: Number(data.p) };
++      if (Number(data.tol) > 0) point.tol = Number(data.tol);
++      return point;
+     }
+     return null;
+   } catch {
+@@ -136,7 +138,9 @@ function loadWorkingPoint() {
+ function saveWorkingPoint(point) {
+   try {
+     if (point && Number(point.q) > 0 && Number(point.p) > 0) {
+-      localStorage.setItem(POINT_STORAGE_KEY, JSON.stringify({ q: Number(point.q), p: Number(point.p) }));
++      const data = { q: Number(point.q), p: Number(point.p) };
++      if (Number(point.tol) > 0) data.tol = Number(point.tol);
++      localStorage.setItem(POINT_STORAGE_KEY, JSON.stringify(data));
+     } else {
+       localStorage.removeItem(POINT_STORAGE_KEY);
+     }
+@@ -408,29 +412,33 @@ function buildQpDatasetsShared(products, targetRpm = null, targetPoint = null) {
+       data: systemPoints
+     });
+ 
+-    // Одиночная модель (карточка): зона допуска ±7.5% по давлению вокруг
+-    // участка кривой Q ± 15% от точки + процент запаса в подписи точки.
++    // Одиночная модель (карточка): зона допуска по давлению вокруг участка
++    // кривой Q ± 15% от точки + процент запаса в подписи точки.
+     // В сравнении (2+ моделей) зоны не рисуем — превращается в кашу.
+     let pointLabel = 'Рабочая точка';
+     if (products.length === 1 && series[0] && series[0].data.length >= 2) {
+       const fanPts = series[0].data;
+-      const TOL_P = 0.075;
++      const tolPct = Number(targetPoint.tol) > 0 ? Number(targetPoint.tol) : 7.5;
++      const TOL_P = tolPct / 100;
+       const seg = fanPts.filter(([q]) => q >= targetPoint.q * 0.85 && q <= targetPoint.q * 1.15);
+       if (seg.length >= 2) {
+-        // Приём «полоса через stack»: нижняя граница невидима, вторая серия —
+-        // толщина полосы, закрашенная areaStyle (стыкуются по индексам точек)
++        // Полигон через custom-серию: stack у ECharts на двух числовых осях
++        // складывает координаты и уводит полосу в сторону — рисуем контур сами
++        const upper = seg.map(([q, p]) => [q, p * (1 + TOL_P)]);
++        const lower = seg.map(([q, p]) => [q, p * (1 - TOL_P)]);
++        const outline = upper.concat(lower.slice().reverse());
+         series.push({
+-          name: 'tol-base', type: 'line', stack: 'tol', smooth: false,
+-          symbol: 'none', silent: true, z: 1,
+-          lineStyle: { opacity: 0 },
+-          data: seg.map(([q, p]) => [q, p * (1 - TOL_P)])
+-        });
+-        series.push({
+-          name: 'tol-band', type: 'line', stack: 'tol', smooth: false,
+-          symbol: 'none', silent: true, z: 1,
+-          lineStyle: { opacity: 0 },
+-          areaStyle: { color: 'rgba(2, 123, 243, 0.16)' },
+-          data: seg.map(([q, p]) => [q, p * 2 * TOL_P])
++          name: 'tol-band',
++          type: 'custom',
++          silent: true,
++          z: 1,
++          clip: true,
++          renderItem: (params, api) => ({
++            type: 'polygon',
++            shape: { points: outline.map((pt) => api.coord(pt)) },
++            style: { fill: 'rgba(2, 123, 243, 0.16)' }
++          }),
++          data: [0]
+         });
+       }
+ 
+@@ -571,6 +579,29 @@ function renderQpChartShared(container, chartRef, products, targetRpm = null, ta
+   return chartRef;
+ }
+ 
++// Запросить у бэкенда PDF по списку моделей и скачать файл.
++// Используется и в сравнении (2+ моделей), и на карточке одиночной модели.
++async function requestPdfExport(ids, filename, chart) {
++  const chartImageDataUrl = chart ? captureChartPngForPdf(chart) : null;
++  const response = await fetch(apiUrl("/api/export/pdf"), {
++    method: "POST",
++    headers: { "Content-Type": "application/json" },
++    body: JSON.stringify({ ids, filename, chart_image_data_url: chartImageDataUrl }),
++  });
++  if (!response.ok) {
++    throw new Error(`PDF export failed: ${response.status}`);
++  }
++  const blob = await response.blob();
++  const url = URL.createObjectURL(blob);
++  const a = document.createElement("a");
++  a.href = url;
++  a.download = filename;
++  document.body.appendChild(a);
++  a.click();
++  a.remove();
++  URL.revokeObjectURL(url);
++}
++
+ // PNG для вставки в PDF: офф-скрин рендер с пропорциями блока отчёта (~2.5:1),
+ // без ползунка зума и тулбокса — прямой снимок экранного canvas (очень широкого
+ // и низкого) в PDF выглядит мелкой узкой полосой
+@@ -843,7 +874,7 @@ async function initCatalogPage() {
+           <dt class="col-6 text-secondary">Мощн.</dt><dd class="col-6 mb-1">${p.power != null ? `${escapeHtml(p.power)} Вт` : "—"}</dd>
+           <dt class="col-6 text-secondary">Шум</dt><dd class="col-6 mb-1">${p.noise_level != null ? `${escapeHtml(p.noise_level)} дБ` : "—"}</dd>
+         </dl>
+-        ${p._point ? `<div class="mb-2"><span class="badge ${p._point.reserve_percent <= 15 ? "text-bg-success" : "text-bg-secondary"}">В точке: ${escapeHtml(formatNumber(p._point.p_available))} Па · запас ${escapeHtml(p._point.reserve_percent)}%</span></div>` : ""}
++        ${p._point ? `<div class="mb-2"><span class="badge ${p._point.reserve_percent < 0 ? "text-bg-warning" : (p._point.reserve_percent <= 15 ? "text-bg-success" : "text-bg-secondary")}">В точке: ${escapeHtml(formatNumber(p._point.p_available))} Па · ${p._point.reserve_percent < 0 ? "дефицит " + escapeHtml(Math.abs(p._point.reserve_percent)) : "запас " + escapeHtml(p._point.reserve_percent)}%</span></div>` : ""}
+         <div class="mt-auto">
+           <div class="product-price">${escapeHtml(formatPrice(p.price))}</div>
+           <a class="btn btn-sm btn-dark product-open-btn mt-2" href="product.html?id=${encodeURIComponent(p.id)}">Открыть</a>
+@@ -1045,23 +1076,26 @@ async function initCatalogPage() {
+   const pointForm = $("#pointForm");
+   const pointQInput = $("#pointQ");
+   const pointPInput = $("#pointP");
++  const pointTolInput = $("#pointTol");
+   const pointResetBtn = $("#pointResetBtn");
+ 
+-  async function runPointSearch(pointQ, pointP) {
++  async function runPointSearch(pointQ, pointP, pointTol) {
+     hideError();
+     setLoading(true);
+-    state.querySummaryText = `Рабочая точка: Q = ${formatNumber(pointQ)} м³/ч · P = ${formatNumber(pointP)} Па`;
++    const tolText = pointTol > 0 ? ` · допуск ±${formatNumber(pointTol)}%` : "";
++    state.querySummaryText = `Рабочая точка: Q = ${formatNumber(pointQ)} м³/ч · P = ${formatNumber(pointP)} Па${tolText}`;
+     if (querySummary) querySummary.textContent = state.querySummaryText;
+     try {
+       const params = new URLSearchParams({
+         point_q: String(pointQ), point_p: String(pointP), limit: String(PAGE_SIZE),
+       });
++      if (pointTol > 0) params.set("tolerance", String(pointTol));
+       const data = await fetchJson(apiUrl(`/api/products/select-point?${params.toString()}`));
+       const items = (Array.isArray(data?.items) ? data.items : []).map((it) => ({
+         ...it.product,
+         _point: { p_available: it.p_available, reserve_percent: it.reserve_percent },
+       }));
+-      saveWorkingPoint({ q: pointQ, p: pointP });
++      saveWorkingPoint({ q: pointQ, p: pointP, tol: pointTol > 0 ? pointTol : undefined });
+       if (!items.length) {
+         showEmptyState();
+         if (resultsCount) resultsCount.textContent = "0";
+@@ -1085,17 +1119,19 @@ async function initCatalogPage() {
+     e.preventDefault();
+     const pointQ = toNumber(pointQInput?.value);
+     const pointP = toNumber(pointPInput?.value);
++    const pointTol = Math.min(Math.max(toNumber(pointTolInput?.value) || 0, 0), 50);
+     if (!pointQ || pointQ <= 0 || !pointP || pointP <= 0) {
+       showError("Укажите расход Q (м³/ч) и давление P (Па) — оба значения должны быть больше нуля.");
+       return;
+     }
+-    runPointSearch(pointQ, pointP);
++    runPointSearch(pointQ, pointP, pointTol);
+     closeFiltersOffcanvasIfMobile();
+   });
+ 
+   pointResetBtn?.addEventListener("click", () => {
+     if (pointQInput) pointQInput.value = "";
+     if (pointPInput) pointPInput.value = "";
++    if (pointTolInput) pointTolInput.value = "";
+     saveWorkingPoint(null);
+     loadPage(1);
+   });
+@@ -1106,6 +1142,7 @@ async function initCatalogPage() {
+     if (storedPoint) {
+       if (pointQInput) pointQInput.value = String(storedPoint.q);
+       if (pointPInput) pointPInput.value = String(storedPoint.p);
++      if (pointTolInput && storedPoint.tol) pointTolInput.value = String(storedPoint.tol);
+     }
+   }
+ 
+@@ -1285,28 +1322,7 @@ async function initComparePage() {
+     hideError();
+     try {
+       const ids = products.map((p) => String(p.id)).filter(Boolean);
+-      const chartImageDataUrl = compareChart ? captureChartPngForPdf(compareChart) : null;
+-      const response = await fetch(apiUrl("/api/export/pdf"), {
+-        method: "POST",
+-        headers: { "Content-Type": "application/json" },
+-        body: JSON.stringify({
+-          ids,
+-          filename: "ventmash-compare.pdf",
+-          chart_image_data_url: chartImageDataUrl,
+-        }),
+-      });
+-      if (!response.ok) {
+-        throw new Error(`PDF export failed: ${response.status}`);
+-      }
+-      const blob = await response.blob();
+-      const url = URL.createObjectURL(blob);
+-      const a = document.createElement("a");
+-      a.href = url;
+-      a.download = "ventmash-compare.pdf";
+-      document.body.appendChild(a);
+-      a.click();
+-      a.remove();
+-      URL.revokeObjectURL(url);
++      await requestPdfExport(ids, "ventsearch-compare.pdf", compareChart);
+     } catch (err) {
+       console.error(err);
+       showError("Не удалось экспортировать PDF. Проверьте доступность API.");
+@@ -1439,6 +1455,16 @@ async function initProductPage() {
+       compareWithSelect.appendChild(opt);
+     }
+ 
++    $("#exportProductPdfBtn")?.addEventListener("click", async () => {
++      try {
++        const slug = currentProduct?._meta?.model_slug || currentProduct?.meta?.model_slug || currentProduct.id;
++        await requestPdfExport([String(currentProduct.id)], `ventsearch-${slug}.pdf`, productChart);
++      } catch (err) {
++        console.error(err);
++        window.alert("Не удалось экспортировать PDF. Проверьте доступность API.");
++      }
++    });
++
+     compareOnProductBtn?.addEventListener("click", async () => {
+       const otherId = compareWithSelect.value;
+       if (!otherId) {
+-- 
+2.43.0
+

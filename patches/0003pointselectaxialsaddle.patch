@@ -1,0 +1,827 @@
+From 54f05a27aaff90c3021b4d6de779903b60b64aaa Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Wed, 8 Jul 2026 18:49:12 +0000
+Subject: [PATCH] =?UTF-8?q?=D0=9F=D0=BE=D0=B4=D0=B1=D0=BE=D1=80=20=D0=BF?=
+ =?UTF-8?q?=D0=BE=20=D1=80=D0=B0=D0=B1=D0=BE=D1=87=D0=B5=D0=B9=20=D1=82?=
+ =?UTF-8?q?=D0=BE=D1=87=D0=BA=D0=B5,=20=D1=81=D0=B5=D0=B4=D0=BB=D0=BE?=
+ =?UTF-8?q?=D0=B2=D0=B8=D0=BD=D0=B0=20=D0=BE=D1=81=D0=B5=D0=B2=D1=8B=D1=85?=
+ =?UTF-8?q?=20=D0=BA=D1=80=D0=B8=D0=B2=D1=8B=D1=85,=20=D1=80=D0=B0=D1=81?=
+ =?UTF-8?q?=D1=85=D0=BE=D0=B4=20=D0=B2=20=D0=BC=C2=B3/=D1=81?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+- /api/products/select-point?point_q&point_p: вентиляторы, чья кривая Q-P
+  обеспечивает точку; сортировка по запасу давления (точное попадание первым)
+- блок «Подбор по рабочей точке» на главной над фильтрами; бейдж запаса
+  на карточках; точка и кривая сети рисуются на графиках карточки и сравнения
+- кривая осевых (ВО/УВО/ВКОП/Осевой) — кубическая Безье с седловиной
+  (провал → горб → крутой спад), как в бумажных каталогах; синхронно
+  на бэке (qp_service) и фронте (script.js)
+- loader: колонка «Производительность м3/с» конвертируется в м³/ч (×3600)
+  с пересборкой raw-текста; заголовок data/ventsearch_massive_sorted.csv
+  исправлен на фактические единицы (значения не менялись)
+- α и картинки для типа «Осевой»
+- тесты: форма седловины, отсутствие провала у центробежных,
+  pressure_at_flow, фильтрация/сортировка/валидация select-point
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01Xo2pb2FaYb5UENKMhgVboE
+---
+ .../application/use_cases/select_by_point.py  |  89 +++++++++++
+ backend/domain/services/qp_service.py         |  76 ++++++++-
+ backend/infrastructure/csv/loader.py          |  32 +++-
+ backend/presentation/api/routes/catalog.py    |  44 ++++++
+ backend/presentation/api/schemas.py           |  26 ++++
+ backend/tests/test_select_point.py            | 111 +++++++++++++
+ data/ventsearch_massive_sorted.csv            |   2 +-
+ frontend/index.html                           |  24 +++
+ frontend/script.js                            | 147 ++++++++++++++++--
+ 9 files changed, 533 insertions(+), 18 deletions(-)
+ create mode 100644 backend/application/use_cases/select_by_point.py
+ create mode 100644 backend/tests/test_select_point.py
+
+diff --git a/backend/application/use_cases/select_by_point.py b/backend/application/use_cases/select_by_point.py
+new file mode 100644
+index 0000000..ceac033
+--- /dev/null
++++ b/backend/application/use_cases/select_by_point.py
+@@ -0,0 +1,89 @@
++"""
++Сценарий: подбор вентиляторов по рабочей точке (Q, P).
++
++Классический каталожный подбор: заказчик знает требуемый расход Q (м³/ч)
++и давление сети P (Па). Подходит вентилятор, у которого точка Q лежит
++в рабочем диапазоне, а кривая Q-P в этой точке даёт давление не ниже P.
++Результат сортируется по запасу давления: чем меньше запас, тем точнее
++попадание (первым идёт самый экономичный подходящий вариант).
++"""
++from __future__ import annotations
++
++from dataclasses import dataclass, field
++from typing import Any, Dict, List
++
++from domain.interfaces.product_repository import AbstractProductRepository
++from domain.services.qp_service import pressure_at_flow
++
++
++@dataclass
++class SelectByPointQuery:
++    """Рабочая точка и ограничение размера выдачи."""
++
++    point_q: float
++    point_p: float
++    limit: int = 20
++
++
++@dataclass
++class SelectByPointItem:
++    """Кандидат: продукт + давление на кривой в точке Q и запас в %."""
++
++    product: Dict[str, Any]
++    p_available: float
++    reserve_percent: float
++
++
++@dataclass
++class SelectByPointResult:
++    items: List[SelectByPointItem] = field(default_factory=list)
++    total_considered: int = 0
++
++
++class SelectByPointUseCase:
++    """Подбор по точке поверх абстрактного репозитория."""
++
++    def __init__(self, product_repo: AbstractProductRepository) -> None:
++        self._repo = product_repo
++
++    def execute(self, query: SelectByPointQuery) -> SelectByPointResult:
++        # Кандидаты: рабочий диапазон расхода накрывает точку Q
++        # (min_airflow=Q отсекает airflow_max < Q, max_airflow=Q — airflow_min > Q)
++        candidates = self._repo.list_products(
++            min_airflow=query.point_q,
++            max_airflow=query.point_q,
++            sort="price_asc",
++            limit=None,
++            offset=0,
++        )
++
++        items: List[SelectByPointItem] = []
++        for p in candidates:
++            airflow = p.get("airflow") or {}
++            pressure = p.get("pressure") or {}
++            q_min, q_max = airflow.get("min"), airflow.get("max")
++            p_min, p_max = pressure.get("min"), pressure.get("max")
++            if q_min is None or q_max is None or p_min is None or p_max is None:
++                continue
++
++            p_avail = pressure_at_flow(
++                query.point_q,
++                q_min=float(q_min), q_max=float(q_max),
++                p_min=float(p_min), p_max=float(p_max),
++                fan_type=p.get("type"),
++                pressure_coefficients=p.get("pressure_coefficients"),
++                nominal_rpm=p.get("nominal_rpm"),
++            )
++            if p_avail is None or p_avail < query.point_p:
++                continue
++
++            reserve = (p_avail - query.point_p) / query.point_p * 100.0
++            items.append(SelectByPointItem(
++                product=p, p_available=round(p_avail, 1), reserve_percent=round(reserve, 1),
++            ))
++
++        items.sort(key=lambda it: it.reserve_percent)
++        return SelectByPointResult(
++            items=items[: query.limit],
++            total_considered=len(candidates),
++        )
+diff --git a/backend/domain/services/qp_service.py b/backend/domain/services/qp_service.py
+index 9fcf1a7..e20639e 100644
+--- a/backend/domain/services/qp_service.py
++++ b/backend/domain/services/qp_service.py
+@@ -17,6 +17,7 @@ ALPHA_BY_TYPE: dict[str, float] = {
+     "ВО": 0.18,
+     "ВКОП": 0.15,
+     "УВО": 0.18,
++    "Осевой": 0.18,
+     "ВЦ": 0.05,
+     "ВР": 0.05,
+     "Ц": 0.05,
+@@ -24,6 +25,17 @@ ALPHA_BY_TYPE: dict[str, float] = {
+ 
+ ALPHA_DEFAULT: float = 0.10
+ 
++# Осевые типы: характеристика с седловиной (провал слева от горба),
++# как в каталогах ВО 13-284 / ВЕЗА ОСА. Регистр не важен.
++AXIAL_TYPES: frozenset[str] = frozenset({"во", "вкоп", "уво", "осевой"})
++
++# Форма седловины (кубическая Безье): позиции контрольных точек по Q (доли
++# рабочего диапазона) и смещения по P (доли перепада давления).
++AXIAL_DIP_POS: float = 0.25
++AXIAL_DIP: float = 0.45
++AXIAL_HUMP_POS: float = 0.60
++AXIAL_HUMP: float = 0.50
++
+ 
+ def alpha_for_type(fan_type: str | None) -> float:
+     """Вернуть коэффициент кривизны α для данного типа вентилятора."""
+@@ -32,6 +44,13 @@ def alpha_for_type(fan_type: str | None) -> float:
+     return ALPHA_BY_TYPE.get(fan_type.strip(), ALPHA_DEFAULT)
+ 
+ 
++def is_axial_type(fan_type: str | None) -> bool:
++    """Осевой ли вентилятор (кривая с седловиной)."""
++    if not fan_type:
++        return False
++    return fan_type.strip().lower() in AXIAL_TYPES
++
++
+ @dataclass(frozen=True)
+ class QPPoint:
+     """Точка на кривой Q-P (расход, давление)."""
+@@ -72,22 +91,71 @@ def build_qp_curve(
+     p_start = max(p_min, p_max)
+     p_end = min(p_min, p_max)
+ 
++    axial = is_axial_type(fan_type)
++    d_q = q_max - q_min
++    d_p = p_start - p_end
++
+     alpha = alpha_for_type(fan_type)
+-    q_ctrl = q_min + 0.5 * (q_max - q_min)
+-    p_ctrl = p_start + alpha * (p_start - p_end)
++    q_ctrl = q_min + 0.5 * d_q
++    p_ctrl = p_start + alpha * d_p
++
++    # Кубическая Безье для осевых: провал (седловина) и горб внутри диапазона
++    q_c1 = q_min + AXIAL_DIP_POS * d_q
++    p_c1 = p_start - AXIAL_DIP * d_p
++    q_c2 = q_min + AXIAL_HUMP_POS * d_q
++    p_c2 = p_start + AXIAL_HUMP * d_p
+ 
+     result: List[QPPoint] = []
+     for i in range(points):
+         t = i / (points - 1)
++        one_minus_t = 1.0 - t
+ 
+         if pressure_coefficients and len(pressure_coefficients) > 0:
+-            q_nom = q_min + (q_max - q_min) * t
++            q_nom = q_min + d_q * t
+             p_nom = sum(c * (q_nom ** idx) for idx, c in enumerate(pressure_coefficients))
++        elif axial:
++            mt2, t2 = one_minus_t ** 2, t ** 2
++            q_nom = (one_minus_t * mt2) * q_min + 3 * mt2 * t * q_c1 + 3 * one_minus_t * t2 * q_c2 + (t * t2) * q_max
++            p_nom = (one_minus_t * mt2) * p_start + 3 * mt2 * t * p_c1 + 3 * one_minus_t * t2 * p_c2 + (t * t2) * p_end
+         else:
+-            one_minus_t = 1.0 - t
+             q_nom = (one_minus_t ** 2) * q_min + 2 * t * one_minus_t * q_ctrl + (t ** 2) * q_max
+             p_nom = (one_minus_t ** 2) * p_start + 2 * t * one_minus_t * p_ctrl + (t ** 2) * p_end
+ 
+         result.append(QPPoint(q=q_nom * scale_factor, p=p_nom * (scale_factor ** 2)))
+ 
+     return result
++
++
++def pressure_at_flow(
++    flow: float,
++    *,
++    q_min: float,
++    q_max: float,
++    p_min: float,
++    p_max: float,
++    fan_type: Optional[str] = None,
++    pressure_coefficients: Optional[list] = None,
++    nominal_rpm: Optional[float] = None,
++    target_rpm: Optional[float] = None,
++) -> Optional[float]:
++    """
++    Давление на кривой Q-P при заданном расходе (линейная интерполяция
++    по плотной сетке — единообразно для всех форм кривой).
++    None — если расход вне рабочего диапазона вентилятора.
++    """
++    curve = build_qp_curve(
++        q_min=q_min, q_max=q_max, p_min=p_min, p_max=p_max,
++        fan_type=fan_type, pressure_coefficients=pressure_coefficients,
++        nominal_rpm=nominal_rpm, target_rpm=target_rpm, points=101,
++    )
++    if not curve:
++        return None
++    if flow < curve[0].q or flow > curve[-1].q:
++        return None
++    for a, b in zip(curve, curve[1:]):
++        if a.q <= flow <= b.q:
++            if b.q == a.q:
++                return a.p
++            k = (flow - a.q) / (b.q - a.q)
++            return a.p + k * (b.p - a.p)
++    return None
+diff --git a/backend/infrastructure/csv/loader.py b/backend/infrastructure/csv/loader.py
+index a59a29f..57d0655 100644
+--- a/backend/infrastructure/csv/loader.py
++++ b/backend/infrastructure/csv/loader.py
+@@ -34,6 +34,9 @@ _HEADER_TO_CANONICAL = {
+     norm_header("Диаметр"): "diameter",
+     norm_header("efficiency"): "efficiency",
+     norm_header("Производительность м3/ч"): "efficiency",
++    # Каталоги ВО дают расход в м³/с — конвертируем в м³/ч при загрузке
++    norm_header("Производительность м3/с"): "efficiency_m3s",
++    norm_header("efficiency_m3s"): "efficiency_m3s",
+     norm_header("pressure"): "pressure",
+     norm_header("Давление(па)"): "pressure",
+     norm_header("Давление (па)"): "pressure",
+@@ -107,6 +110,27 @@ def parse_json_loose(value):
+         return None
+ 
+ 
++def _format_number_short(n: float) -> str:
++    """Число без хвоста .0 — для пересобранного raw-текста диапазона."""
++    return str(int(n)) if float(n).is_integer() else f"{n:g}"
++
++
++def airflow_m3s_to_m3h(af_min, af_max):
++    """
++    Перевести диапазон расхода из м³/с в м³/ч (×3600) и собрать новый raw-текст.
++    Возвращает (min, max, raw) — как parse_range_loose.
++    """
++    new_min = af_min * 3600.0 if af_min is not None else None
++    new_max = af_max * 3600.0 if af_max is not None else None
++    if new_min is not None and new_max is not None and new_min != new_max:
++        raw = f"{_format_number_short(new_min)} - {_format_number_short(new_max)}"
++    elif new_min is not None:
++        raw = _format_number_short(new_min)
++    else:
++        raw = ""
++    return new_min, new_max, raw
++
++
+ def load_csv_into_db(conn, csv_path: Path) -> int:
+     """Читает CSV и вставляет строки в products. Возвращает количество вставленных строк."""
+     if not csv_path.exists():
+@@ -179,14 +203,18 @@ def load_csv_into_db(conn, csv_path: Path) -> int:
+                     continue
+ 
+                 diameter = parse_number_loose(row.get("diameter"))
+-                af_min, af_max, af_raw = parse_range_loose(row.get("efficiency"))
++                if row.get("efficiency_m3s") is not None and normalize_whitespace(row.get("efficiency_m3s")):
++                    m3s_min, m3s_max, _ = parse_range_loose(row.get("efficiency_m3s"))
++                    af_min, af_max, af_raw = airflow_m3s_to_m3h(m3s_min, m3s_max)
++                else:
++                    af_min, af_max, af_raw = parse_range_loose(row.get("efficiency"))
+                 pr_min, pr_max, pr_raw = parse_range_loose(row.get("pressure"))
+                 power = parse_number_loose(row.get("power"))
+                 noise_level = parse_number_loose(row.get("noise_level"))
+                 price = parse_number_loose(row.get("price"))
+ 
+                 raw_diameter = normalize_whitespace(row.get("diameter"))
+-                raw_efficiency = normalize_whitespace(row.get("efficiency"))
++                raw_efficiency = normalize_whitespace(row.get("efficiency")) or normalize_whitespace(row.get("efficiency_m3s"))
+                 raw_pressure = normalize_whitespace(row.get("pressure"))
+                 raw_power = normalize_whitespace(row.get("power"))
+                 raw_noise_level = normalize_whitespace(row.get("noise_level"))
+diff --git a/backend/presentation/api/routes/catalog.py b/backend/presentation/api/routes/catalog.py
+index a61e84b..5fb2b60 100644
+--- a/backend/presentation/api/routes/catalog.py
++++ b/backend/presentation/api/routes/catalog.py
+@@ -18,10 +18,13 @@ from presentation.api.schemas import (
+     ProductListPageOut,
+     ProductOut,
+     QPPointOut,
++    SelectPointItemOut,
++    SelectPointOut,
+ )
+ from application.use_cases.search_products import SearchProductsUseCase, SearchProductsQuery
+ from application.use_cases.get_product import GetProductUseCase, ProductNotFoundError
+ from application.use_cases.get_qp_curve import GetQPCurveUseCase, QPCurveQuery, InsufficientQPDataError
++from application.use_cases.select_by_point import SelectByPointUseCase, SelectByPointQuery
+ from infrastructure.db.connection import get_connection, put_connection
+ from infrastructure.db.product_repository import (
+     PgProductRepository,
+@@ -170,6 +173,47 @@ def api_products_facets():
+     return CatalogFacetsOut(types=types_, diameters=diameters)
+ 
+ 
++@router.get(
++    "/api/products/select-point",
++    response_model=SelectPointOut,
++    summary="Подбор по рабочей точке (Q, P)",
++    description=(
++        "Возвращает вентиляторы, у которых точка Q лежит в рабочем диапазоне, "
++        "а кривая Q-P даёт давление не ниже P. Сортировка по запасу давления "
++        "(первым — самое точное попадание)."
++    ),
++    responses={
++        200: {"description": "Кандидаты с запасом давления.", "model": SelectPointOut},
++        **COMMON_ERROR_RESPONSES,
++    },
++)
++def api_products_select_point(
++    point_q: Annotated[float, Query(description="Требуемый расход, м³/ч.", gt=0)],
++    point_p: Annotated[float, Query(description="Требуемое давление, Па.", gt=0)],
++    limit: Annotated[int, Query(description="Максимум результатов.", ge=1, le=100)] = 20,
++):
++    from config import CSV_PATH
++    _ensure_catalog_sync(CSV_PATH)
++
++    with _db_session() as conn:
++        repo = PgProductRepository(conn)
++        uc = SelectByPointUseCase(repo)
++        result = uc.execute(SelectByPointQuery(point_q=point_q, point_p=point_p, limit=limit))
++
++    return SelectPointOut(
++        items=[
++            SelectPointItemOut(
++                product=ProductOut.model_validate(it.product),
++                p_available=it.p_available,
++                reserve_percent=it.reserve_percent,
++            )
++            for it in result.items
++        ],
++        total_considered=result.total_considered,
++        point={"q": point_q, "p": point_p},
++    )
++
++
+ @router.get(
+     "/api/products/{id_or_model}",
+     response_model=ProductOut,
+diff --git a/backend/presentation/api/schemas.py b/backend/presentation/api/schemas.py
+index 5e0762a..723fb3e 100644
+--- a/backend/presentation/api/schemas.py
++++ b/backend/presentation/api/schemas.py
+@@ -130,6 +130,32 @@ class ProductOut(BaseModel):
+     )
+ 
+ 
++class SelectPointItemOut(BaseModel):
++    """Кандидат подбора по рабочей точке."""
++
++    product: ProductOut
++    p_available: float = Field(..., description="Давление на кривой Q-P при заданном расходе, Па")
++    reserve_percent: float = Field(..., description="Запас давления относительно точки, %")
++
++
++class SelectPointOut(BaseModel):
++    """Результат подбора по рабочей точке (Q, P)."""
++
++    model_config = ConfigDict(
++        json_schema_extra={
++            "example": {
++                "items": [],
++                "total_considered": 12,
++                "point": {"q": 5000, "p": 500},
++            }
++        }
++    )
++
++    items: List[SelectPointItemOut] = Field(default_factory=list)
++    total_considered: int = Field(0, description="Сколько кандидатов покрыло точку по расходу")
++    point: Dict[str, float] = Field(default_factory=dict, description="Эхо рабочей точки {q, p}")
++
++
+ class HealthOut(BaseModel):
+     model_config = ConfigDict(json_schema_extra={"example": {"ok": True, "products": 120}})
+ 
+diff --git a/backend/tests/test_select_point.py b/backend/tests/test_select_point.py
+new file mode 100644
+index 0000000..4c72655
+--- /dev/null
++++ b/backend/tests/test_select_point.py
+@@ -0,0 +1,111 @@
++"""Тесты подбора по рабочей точке и осевой кривой с седловиной."""
++from __future__ import annotations
++
++import pytest
++
++from domain.services.qp_service import build_qp_curve, is_axial_type, pressure_at_flow
++from infrastructure.db.product_repository import PgProductRepository
++from tests.conftest import make_test_client
++
++
++def _vo_product(pid: str, q_min: float, q_max: float, p_min: float, p_max: float, price=1000):
++    return {
++        "id": pid, "number": pid, "type": "Осевой", "model": f"ВО тест-{pid}",
++        "size": "456A4", "diameter": 405.0,
++        "airflow": {"min": q_min, "max": q_max, "raw": f"{q_min} - {q_max}"},
++        "pressure": {"min": p_min, "max": p_max, "raw": f"{p_min} - {p_max}"},
++        "power": 120, "noise_level": None, "price": price,
++        "nominal_rpm": 1370.0,
++        "_raw": {}, "_meta": {},
++    }
++
++
++# ---------------------------------------------------------------------------
++# Доменный сервис
++# ---------------------------------------------------------------------------
++
++def test_is_axial_type():
++    assert is_axial_type("ВО")
++    assert is_axial_type("Осевой")
++    assert is_axial_type(" осевой ")
++    assert not is_axial_type("ВЦ")
++    assert not is_axial_type(None)
++
++
++def test_axial_curve_has_saddle_and_exact_ends():
++    curve = build_qp_curve(q_min=900, q_max=3600, p_min=30, p_max=170, fan_type="ВО", points=101)
++    ps = [pt.p for pt in curve]
++
++    assert curve[0].q == pytest.approx(900) and curve[0].p == pytest.approx(170)
++    assert curve[-1].q == pytest.approx(3600) and curve[-1].p == pytest.approx(30)
++
++    # Седловина: локальный минимум, за ним горб (локальный максимум)
++    local_mins = [i for i in range(1, 100) if ps[i] < ps[i - 1] and ps[i] < ps[i + 1]]
++    local_maxs = [i for i in range(1, 100) if ps[i] > ps[i - 1] and ps[i] > ps[i + 1]]
++    assert local_mins, "у осевой кривой должен быть провал (седловина)"
++    assert local_maxs, "у осевой кривой должен быть горб после провала"
++    assert local_mins[0] < local_maxs[0], "провал идёт раньше горба"
++
++    # Расход строго возрастает (кривая — функция от Q)
++    qs = [pt.q for pt in curve]
++    assert all(b > a for a, b in zip(qs, qs[1:]))
++
++
++def test_centrifugal_curve_has_no_saddle():
++    curve = build_qp_curve(q_min=1000, q_max=5000, p_min=100, p_max=600, fan_type="ВЦ", points=101)
++    ps = [pt.p for pt in curve]
++    # У центробежных седловины нет: лёгкий горб от α допустим (модель из QP_MODEL),
++    # но локального минимума с последующим ростом быть не должно
++    local_mins = [i for i in range(1, 100) if ps[i] < ps[i - 1] and ps[i] < ps[i + 1]]
++    assert not local_mins, "у центробежной кривой не должно быть провала"
++
++
++def test_pressure_at_flow_inside_and_outside_range():
++    kwargs = dict(q_min=900, q_max=3600, p_min=30, p_max=170, fan_type="ВО")
++    assert pressure_at_flow(900, **kwargs) == pytest.approx(170, rel=1e-6)
++    assert pressure_at_flow(3600, **kwargs) == pytest.approx(30, rel=1e-6)
++    mid = pressure_at_flow(2250, **kwargs)
++    assert mid is not None and 30 < mid < 170
++    assert pressure_at_flow(100, **kwargs) is None
++    assert pressure_at_flow(9999, **kwargs) is None
++
++
++# ---------------------------------------------------------------------------
++# Эндпоинт /api/products/select-point
++# ---------------------------------------------------------------------------
++
++def test_select_point_filters_and_sorts(monkeypatch):
++    # strong: в точке Q=2000 давление высокое; weak: не дотягивает до P
++    strong = _vo_product("strong", 900, 3600, 150, 400)
++    weak = _vo_product("weak", 900, 3600, 10, 60)
++    exact = _vo_product("exact", 900, 3600, 100, 210)
++
++    monkeypatch.setattr(
++        PgProductRepository, "list_products",
++        lambda self, **kw: [strong, weak, exact],
++    )
++    client = make_test_client(monkeypatch)
++
++    r = client.get("/api/products/select-point?point_q=2000&point_p=150")
++    assert r.status_code == 200
++    data = r.json()
++    assert data["point"] == {"q": 2000, "p": 150}
++    assert data["total_considered"] == 3
++
++    ids = [it["product"]["id"] for it in data["items"]]
++    assert "weak" not in ids, "не обеспечивает давление в точке — должен быть отфильтрован"
++    assert set(ids) == {"strong", "exact"}
++
++    # Сортировка по запасу: точное попадание первым
++    reserves = [it["reserve_percent"] for it in data["items"]]
++    assert reserves == sorted(reserves)
++    assert ids[0] == "exact"
++    for it in data["items"]:
++        assert it["p_available"] >= 150
++
++
++def test_select_point_validation(monkeypatch):
++    client = make_test_client(monkeypatch)
++    assert client.get("/api/products/select-point").status_code == 422
++    assert client.get("/api/products/select-point?point_q=0&point_p=100").status_code == 422
++    assert client.get("/api/products/select-point?point_q=100&point_p=-5").status_code == 422
+diff --git a/data/ventsearch_massive_sorted.csv b/data/ventsearch_massive_sorted.csv
+index d3f578b..0850a5b 100644
+--- a/data/ventsearch_massive_sorted.csv
++++ b/data/ventsearch_massive_sorted.csv
+@@ -1,4 +1,4 @@
+-﻿Номер;Тип;Модель;Типоразмер;Диаметр ММ;Производительность м3/ч;Давление(па);Мощность(ВТ);Уровень шума;Цена в рублях;nominal_rpm;pressure_coefficients;efficiency_coefficients
++﻿Номер;Тип;Модель;Типоразмер;Диаметр ММ;Производительность м3/с;Давление(па);Мощность(ВТ);Уровень шума;Цена в рублях;nominal_rpm;pressure_coefficients;efficiency_coefficients
+ V13-284-4-4-15-456A4;Осевой;ВО 13-284-4/15°-456A4;456A4;405;0.25 - 0.70;52 - 223;120;-;-;1370;-;-
+ V13-284-4-4-20-456A4;Осевой;ВО 13-284-4/20°-456A4;456A4;405;0.36 - 0.82;59 - 33;120;-;-;1370;-;-
+ V13-284-4-4-25-456A4;Осевой;ВО 13-284-4/25°-456A4;456A4;405;0.53 - 0.95;62 - 43;120;-;-;1370;-;-
+diff --git a/frontend/index.html b/frontend/index.html
+index 9265b16..b23dc8d 100644
+--- a/frontend/index.html
++++ b/frontend/index.html
+@@ -139,6 +139,30 @@
+           <div class="offcanvas-body">
+             <div class="filters-panel card">
+               <div class="card-body">
++                <div class="mb-3 text-center">
++                  <h2 class="h5 fw-bold mb-0">Подбор по рабочей точке</h2>
++                </div>
++
++                <form id="pointForm" class="vstack gap-2 mb-3">
++                  <div class="row g-2">
++                    <div class="col-6">
++                      <label for="pointQ" class="form-label text-secondary small mb-1 fw-medium">Расход Q</label>
++                      <input id="pointQ" name="pointQ" type="number" min="1" step="any" class="form-control rounded-3" placeholder="м³/ч" />
++                    </div>
++                    <div class="col-6">
++                      <label for="pointP" class="form-label text-secondary small mb-1 fw-medium">Давление P</label>
++                      <input id="pointP" name="pointP" type="number" min="1" step="any" class="form-control rounded-3" placeholder="Па" />
++                    </div>
++                  </div>
++                  <div class="d-flex gap-2">
++                    <button type="submit" class="btn btn-dark btn-sm flex-grow-1">Подобрать</button>
++                    <button type="button" id="pointResetBtn" class="btn btn-outline-dark btn-sm">Сброс</button>
++                  </div>
++                  <div class="form-text small">Найдём вентиляторы, чья характеристика обеспечивает точку, — от точного попадания к запасу.</div>
++                </form>
++
++                <hr class="my-2" />
++
+                 <div class="mb-3 text-center">
+                   <h2 class="h5 fw-bold mb-0">Фильтры подбора</h2>
+                 </div>
+diff --git a/frontend/script.js b/frontend/script.js
+index 41384ac..ac75793 100644
+--- a/frontend/script.js
++++ b/frontend/script.js
+@@ -32,6 +32,7 @@ const FAN_IMAGES_BY_TYPE = {
+   ВЦ: "vc.jpeg",
+   УВО: "uvo.jpeg",
+   Ц: "c.jpeg",
++  ОСЕВОЙ: "vo.jpeg",
+ };
+ 
+ const PAGE_SIZE = 48;
+@@ -117,6 +118,33 @@ function saveProjectMeta(meta) {
+   }
+ }
+ 
++const POINT_STORAGE_KEY = "ventsearch.point";
++
++function loadWorkingPoint() {
++  try {
++    const raw = localStorage.getItem(POINT_STORAGE_KEY);
++    const data = raw ? JSON.parse(raw) : null;
++    if (data && Number(data.q) > 0 && Number(data.p) > 0) {
++      return { q: Number(data.q), p: Number(data.p) };
++    }
++    return null;
++  } catch {
++    return null;
++  }
++}
++
++function saveWorkingPoint(point) {
++  try {
++    if (point && Number(point.q) > 0 && Number(point.p) > 0) {
++      localStorage.setItem(POINT_STORAGE_KEY, JSON.stringify({ q: Number(point.q), p: Number(point.p) }));
++    } else {
++      localStorage.removeItem(POINT_STORAGE_KEY);
++    }
++  } catch {
++    // ignore
++  }
++}
++
+ function getProjectIdSet() {
+   return new Set(loadProjectIds());
+ }
+@@ -268,16 +296,28 @@ function getRangeNominal(range) {
+ 
+ // Параметры α по типу — синхронизированы с backend/qp_model.py
+ const ALPHA_BY_TYPE = {
+-  "ВО": 0.18, "ВКОП": 0.15, "УВО": 0.18,
++  "ВО": 0.18, "ВКОП": 0.15, "УВО": 0.18, "Осевой": 0.18,
+   "ВЦ": 0.05, "ВР": 0.05, "Ц": 0.05,
+ };
+ const ALPHA_DEFAULT = 0.10;
+ 
++// Осевые: кривая с седловиной (провал → горб), синхронизировано с qp_service.py
++const AXIAL_TYPES = new Set(["во", "вкоп", "уво", "осевой"]);
++const AXIAL_DIP_POS = 0.25;
++const AXIAL_DIP = 0.45;
++const AXIAL_HUMP_POS = 0.60;
++const AXIAL_HUMP = 0.50;
++
+ function alphaForType(t) {
+   if (!t) return ALPHA_DEFAULT;
+   return ALPHA_BY_TYPE[String(t).trim()] ?? ALPHA_DEFAULT;
+ }
+ 
++function isAxialType(t) {
++  if (!t) return false;
++  return AXIAL_TYPES.has(String(t).trim().toLowerCase());
++}
++
+ function buildQpDatasetsShared(products, targetRpm = null, targetPoint = null) {
+   const colors = ["#246bb3", "#e74c3c", "#2ecc71", "#9b59b6", "#f39c12", "#16a085"];
+   const series = [];
+@@ -293,23 +333,38 @@ function buildQpDatasetsShared(products, targetRpm = null, targetPoint = null) {
+       scaleFactor = targetRpm / p.nominal_rpm;
+     }
+     
+-    const alpha = alphaForType(p.type);
+-    const qCtrl = qMin + 0.5 * (qMax - qMin);
+-    const pCtrl = Math.max(pMin, pMax) + alpha * (Math.max(pMin, pMax) - Math.min(pMin, pMax));
+     const pStart = Math.max(pMin, pMax);
+     const pEnd = Math.min(pMin, pMax);
+-    
++    const dQ = qMax - qMin;
++    const dP = pStart - pEnd;
++
++    const alpha = alphaForType(p.type);
++    const qCtrl = qMin + 0.5 * dQ;
++    const pCtrl = pStart + alpha * dP;
++
++    // Кубическая Безье с седловиной для осевых (как в бумажных каталогах ВО)
++    const axial = isAxialType(p.type);
++    const qC1 = qMin + AXIAL_DIP_POS * dQ;
++    const pC1 = pStart - AXIAL_DIP * dP;
++    const qC2 = qMin + AXIAL_HUMP_POS * dQ;
++    const pC2 = pStart + AXIAL_HUMP * dP;
++
+     const coeffs = p.pressure_coefficients;
+-    
++
+     const steps = 200;
+     const points = [];
+     for (let i = 0; i <= steps; i += 1) {
+       const t = i / steps;
+       let qNom, pNom;
+-      
++
+       if (coeffs && Array.isArray(coeffs) && coeffs.length > 0) {
+         qNom = qMin + (qMax - qMin) * t;
+         pNom = coeffs.reduce((acc, c, idx) => acc + c * Math.pow(qNom, idx), 0);
++      } else if (axial) {
++        const omt = 1 - t;
++        const omt2 = omt * omt, t2 = t * t;
++        qNom = omt * omt2 * qMin + 3 * omt2 * t * qC1 + 3 * omt * t2 * qC2 + t * t2 * qMax;
++        pNom = omt * omt2 * pStart + 3 * omt2 * t * pC1 + 3 * omt * t2 * pC2 + t * t2 * pEnd;
+       } else {
+         const omt = 1 - t;
+         qNom = omt * omt * qMin + 2 * t * omt * qCtrl + t * t * qMax;
+@@ -688,6 +743,7 @@ async function initCatalogPage() {
+           <dt class="col-6 text-secondary">Мощн.</dt><dd class="col-6 mb-1">${p.power != null ? `${escapeHtml(p.power)} Вт` : "—"}</dd>
+           <dt class="col-6 text-secondary">Шум</dt><dd class="col-6 mb-1">${p.noise_level != null ? `${escapeHtml(p.noise_level)} дБ` : "—"}</dd>
+         </dl>
++        ${p._point ? `<div class="mb-2"><span class="badge ${p._point.reserve_percent <= 15 ? "text-bg-success" : "text-bg-secondary"}">В точке: ${escapeHtml(formatNumber(p._point.p_available))} Па · запас ${escapeHtml(p._point.reserve_percent)}%</span></div>` : ""}
+         <div class="mt-auto">
+           <div class="product-price">${escapeHtml(formatPrice(p.price))}</div>
+           <a class="btn btn-sm btn-dark product-open-btn mt-2" href="product.html?id=${encodeURIComponent(p.id)}">Открыть</a>
+@@ -885,6 +941,74 @@ async function initCatalogPage() {
+     closeFiltersOffcanvasIfMobile();
+   });
+ 
++  // --- Подбор по рабочей точке (Q, P) ---
++  const pointForm = $("#pointForm");
++  const pointQInput = $("#pointQ");
++  const pointPInput = $("#pointP");
++  const pointResetBtn = $("#pointResetBtn");
++
++  async function runPointSearch(pointQ, pointP) {
++    hideError();
++    setLoading(true);
++    state.querySummaryText = `Рабочая точка: Q = ${formatNumber(pointQ)} м³/ч · P = ${formatNumber(pointP)} Па`;
++    if (querySummary) querySummary.textContent = state.querySummaryText;
++    try {
++      const params = new URLSearchParams({
++        point_q: String(pointQ), point_p: String(pointP), limit: String(PAGE_SIZE),
++      });
++      const data = await fetchJson(apiUrl(`/api/products/select-point?${params.toString()}`));
++      const items = (Array.isArray(data?.items) ? data.items : []).map((it) => ({
++        ...it.product,
++        _point: { p_available: it.p_available, reserve_percent: it.reserve_percent },
++      }));
++      saveWorkingPoint({ q: pointQ, p: pointP });
++      if (!items.length) {
++        showEmptyState();
++        if (resultsCount) resultsCount.textContent = "0";
++        showError(
++          `По точке Q=${formatNumber(pointQ)} м³/ч, P=${formatNumber(pointP)} Па ничего не найдено ` +
++          `(диапазон расхода покрыли ${data?.total_considered ?? 0} мод., но давления не хватило).`,
++        );
++      } else {
++        showCatalogResults();
++        renderProducts(items, { total: items.length, page: 1, limit: Math.max(items.length, 1) });
++      }
++    } catch (err) {
++      console.error(err);
++      showError("Не удалось выполнить подбор по точке. Проверьте, что бэкенд запущен.");
++    } finally {
++      setLoading(false);
++    }
++  }
++
++  pointForm?.addEventListener("submit", (e) => {
++    e.preventDefault();
++    const pointQ = toNumber(pointQInput?.value);
++    const pointP = toNumber(pointPInput?.value);
++    if (!pointQ || pointQ <= 0 || !pointP || pointP <= 0) {
++      showError("Укажите расход Q (м³/ч) и давление P (Па) — оба значения должны быть больше нуля.");
++      return;
++    }
++    runPointSearch(pointQ, pointP);
++    closeFiltersOffcanvasIfMobile();
++  });
++
++  pointResetBtn?.addEventListener("click", () => {
++    if (pointQInput) pointQInput.value = "";
++    if (pointPInput) pointPInput.value = "";
++    saveWorkingPoint(null);
++    loadPage(1);
++  });
++
++  // Восстановить последнюю рабочую точку в поля (не запуская поиск)
++  {
++    const storedPoint = loadWorkingPoint();
++    if (storedPoint) {
++      if (pointQInput) pointQInput.value = String(storedPoint.q);
++      if (pointPInput) pointPInput.value = String(storedPoint.p);
++    }
++  }
++
+   sortSelect?.addEventListener("change", () => loadPage(1));
+ 
+   resetBtn?.addEventListener("click", () => {
+@@ -1049,7 +1173,8 @@ async function initComparePage() {
+   }
+ 
+   function renderCompareChart(products) {
+-    compareChart = renderQpChartShared(qpChartCanvas, compareChart, products);
++    // Если задана рабочая точка (подбор на главной) — рисуем её и кривую сети
++    compareChart = renderQpChartShared(qpChartCanvas, compareChart, products, null, loadWorkingPoint());
+   }
+ 
+   async function exportCompareToPdf(products) {
+@@ -1200,7 +1325,7 @@ async function initProductPage() {
+     alertBox.classList.add("d-none");
+ 
+     
+-    productChart = renderQpChartShared(chartCanvas, productChart, [data]);
++    productChart = renderQpChartShared(chartCanvas, productChart, [data], null, loadWorkingPoint());
+     productCompareMeta.textContent = `Сейчас показана характеристика модели ${data.model || data.id}.`;
+ 
+     const listData = await fetchJson(
+@@ -1217,12 +1342,12 @@ async function initProductPage() {
+     compareOnProductBtn?.addEventListener("click", async () => {
+       const otherId = compareWithSelect.value;
+       if (!otherId) {
+-        productChart = renderQpChartShared(chartCanvas, productChart, [currentProduct]);
++        productChart = renderQpChartShared(chartCanvas, productChart, [currentProduct], null, loadWorkingPoint());
+         productCompareMeta.textContent = "Выберите вторую модель для сравнения.";
+         return;
+       }
+       const second = await fetchJson(apiUrl(`/api/products/${encodeURIComponent(otherId)}`));
+-      productChart = renderQpChartShared(chartCanvas, productChart, [currentProduct, second]);
++      productChart = renderQpChartShared(chartCanvas, productChart, [currentProduct, second], null, loadWorkingPoint());
+       productCompareMeta.textContent = `Сравнение: ${currentProduct.model || currentProduct.id} vs ${second.model || second.id}`;
+     });
+ 
+-- 
+2.43.0
+
