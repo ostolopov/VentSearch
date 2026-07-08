@@ -130,6 +130,32 @@ class ProductOut(BaseModel):
     )
 
 
+class SelectPointItemOut(BaseModel):
+    """Кандидат подбора по рабочей точке."""
+
+    product: ProductOut
+    p_available: float = Field(..., description="Давление на кривой Q-P при заданном расходе, Па")
+    reserve_percent: float = Field(..., description="Запас давления относительно точки, %")
+
+
+class SelectPointOut(BaseModel):
+    """Результат подбора по рабочей точке (Q, P)."""
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "items": [],
+                "total_considered": 12,
+                "point": {"q": 5000, "p": 500},
+            }
+        }
+    )
+
+    items: List[SelectPointItemOut] = Field(default_factory=list)
+    total_considered: int = Field(0, description="Сколько кандидатов покрыло точку по расходу")
+    point: Dict[str, float] = Field(default_factory=dict, description="Эхо рабочей точки {q, p}")
+
+
 class HealthOut(BaseModel):
     model_config = ConfigDict(json_schema_extra={"example": {"ok": True, "products": 120}})
 

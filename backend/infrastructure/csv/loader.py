@@ -34,6 +34,9 @@ _HEADER_TO_CANONICAL = {
     norm_header("Диаметр"): "diameter",
     norm_header("efficiency"): "efficiency",
     norm_header("Производительность м3/ч"): "efficiency",
+    # Каталоги ВО дают расход в м³/с — конвертируем в м³/ч при загрузке
+    norm_header("Производительность м3/с"): "efficiency_m3s",
+    norm_header("efficiency_m3s"): "efficiency_m3s",
     norm_header("pressure"): "pressure",
     norm_header("Давление(па)"): "pressure",
     norm_header("Давление (па)"): "pressure",
@@ -105,6 +108,27 @@ def parse_json_loose(value):
         return json.loads(raw)
     except json.JSONDecodeError:
         return None
+
+
+def _format_number_short(n: float) -> str:
+    """Число без хвоста .0 — для пересобранного raw-текста диапазона."""
+    return str(int(n)) if float(n).is_integer() else f"{n:g}"
+
+
+def airflow_m3s_to_m3h(af_min, af_max):
+    """
+    Перевести диапазон расхода из м³/с в м³/ч (×3600) и собрать новый raw-текст.
+    Возвращает (min, max, raw) — как parse_range_loose.
+    """
+    new_min = af_min * 3600.0 if af_min is not None else None
+    new_max = af_max * 3600.0 if af_max is not None else None
+    if new_min is not None and new_max is not None and new_min != new_max:
+        raw = f"{_format_number_short(new_min)} - {_format_number_short(new_max)}"
+    elif new_min is not None:
+        raw = _format_number_short(new_min)
+    else:
+        raw = ""
+    return new_min, new_max, raw
 
 
 def load_csv_into_db(conn, csv_path: Path) -> int:
@@ -179,14 +203,18 @@ def load_csv_into_db(conn, csv_path: Path) -> int:
                     continue
 
                 diameter = parse_number_loose(row.get("diameter"))
-                af_min, af_max, af_raw = parse_range_loose(row.get("efficiency"))
+                if row.get("efficiency_m3s") is not None and normalize_whitespace(row.get("efficiency_m3s")):
+                    m3s_min, m3s_max, _ = parse_range_loose(row.get("efficiency_m3s"))
+                    af_min, af_max, af_raw = airflow_m3s_to_m3h(m3s_min, m3s_max)
+                else:
+                    af_min, af_max, af_raw = parse_range_loose(row.get("efficiency"))
                 pr_min, pr_max, pr_raw = parse_range_loose(row.get("pressure"))
                 power = parse_number_loose(row.get("power"))
                 noise_level = parse_number_loose(row.get("noise_level"))
                 price = parse_number_loose(row.get("price"))
 
                 raw_diameter = normalize_whitespace(row.get("diameter"))
-                raw_efficiency = normalize_whitespace(row.get("efficiency"))
+                raw_efficiency = normalize_whitespace(row.get("efficiency")) or normalize_whitespace(row.get("efficiency_m3s"))
                 raw_pressure = normalize_whitespace(row.get("pressure"))
                 raw_power = normalize_whitespace(row.get("power"))
                 raw_noise_level = normalize_whitespace(row.get("noise_level"))

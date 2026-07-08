@@ -18,10 +18,13 @@ from presentation.api.schemas import (
     ProductListPageOut,
     ProductOut,
     QPPointOut,
+    SelectPointItemOut,
+    SelectPointOut,
 )
 from application.use_cases.search_products import SearchProductsUseCase, SearchProductsQuery
 from application.use_cases.get_product import GetProductUseCase, ProductNotFoundError
 from application.use_cases.get_qp_curve import GetQPCurveUseCase, QPCurveQuery, InsufficientQPDataError
+from application.use_cases.select_by_point import SelectByPointUseCase, SelectByPointQuery
 from infrastructure.db.connection import get_connection, put_connection
 from infrastructure.db.product_repository import (
     PgProductRepository,
@@ -168,6 +171,47 @@ def api_products_facets():
         types_ = list_distinct_types(conn)
         diameters = list_distinct_diameters(conn)
     return CatalogFacetsOut(types=types_, diameters=diameters)
+
+
+@router.get(
+    "/api/products/select-point",
+    response_model=SelectPointOut,
+    summary="Подбор по рабочей точке (Q, P)",
+    description=(
+        "Возвращает вентиляторы, у которых точка Q лежит в рабочем диапазоне, "
+        "а кривая Q-P даёт давление не ниже P. Сортировка по запасу давления "
+        "(первым — самое точное попадание)."
+    ),
+    responses={
+        200: {"description": "Кандидаты с запасом давления.", "model": SelectPointOut},
+        **COMMON_ERROR_RESPONSES,
+    },
+)
+def api_products_select_point(
+    point_q: Annotated[float, Query(description="Требуемый расход, м³/ч.", gt=0)],
+    point_p: Annotated[float, Query(description="Требуемое давление, Па.", gt=0)],
+    limit: Annotated[int, Query(description="Максимум результатов.", ge=1, le=100)] = 20,
+):
+    from config import CSV_PATH
+    _ensure_catalog_sync(CSV_PATH)
+
+    with _db_session() as conn:
+        repo = PgProductRepository(conn)
+        uc = SelectByPointUseCase(repo)
+        result = uc.execute(SelectByPointQuery(point_q=point_q, point_p=point_p, limit=limit))
+
+    return SelectPointOut(
+        items=[
+            SelectPointItemOut(
+                product=ProductOut.model_validate(it.product),
+                p_available=it.p_available,
+                reserve_percent=it.reserve_percent,
+            )
+            for it in result.items
+        ],
+        total_considered=result.total_considered,
+        point={"q": point_q, "p": point_p},
+    )
 
 
 @router.get(

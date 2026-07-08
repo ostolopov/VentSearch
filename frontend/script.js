@@ -32,6 +32,7 @@ const FAN_IMAGES_BY_TYPE = {
   ВЦ: "vc.jpeg",
   УВО: "uvo.jpeg",
   Ц: "c.jpeg",
+  ОСЕВОЙ: "vo.jpeg",
 };
 
 const PAGE_SIZE = 48;
@@ -112,6 +113,33 @@ function loadProjectMeta() {
 function saveProjectMeta(meta) {
   try {
     localStorage.setItem(PROJECT_META_STORAGE_KEY, JSON.stringify(meta));
+  } catch {
+    // ignore
+  }
+}
+
+const POINT_STORAGE_KEY = "ventsearch.point";
+
+function loadWorkingPoint() {
+  try {
+    const raw = localStorage.getItem(POINT_STORAGE_KEY);
+    const data = raw ? JSON.parse(raw) : null;
+    if (data && Number(data.q) > 0 && Number(data.p) > 0) {
+      return { q: Number(data.q), p: Number(data.p) };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function saveWorkingPoint(point) {
+  try {
+    if (point && Number(point.q) > 0 && Number(point.p) > 0) {
+      localStorage.setItem(POINT_STORAGE_KEY, JSON.stringify({ q: Number(point.q), p: Number(point.p) }));
+    } else {
+      localStorage.removeItem(POINT_STORAGE_KEY);
+    }
   } catch {
     // ignore
   }
@@ -268,14 +296,26 @@ function getRangeNominal(range) {
 
 // Параметры α по типу — синхронизированы с backend/qp_model.py
 const ALPHA_BY_TYPE = {
-  "ВО": 0.18, "ВКОП": 0.15, "УВО": 0.18,
+  "ВО": 0.18, "ВКОП": 0.15, "УВО": 0.18, "Осевой": 0.18,
   "ВЦ": 0.05, "ВР": 0.05, "Ц": 0.05,
 };
 const ALPHA_DEFAULT = 0.10;
 
+// Осевые: кривая с седловиной (провал → горб), синхронизировано с qp_service.py
+const AXIAL_TYPES = new Set(["во", "вкоп", "уво", "осевой"]);
+const AXIAL_DIP_POS = 0.25;
+const AXIAL_DIP = 0.45;
+const AXIAL_HUMP_POS = 0.60;
+const AXIAL_HUMP = 0.50;
+
 function alphaForType(t) {
   if (!t) return ALPHA_DEFAULT;
   return ALPHA_BY_TYPE[String(t).trim()] ?? ALPHA_DEFAULT;
+}
+
+function isAxialType(t) {
+  if (!t) return false;
+  return AXIAL_TYPES.has(String(t).trim().toLowerCase());
 }
 
 function buildQpDatasetsShared(products, targetRpm = null, targetPoint = null) {
@@ -293,23 +333,38 @@ function buildQpDatasetsShared(products, targetRpm = null, targetPoint = null) {
       scaleFactor = targetRpm / p.nominal_rpm;
     }
     
-    const alpha = alphaForType(p.type);
-    const qCtrl = qMin + 0.5 * (qMax - qMin);
-    const pCtrl = Math.max(pMin, pMax) + alpha * (Math.max(pMin, pMax) - Math.min(pMin, pMax));
     const pStart = Math.max(pMin, pMax);
     const pEnd = Math.min(pMin, pMax);
-    
+    const dQ = qMax - qMin;
+    const dP = pStart - pEnd;
+
+    const alpha = alphaForType(p.type);
+    const qCtrl = qMin + 0.5 * dQ;
+    const pCtrl = pStart + alpha * dP;
+
+    // Кубическая Безье с седловиной для осевых (как в бумажных каталогах ВО)
+    const axial = isAxialType(p.type);
+    const qC1 = qMin + AXIAL_DIP_POS * dQ;
+    const pC1 = pStart - AXIAL_DIP * dP;
+    const qC2 = qMin + AXIAL_HUMP_POS * dQ;
+    const pC2 = pStart + AXIAL_HUMP * dP;
+
     const coeffs = p.pressure_coefficients;
-    
+
     const steps = 200;
     const points = [];
     for (let i = 0; i <= steps; i += 1) {
       const t = i / steps;
       let qNom, pNom;
-      
+
       if (coeffs && Array.isArray(coeffs) && coeffs.length > 0) {
         qNom = qMin + (qMax - qMin) * t;
         pNom = coeffs.reduce((acc, c, idx) => acc + c * Math.pow(qNom, idx), 0);
+      } else if (axial) {
+        const omt = 1 - t;
+        const omt2 = omt * omt, t2 = t * t;
+        qNom = omt * omt2 * qMin + 3 * omt2 * t * qC1 + 3 * omt * t2 * qC2 + t * t2 * qMax;
+        pNom = omt * omt2 * pStart + 3 * omt2 * t * pC1 + 3 * omt * t2 * pC2 + t * t2 * pEnd;
       } else {
         const omt = 1 - t;
         qNom = omt * omt * qMin + 2 * t * omt * qCtrl + t * t * qMax;
@@ -688,6 +743,7 @@ async function initCatalogPage() {
           <dt class="col-6 text-secondary">Мощн.</dt><dd class="col-6 mb-1">${p.power != null ? `${escapeHtml(p.power)} Вт` : "—"}</dd>
           <dt class="col-6 text-secondary">Шум</dt><dd class="col-6 mb-1">${p.noise_level != null ? `${escapeHtml(p.noise_level)} дБ` : "—"}</dd>
         </dl>
+        ${p._point ? `<div class="mb-2"><span class="badge ${p._point.reserve_percent <= 15 ? "text-bg-success" : "text-bg-secondary"}">В точке: ${escapeHtml(formatNumber(p._point.p_available))} Па · запас ${escapeHtml(p._point.reserve_percent)}%</span></div>` : ""}
         <div class="mt-auto">
           <div class="product-price">${escapeHtml(formatPrice(p.price))}</div>
           <a class="btn btn-sm btn-dark product-open-btn mt-2" href="product.html?id=${encodeURIComponent(p.id)}">Открыть</a>
@@ -885,6 +941,74 @@ async function initCatalogPage() {
     closeFiltersOffcanvasIfMobile();
   });
 
+  // --- Подбор по рабочей точке (Q, P) ---
+  const pointForm = $("#pointForm");
+  const pointQInput = $("#pointQ");
+  const pointPInput = $("#pointP");
+  const pointResetBtn = $("#pointResetBtn");
+
+  async function runPointSearch(pointQ, pointP) {
+    hideError();
+    setLoading(true);
+    state.querySummaryText = `Рабочая точка: Q = ${formatNumber(pointQ)} м³/ч · P = ${formatNumber(pointP)} Па`;
+    if (querySummary) querySummary.textContent = state.querySummaryText;
+    try {
+      const params = new URLSearchParams({
+        point_q: String(pointQ), point_p: String(pointP), limit: String(PAGE_SIZE),
+      });
+      const data = await fetchJson(apiUrl(`/api/products/select-point?${params.toString()}`));
+      const items = (Array.isArray(data?.items) ? data.items : []).map((it) => ({
+        ...it.product,
+        _point: { p_available: it.p_available, reserve_percent: it.reserve_percent },
+      }));
+      saveWorkingPoint({ q: pointQ, p: pointP });
+      if (!items.length) {
+        showEmptyState();
+        if (resultsCount) resultsCount.textContent = "0";
+        showError(
+          `По точке Q=${formatNumber(pointQ)} м³/ч, P=${formatNumber(pointP)} Па ничего не найдено ` +
+          `(диапазон расхода покрыли ${data?.total_considered ?? 0} мод., но давления не хватило).`,
+        );
+      } else {
+        showCatalogResults();
+        renderProducts(items, { total: items.length, page: 1, limit: Math.max(items.length, 1) });
+      }
+    } catch (err) {
+      console.error(err);
+      showError("Не удалось выполнить подбор по точке. Проверьте, что бэкенд запущен.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  pointForm?.addEventListener("submit", (e) => {
+    e.preventDefault();
+    const pointQ = toNumber(pointQInput?.value);
+    const pointP = toNumber(pointPInput?.value);
+    if (!pointQ || pointQ <= 0 || !pointP || pointP <= 0) {
+      showError("Укажите расход Q (м³/ч) и давление P (Па) — оба значения должны быть больше нуля.");
+      return;
+    }
+    runPointSearch(pointQ, pointP);
+    closeFiltersOffcanvasIfMobile();
+  });
+
+  pointResetBtn?.addEventListener("click", () => {
+    if (pointQInput) pointQInput.value = "";
+    if (pointPInput) pointPInput.value = "";
+    saveWorkingPoint(null);
+    loadPage(1);
+  });
+
+  // Восстановить последнюю рабочую точку в поля (не запуская поиск)
+  {
+    const storedPoint = loadWorkingPoint();
+    if (storedPoint) {
+      if (pointQInput) pointQInput.value = String(storedPoint.q);
+      if (pointPInput) pointPInput.value = String(storedPoint.p);
+    }
+  }
+
   sortSelect?.addEventListener("change", () => loadPage(1));
 
   resetBtn?.addEventListener("click", () => {
@@ -1049,7 +1173,8 @@ async function initComparePage() {
   }
 
   function renderCompareChart(products) {
-    compareChart = renderQpChartShared(qpChartCanvas, compareChart, products);
+    // Если задана рабочая точка (подбор на главной) — рисуем её и кривую сети
+    compareChart = renderQpChartShared(qpChartCanvas, compareChart, products, null, loadWorkingPoint());
   }
 
   async function exportCompareToPdf(products) {
@@ -1200,7 +1325,7 @@ async function initProductPage() {
     alertBox.classList.add("d-none");
 
     
-    productChart = renderQpChartShared(chartCanvas, productChart, [data]);
+    productChart = renderQpChartShared(chartCanvas, productChart, [data], null, loadWorkingPoint());
     productCompareMeta.textContent = `Сейчас показана характеристика модели ${data.model || data.id}.`;
 
     const listData = await fetchJson(
@@ -1217,12 +1342,12 @@ async function initProductPage() {
     compareOnProductBtn?.addEventListener("click", async () => {
       const otherId = compareWithSelect.value;
       if (!otherId) {
-        productChart = renderQpChartShared(chartCanvas, productChart, [currentProduct]);
+        productChart = renderQpChartShared(chartCanvas, productChart, [currentProduct], null, loadWorkingPoint());
         productCompareMeta.textContent = "Выберите вторую модель для сравнения.";
         return;
       }
       const second = await fetchJson(apiUrl(`/api/products/${encodeURIComponent(otherId)}`));
-      productChart = renderQpChartShared(chartCanvas, productChart, [currentProduct, second]);
+      productChart = renderQpChartShared(chartCanvas, productChart, [currentProduct, second], null, loadWorkingPoint());
       productCompareMeta.textContent = `Сравнение: ${currentProduct.model || currentProduct.id} vs ${second.model || second.id}`;
     });
 
