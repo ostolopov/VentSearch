@@ -324,13 +324,14 @@ function buildQpDatasetsShared(products, targetRpm = null, targetPoint = null) {
     series.push({
       name: p.model || p.id,
       type: 'line',
-      smooth: true,
+      // Точки уже лежат на квадратичной Безье (200 шт.) — дополнительное
+      // сглаживание ECharts даёт «сплайн сплайна» и артефакты (QP_MODEL, п. 5.2)
+      smooth: false,
       symbol: 'none',
       data: points,
       lineStyle: { width: 3, color: colors[idx % colors.length] },
       itemStyle: { color: colors[idx % colors.length] }
     });
-  });
 
   if (targetPoint && targetPoint.q > 0 && targetPoint.p > 0) {
     const k = targetPoint.p / Math.pow(targetPoint.q, 2);
@@ -344,7 +345,7 @@ function buildQpDatasetsShared(products, targetRpm = null, targetPoint = null) {
     series.push({
       name: 'Кривая сети',
       type: 'line',
-      smooth: true,
+      smooth: false,
       symbol: 'none',
       lineStyle: { type: 'dashed', color: '#7f7f7f', width: 2 },
       itemStyle: { color: '#7f7f7f' },
@@ -367,9 +368,11 @@ function buildQpDatasetsShared(products, targetRpm = null, targetPoint = null) {
 
 function renderQpChartShared(container, chartRef, products, targetRpm = null, targetPoint = null) {
   if (!container || typeof echarts === "undefined") return chartRef;
-  
+
+  let isNewChart = false;
   if (!chartRef) {
     chartRef = echarts.init(container);
+    isNewChart = true;
   } else {
     chartRef.clear();
   }
@@ -426,10 +429,14 @@ function renderQpChartShared(container, chartRef, products, targetRpm = null, ta
 
   chartRef.setOption(option);
 
-  // Resize chart on window resize
-  window.addEventListener('resize', () => {
-    chartRef.resize();
-  });
+  // Подписываемся один раз при создании графика: повторные перерисовки
+  // (слайдер оборотов, добавление модели в сравнение) не должны копить обработчики
+  if (isNewChart) {
+    const chart = chartRef;
+    window.addEventListener('resize', () => {
+      chart.resize();
+    });
+  }
 
   return chartRef;
 }
