@@ -68,7 +68,11 @@ async function apiAuthFetch(path, options = {}) {
     const detail = data?.detail;
     if (typeof detail === "string") message = detail;
     else if (detail && typeof detail === "object" && !Array.isArray(detail) && detail.error) message = detail.error;
-    else if (Array.isArray(detail) && detail[0]?.msg) message = detail[0].msg;
+    else if (Array.isArray(detail) && detail[0]?.msg) {
+      // pydantic v2 добавляет техническую приставку "Value error, " ко всем
+      // сообщениям из наших @model_validator/@field_validator — админу она не нужна
+      message = String(detail[0].msg).replace(/^Value error,\s*/, "");
+    }
     else if (data?.error) message = data.error;
     const err = new Error(message);
     err.status = res.status;

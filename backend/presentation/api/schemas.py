@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class RangeOut(BaseModel):
@@ -300,6 +300,35 @@ class AdminProductIn(BaseModel):
     raw_noise_level: str = ""
     raw_price: str = ""
     model_slug: str = ""
+
+    @model_validator(mode="after")
+    def _check_ranges(self) -> "AdminProductIn":
+        # π₁: Q_min ≤ Q_max — расход растёт монотонно, это универсальный
+        # арифметический минимум/максимум, инверсия всегда ошибка.
+        if (
+            self.airflow_min is not None
+            and self.airflow_max is not None
+            and self.airflow_min > self.airflow_max
+        ):
+            raise ValueError(
+                f"Расход: минимум ({self.airflow_min}) не может быть больше максимума ({self.airflow_max})"
+            )
+        # Давление НЕ проверяем на min ≤ max: pressure_min/pressure_max в этом
+        # каталоге означают «давление при Q_min» / «давление при Q_max», а не
+        # арифметические границы — у вентилятора давление обычно падает с
+        # ростом расхода, поэтому pressure_min > pressure_max является нормой
+        # (см. build_qp_curve, который явно берёт max()/min() из этой пары).
+        # π₃, π₄: отрицательные и нулевые границы — всегда ошибка независимо
+        # от того, как называется поле.
+        for label, value in (
+            ("Расход (мин)", self.airflow_min),
+            ("Расход (макс)", self.airflow_max),
+            ("Давление (мин)", self.pressure_min),
+            ("Давление (макс)", self.pressure_max),
+        ):
+            if value is not None and value <= 0:
+                raise ValueError(f"{label}: значение должно быть больше нуля (сейчас {value})")
+        return self
 
 
 class PdfExportRequest(BaseModel):
