@@ -668,7 +668,9 @@ function openProductModal(product, isCreate) {
   state.products.editingId = isCreate ? null : product?.id;
   const title = $("#productModalTitle");
   if (title) title.textContent = isCreate ? "Новый вентилятор" : `Редактирование ${product?.id}`;
-  form.elements.id.disabled = !isCreate;
+  // disabled-поля не попадают в FormData — при сохранении id ушёл бы пустой
+  // строкой и упал на валидации бэкенда; readOnly не даёт менять, но отправляется
+  form.elements.id.readOnly = !isCreate;
   fillForm(form, product ? productToForm(product) : { id: "", number: "", type: "", model: "", size: "" });
   productModal.show();
 }
