@@ -265,6 +265,44 @@ h1, h2, h3, h4, h5, h6 {
   font-size: 1.25rem;
 }
 
+/* Настройка размера плиток каталога (крупные/обычные/мелкие) —
+   меняет не только число колонок в сетке, но и плотность самой карточки */
+.product-card.tile-sm .card-body {
+  padding: 0.6rem;
+}
+.product-card.tile-sm .card-title {
+  font-size: 0.85rem;
+}
+.product-card.tile-sm dl {
+  font-size: 0.76rem;
+}
+.product-card.tile-sm .product-price {
+  font-size: 1rem;
+}
+.product-card.tile-sm .btn-compare-toggle,
+.product-card.tile-sm .btn-project-toggle,
+.product-card.tile-sm .product-open-btn {
+  padding: 0.3rem 0.4rem;
+  font-size: 0.78rem;
+}
+
+.product-card.tile-lg .card-body {
+  padding: 1.35rem;
+}
+.product-card.tile-lg .card-title {
+  font-size: 1.1rem;
+}
+.product-card.tile-lg .product-price {
+  font-size: 1.45rem;
+}
+
+.tile-size-group .btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.3rem 0.55rem;
+}
+
 .btn-compare-toggle {
   background: var(--vs-bg);
   color: var(--vs-text);

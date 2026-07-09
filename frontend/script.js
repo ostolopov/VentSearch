@@ -149,6 +149,30 @@ function saveWorkingPoint(point) {
   }
 }
 
+const TILE_SIZE_KEY = "ventsearch.tileSize";
+const TILE_SIZE_COLS = {
+  lg: "col-12 col-md-6 col-xl-6",
+  md: "col-6 col-md-6 col-xl-4",
+  sm: "col-6 col-md-4 col-xl-3",
+};
+
+function loadTileSize() {
+  try {
+    const v = localStorage.getItem(TILE_SIZE_KEY);
+    return v && TILE_SIZE_COLS[v] ? v : "md";
+  } catch {
+    return "md";
+  }
+}
+
+function saveTileSize(size) {
+  try {
+    localStorage.setItem(TILE_SIZE_KEY, size);
+  } catch {
+    // ignore
+  }
+}
+
 function getProjectIdSet() {
   return new Set(loadProjectIds());
 }
@@ -870,6 +894,7 @@ async function initCatalogPage() {
   const backToFiltersBtn = $("#backToFiltersBtn");
   const analogsList = $("#analogsList");
   const shareLinkBtn = $("#shareLinkBtn");
+  const tileSizeGroup = $("#tileSizeGroup");
 
   const state = {
     currentPage: 1,
@@ -882,7 +907,28 @@ async function initCatalogPage() {
     selectedIds: new Set(loadCompareIds()),
     projectIds: new Set(loadProjectIds()),
     analogs: [],
+    tileSize: loadTileSize(),
   };
+
+  function syncTileSizeUi() {
+    if (!tileSizeGroup) return;
+    for (const btn of tileSizeGroup.querySelectorAll("[data-tile-size]")) {
+      const active = btn.dataset.tileSize === state.tileSize;
+      btn.classList.toggle("btn-dark", active);
+      btn.classList.toggle("btn-outline-dark", !active);
+      btn.setAttribute("aria-pressed", active ? "true" : "false");
+    }
+  }
+  syncTileSizeUi();
+
+  tileSizeGroup?.addEventListener("click", (event) => {
+    const btn = event.target.closest("[data-tile-size]");
+    if (!btn || btn.dataset.tileSize === state.tileSize) return;
+    state.tileSize = btn.dataset.tileSize;
+    saveTileSize(state.tileSize);
+    syncTileSizeUi();
+    renderProducts(state.currentItems, { total: state.lastTotal, page: state.currentPage, limit: state.lastLimit });
+  });
 
   function showError(message) {
     showErrorSafe(message);
@@ -1009,12 +1055,13 @@ async function initCatalogPage() {
     function buildProductCard(p) {
       state.cacheById.set(p.id, p);
       const col = document.createElement("div");
-      col.className = "col-6 col-md-6 col-xl-4";
+      col.className = TILE_SIZE_COLS[state.tileSize] || TILE_SIZE_COLS.md;
 
       const card = document.createElement("article");
       const selected = state.selectedIds.has(p.id);
       const inProject = state.projectIds.has(p.id);
-      card.className = `card h-100 shadow-sm product-card${selected ? " selected" : ""}`;
+      const sizeClass = state.tileSize === "sm" ? " tile-sm" : state.tileSize === "lg" ? " tile-lg" : "";
+      card.className = `card h-100 shadow-sm product-card${sizeClass}${selected ? " selected" : ""}`;
 
       const imgWrap = document.createElement("div");
       imgWrap.className = "ratio ratio-4x3 bg-light d-flex align-items-center justify-content-center";
