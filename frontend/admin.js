@@ -546,6 +546,14 @@ function formatUptime(totalSeconds) {
   return `${m} мин ${s % 60} с`;
 }
 
+function pluralRu(n, one, few, many) {
+  const mod10 = n % 10;
+  const mod100 = n % 100;
+  if (mod10 === 1 && mod100 !== 11) return one;
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 10 || mod100 >= 20)) return few;
+  return many;
+}
+
 function formatBytes(bytes) {
   const n = Number(bytes);
   if (!Number.isFinite(n)) return "—";
@@ -575,6 +583,61 @@ function renderDebugCard(title, rows) {
         <table class="table table-sm mb-0"><tbody>${body}</tbody></table>
       </div>
     </div>`;
+}
+
+// Визуализация Bloom-фильтра: сетка занятых/свободных бит + известные значения.
+// Канвасы рисуются после вставки HTML в DOM — сам renderBloomCard лишь
+// откладывает данные в _pendingBloomCanvases, реальная отрисовка в drawPendingBloomCanvases().
+let _pendingBloomCanvases = [];
+
+function renderBloomCard(title, bloom) {
+  if (!bloom || typeof bloom.m !== "number" || !Array.isArray(bloom.bits)) {
+    return renderDebugCard(title, [["Статус", "нет данных"]]);
+  }
+  const canvasId = `bloomCanvas_${Math.random().toString(36).slice(2)}`;
+  const cols = Math.max(1, Math.round(Math.sqrt(bloom.m)));
+  const rows = Math.ceil(bloom.m / cols);
+  const cellSize = bloom.m <= 64 ? 20 : 8;
+  _pendingBloomCanvases.push({ id: canvasId, bits: bloom.bits, cols, cellSize });
+
+  const knownValues = bloom.known_values || [];
+  const shown = knownValues.slice(0, 40).map(escapeHtml).join(", ");
+  const knownPreview = shown + (knownValues.length > 40 ? `, … ещё ${knownValues.length - 40}` : "");
+
+  return `
+    <div class="col-12">
+      <div class="card shadow-sm h-100">
+        <div class="card-header py-2 fw-semibold d-flex justify-content-between align-items-center flex-wrap gap-2">
+          <span>${escapeHtml(title)}</span>
+          <span class="text-secondary small fw-normal">
+            m=${bloom.m} бит · k=${bloom.k} хэш-функций · занято ${bloom.bits_set} (${(bloom.fill_ratio * 100).toFixed(1)}%)
+          </span>
+        </div>
+        <div class="card-body d-flex flex-wrap gap-4 align-items-start">
+          <canvas id="${canvasId}" width="${cols * cellSize}" height="${rows * cellSize}" style="border:1px solid #dee2e6; border-radius:4px; flex-shrink:0;"></canvas>
+          <div class="small text-secondary" style="min-width: 220px; max-width: 480px;">
+            <div class="mb-1"><strong>${knownValues.length}</strong> ${pluralRu(knownValues.length, "известное значение", "известных значения", "известных значений")} в индексе:</div>
+            <div>${knownPreview || "—"}</div>
+          </div>
+        </div>
+      </div>
+    </div>`;
+}
+
+function drawPendingBloomCanvases() {
+  for (const { id, bits, cols, cellSize } of _pendingBloomCanvases) {
+    const canvas = document.getElementById(id);
+    if (!canvas || !canvas.getContext) continue;
+    const ctx = canvas.getContext("2d");
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    bits.forEach((bit, i) => {
+      const x = (i % cols) * cellSize;
+      const y = Math.floor(i / cols) * cellSize;
+      ctx.fillStyle = bit ? "#0d6efd" : "#e9ecef";
+      ctx.fillRect(x, y, cellSize - 1, cellSize - 1);
+    });
+  }
+  _pendingBloomCanvases = [];
 }
 
 async function loadDebug() {
@@ -626,6 +689,8 @@ async function loadDebug() {
     ["Построен (Bloom + оси)", debugBoolBadge(idx.built === true)],
     idx.built ? ["Записей", escapeHtml(idx.rows ?? "—")] : undefined,
   ].filter(Boolean)));
+  if (idx.built && idx.bloom_type) cards.push(renderBloomCard("Bloom-фильтр: тип вентилятора", idx.bloom_type));
+  if (idx.built && idx.bloom_size) cards.push(renderBloomCard("Bloom-фильтр: типоразмер", idx.bloom_size));
 
   const sec = d.security || {};
   const rl = sec.login_rate_limit || {};
@@ -640,6 +705,7 @@ async function loadDebug() {
   ]));
 
   content.innerHTML = cards.join("");
+  drawPendingBloomCanvases();
 
   const alertEl = $("#debugSecurityAlert");
   if (alertEl) {

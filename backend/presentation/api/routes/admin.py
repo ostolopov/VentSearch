@@ -304,7 +304,23 @@ def _debug_index_section() -> Dict[str, Any]:
     idx = get_catalog_index()
     if idx is None:
         return {"built": False}
-    return {"built": True, "rows": len(getattr(idx, "_rows", []) or [])}
+    result: Dict[str, Any] = {"built": True, "rows": len(getattr(idx, "_rows", []) or [])}
+
+    # Bloom-фильтры категориальных полей — битовая карта для отладочной
+    # визуализации в админке (какие ячейки заняты, насколько заполнен фильтр)
+    type_bloom = getattr(idx, "_type_bloom", None)
+    if type_bloom is not None:
+        result["bloom_type"] = {
+            **type_bloom.stats(),
+            "known_values": sorted(getattr(idx, "_type_to_ids", {}).keys()),
+        }
+    size_bloom = getattr(idx, "_size_bloom", None)
+    if size_bloom is not None:
+        result["bloom_size"] = {
+            **size_bloom.stats(),
+            "known_values": sorted(getattr(idx, "_size_to_ids", {}).keys()),
+        }
+    return result
 
 
 def _debug_security_section() -> Dict[str, Any]:

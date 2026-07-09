@@ -33,3 +33,21 @@ def test_bloom_empty_input():
     bf = BloomFilter()
     bf.add("")
     assert bf.might_contain("") is True
+
+
+def test_bloom_stats_shape_and_fill():
+    """stats() отдаёт битовую карту для визуализации в админке."""
+    bf = BloomFilter(expected_items=10)
+    stats = bf.stats()
+    assert stats["bits_set"] == 0
+    assert stats["fill_ratio"] == 0.0
+    assert len(stats["bits"]) == stats["m"]
+    assert all(b == 0 for b in stats["bits"])
+
+    bf.add("ВО")
+    bf.add("ВЦ")
+    stats2 = bf.stats()
+    assert stats2["bits_set"] > 0
+    assert stats2["bits_set"] <= stats2["m"]
+    assert 0 < stats2["fill_ratio"] <= 1.0
+    assert sum(stats2["bits"]) == stats2["bits_set"]

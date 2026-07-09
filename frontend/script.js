@@ -1474,6 +1474,7 @@ async function initComparePage() {
   const qpChartCanvas = $("#qpChart");
   const compareTableHead = $("#compareTableHead");
   const compareTableBody = $("#compareTableBody");
+  let families = [];
 
   function showError(message) {
     if (!alertBox) return;
@@ -1489,8 +1490,17 @@ async function initComparePage() {
     compareTableHead.innerHTML = "";
     compareTableBody.innerHTML = "";
     const headerRow = document.createElement("tr");
-    headerRow.innerHTML = `<th style="width:200px;">Параметр</th>${products
-      .map((p) => `<th>
+    headerRow.innerHTML = `<th style="width:220px;">Параметр</th>${products
+      .map((p) => {
+        const fam = families.find((f) => (f.variants || []).some((v) => String(v.id) === String(p.id)));
+        const siblings = fam ? fam.variants.filter((v) => String(v.id) !== String(p.id)) : [];
+        const swapSelect = fam && siblings.length
+          ? `<select class="form-select form-select-sm mt-1 compare-swap-size" data-slot="${escapeHtml(p.id)}" title="Заменить типоразмер в этом же ряду">
+              <option value="${escapeHtml(p.id)}" selected>${escapeHtml(p.size || p.model)} (текущий)</option>
+              ${siblings.map((v) => `<option value="${escapeHtml(v.id)}">${escapeHtml(v.size || v.model)} · ⌀${v.diameter ?? "—"}мм</option>`).join("")}
+            </select>`
+          : "";
+        return `<th>
         <div class="d-flex justify-content-between align-items-center">
           <span>${escapeHtml(p.model || p.id)}</span>
           <button type="button" class="btn btn-sm btn-link text-danger p-0 ms-2 btn-remove-compare" data-id="${escapeHtml(p.id)}" title="Удалить из сравнения">
@@ -1500,7 +1510,9 @@ async function initComparePage() {
             </svg>
           </button>
         </div>
-      </th>`)
+        ${swapSelect}
+      </th>`;
+      })
       .join("")}`;
     compareTableHead.appendChild(headerRow);
 
@@ -1510,6 +1522,22 @@ async function initComparePage() {
         const ids = new Set(loadCompareIds());
         ids.delete(id);
         saveCompareIds(ids);
+        window.location.reload();
+      });
+    });
+
+    // Смена типоразмера прямо в шапке — без удаления и повторного добавления,
+    // как в модельном ряду на карточке товара
+    headerRow.querySelectorAll(".compare-swap-size").forEach((select) => {
+      select.addEventListener("change", () => {
+        const oldId = select.dataset.slot;
+        const newId = select.value;
+        if (!newId || newId === oldId) return;
+        const ordered = loadCompareIds();
+        const idx = ordered.indexOf(oldId);
+        if (idx === -1) return;
+        ordered[idx] = newId;
+        saveCompareIds(ordered);
         window.location.reload();
       });
     });
@@ -1548,8 +1576,8 @@ async function initComparePage() {
   }
 
   async function exportCompareToPdf(products) {
-    if (products.length < 2) {
-      showError("Для экспорта выберите минимум 2 модели.");
+    if (products.length < 1) {
+      showError("Для экспорта выберите хотя бы одну модель.");
       return;
     }
     hideError();
@@ -1562,24 +1590,27 @@ async function initComparePage() {
     }
   }
 
-  // Каскадный подбор «модельный ряд → типоразмер» — как выбор поколения,
-  // затем размера экрана у телефона, вместо плоского списка из 300+ моделей.
-  const MAX_COMPARE = 6;
-  async function initFamilyVariantPicker() {
-    const familySelect = $("#familySelect");
-    const variantSelect = $("#variantSelect");
-    const addForm = $("#addCompareForm");
-    if (!familySelect || !variantSelect || !addForm) return;
-
-    let families = [];
+  // Модельные ряды грузим один раз и переиспользуем и в форме добавления,
+  // и в свопе типоразмера прямо в шапке таблицы сравнения
+  async function loadFamilies() {
     try {
       const data = await fetchJson(apiUrl("/api/products/families"));
       families = Array.isArray(data?.families) ? data.families : [];
     } catch (err) {
       console.error("families fetch failed", err);
-      addForm.classList.add("d-none");
-      return;
+      families = [];
     }
+  }
+
+  // Каскадный подбор «модельный ряд → типоразмер» — как выбор поколения,
+  // затем размера экрана у телефона, вместо плоского списка из 300+ моделей.
+  const MAX_COMPARE = 6;
+  function initFamilyVariantPicker() {
+    const familySelect = $("#familySelect");
+    const variantSelect = $("#variantSelect");
+    const addForm = $("#addCompareForm");
+    if (!familySelect || !variantSelect || !addForm) return;
+
     if (!families.length) {
       addForm.classList.add("d-none");
       return;
@@ -1624,11 +1655,12 @@ async function initComparePage() {
 
   try {
     hideError();
-    await initFamilyVariantPicker();
+    await loadFamilies();
+    initFamilyVariantPicker();
     const ids = loadCompareIds();
     updateCompareNavBadge();
-    if (ids.length < 2) {
-      compareMeta.textContent = "Выберите минимум 2 модели в каталоге и вернитесь на страницу сравнения.";
+    if (ids.length < 1) {
+      compareMeta.textContent = "Выберите модели в каталоге (или через форму выше) и вернитесь на страницу сравнения.";
       const backBtn = document.createElement("a");
       backBtn.href = "index.html";
       backBtn.className = "btn btn-dark btn-sm mt-2";
@@ -1637,7 +1669,10 @@ async function initComparePage() {
       compareMeta.appendChild(backBtn);
       return;
     }
-    compareMeta.textContent = `Выбрано моделей: ${ids.length}`;
+    compareMeta.textContent =
+      ids.length === 1
+        ? "Выбрана 1 модель. Добавьте ещё, чтобы сравнить, или посмотрите её характеристику ниже."
+        : `Выбрано моделей: ${ids.length}`;
     const products = await fetchProductsByIds(ids);
     renderCompareTable(products);
     renderCompareChart(products);

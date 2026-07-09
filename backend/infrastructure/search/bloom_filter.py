@@ -46,3 +46,15 @@ class BloomFilter:
     def might_contain(self, item: str) -> bool:
         """False — значения точно нет в множестве; True — возможен ложный положительный."""
         return all(self._get_bit(p) for p in self._positions(item))
+
+    def stats(self) -> dict:
+        """Состояние битовой карты для отладочной визуализации (админ-панель)."""
+        bits = [1 if self._get_bit(i) else 0 for i in range(self._m)]
+        bits_set = sum(bits)
+        return {
+            "m": self._m,
+            "k": self._k,
+            "bits_set": bits_set,
+            "fill_ratio": round(bits_set / self._m, 4) if self._m else 0.0,
+            "bits": bits,
+        }
