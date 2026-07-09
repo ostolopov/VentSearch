@@ -554,20 +554,8 @@ h1, h2, h3, h4, h5, h6 {
   font-size: 1rem;
 }
 
-#productImage {
-  border-radius: var(--vs-radius-lg);
-  overflow: hidden;
-  background: var(--vs-bg);
-  border: 1px solid var(--vs-border);
-  padding: 3rem;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
 #productImage .fan-photo {
   object-fit: contain;
-  max-height: 400px;
 }
 
 .tabs-card {

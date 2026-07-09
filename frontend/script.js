@@ -200,6 +200,14 @@ function formatNumber(n) {
   return new Intl.NumberFormat("ru-RU").format(n);
 }
 
+function pluralRu(n, one, few, many) {
+  const mod10 = n % 10;
+  const mod100 = n % 100;
+  if (mod10 === 1 && mod100 !== 11) return one;
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 10 || mod100 >= 20)) return few;
+  return many;
+}
+
 function formatPrice(price) {
   if (price === null || price === undefined || Number.isNaN(price)) return "по запросу";
   return `${formatNumber(price)}\u00A0₽`;
@@ -322,8 +330,29 @@ function isAxialType(t) {
   return AXIAL_TYPES.has(String(t).trim().toLowerCase());
 }
 
-function buildQpDatasetsShared(products, targetRpm = null, targetPoint = null) {
+// Служебные серии (зона допуска, курсорные линии к точке) — не попадают
+// в легенду и подсказку графика.
+function isServiceSeriesName(name) {
+  return typeof name === "string" && (name.startsWith("tol-") || name.startsWith("guide-"));
+}
+
+// familyKey: модель без типоразмера в хвосте — «ВО 13-284-4/15°-456A4» → «ВО 13-284-4/15°».
+// Один и тот же расчёт, что и в backend/application/use_cases/list_product_families.py.
+function familyKey(product) {
+  const model = String(product?.model || "").trim();
+  const size = String(product?.size || "").trim();
+  if (model && size && model.toLowerCase().endsWith(`-${size.toLowerCase()}`)) {
+    return model.slice(0, model.length - size.length - 1).trim();
+  }
+  return model;
+}
+
+// opts.primaryId — если задан среди 2+ моделей, остальные рисуются тонкими
+// серыми (контекст модельного ряда), а выбранная модель — толстой цветной.
+function buildQpDatasetsShared(products, targetRpm = null, targetPoint = null, opts = {}) {
+  const { primaryId = null } = opts;
   const colors = ["#246bb3", "#e74c3c", "#2ecc71", "#9b59b6", "#f39c12", "#16a085"];
+  const familyMode = primaryId != null && products.length > 1;
   const series = [];
 
   products.forEach((p, idx) => {
@@ -379,17 +408,24 @@ function buildQpDatasetsShared(products, targetRpm = null, targetPoint = null) {
       const pScaled = Math.max(pNom * (scaleFactor * scaleFactor), 0);
       points.push([qScaled, pScaled]);
     }
-    
+
+    const isPrimary = familyMode ? String(p.id) === String(primaryId) : true;
+    const color = familyMode ? (isPrimary ? "#0d6efd" : "#c3ccd6") : colors[idx % colors.length];
+
     series.push({
-      name: p.model || p.id,
+      // В модельном ряду соседние типоразмеры подписаны коротко (по размеру) —
+      // полное имя модели остаётся только у выделенной кривой
+      name: familyMode && !isPrimary ? (p.size || p.model || p.id) : (p.model || p.id),
       type: 'line',
       // Точки уже лежат на квадратичной Безье (200 шт.) — дополнительное
       // сглаживание ECharts даёт «сплайн сплайна» и артефакты (QP_MODEL, п. 5.2)
       smooth: false,
       symbol: 'none',
       data: points,
-      lineStyle: { width: 3, color: colors[idx % colors.length] },
-      itemStyle: { color: colors[idx % colors.length] }
+      lineStyle: { width: familyMode ? (isPrimary ? 4 : 1.25) : 3, color, opacity: familyMode && !isPrimary ? 0.7 : 1 },
+      itemStyle: { color },
+      z: isPrimary ? 5 : 1,
+      __hideLegend: familyMode && !isPrimary,
     });
   });
 
@@ -412,12 +448,15 @@ function buildQpDatasetsShared(products, targetRpm = null, targetPoint = null) {
       data: systemPoints
     });
 
-    // Одиночная модель (карточка): зона допуска по давлению вокруг участка
-    // кривой Q ± 15% от точки + процент запаса в подписи точки.
-    // В сравнении (2+ моделей) зоны не рисуем — превращается в кашу.
+    // Зона допуска по давлению вокруг участка кривой Q ± 15% от точки + процент
+    // запаса в подписи точки — считаем по единственной модели, либо (в
+    // модельном ряду) по выделенной. При явном сравнении 2+ моделей без
+    // primaryId зону не рисуем — непонятно, к какой кривой её привязывать.
     let pointLabel = 'Рабочая точка';
-    if (products.length === 1 && series[0] && series[0].data.length >= 2) {
-      const fanPts = series[0].data;
+    const primaryIdx = familyMode ? products.findIndex((p) => String(p.id) === String(primaryId)) : 0;
+    const primarySeries = products.length === 1 || familyMode ? series[primaryIdx] : null;
+    if (primarySeries && primarySeries.data.length >= 2) {
+      const fanPts = primarySeries.data;
       const tolPct = Number(targetPoint.tol) > 0 ? Number(targetPoint.tol) : 7.5;
       const TOL_P = tolPct / 100;
       const seg = fanPts.filter(([q]) => q >= targetPoint.q * 0.85 && q <= targetPoint.q * 1.15);
@@ -459,11 +498,32 @@ function buildQpDatasetsShared(products, targetRpm = null, targetPoint = null) {
       }
     }
 
+    // Курсорные линии к осям — как в паспортных графиках, чтобы точку было
+    // видно без наведения мыши (обычный axisPointer виден только по hover)
+    series.push({
+      name: 'guide-v',
+      type: 'line',
+      silent: true,
+      symbol: 'none',
+      lineStyle: { type: 'dashed', color: '#d62728', width: 1, opacity: 0.5 },
+      data: [[targetPoint.q, 0], [targetPoint.q, targetPoint.p]],
+      z: 2,
+    });
+    series.push({
+      name: 'guide-h',
+      type: 'line',
+      silent: true,
+      symbol: 'none',
+      lineStyle: { type: 'dashed', color: '#d62728', width: 1, opacity: 0.5 },
+      data: [[0, targetPoint.p], [targetPoint.q, targetPoint.p]],
+      z: 2,
+    });
+
     series.push({
       name: 'Рабочая точка',
       type: 'scatter',
-      symbolSize: 12,
-      itemStyle: { color: '#d62728' },
+      symbolSize: 13,
+      itemStyle: { color: '#fff', borderColor: '#d62728', borderWidth: 3 },
       data: [[targetPoint.q, targetPoint.p]],
       label: { show: true, formatter: pointLabel, position: 'top', color: '#d62728', fontWeight: 'bold' },
       zlevel: 10
@@ -473,7 +533,7 @@ function buildQpDatasetsShared(products, targetRpm = null, targetPoint = null) {
   return series;
 }
 
-function renderQpChartShared(container, chartRef, products, targetRpm = null, targetPoint = null) {
+function renderQpChartShared(container, chartRef, products, targetRpm = null, targetPoint = null, opts = {}) {
   if (!container || typeof echarts === "undefined") return chartRef;
 
   let isNewChart = false;
@@ -486,17 +546,31 @@ function renderQpChartShared(container, chartRef, products, targetRpm = null, ta
 
   const qpChartFontFamily = 'system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", "Helvetica Neue", Arial, sans-serif';
 
-  const series = buildQpDatasetsShared(products, targetRpm, targetPoint);
+  const series = buildQpDatasetsShared(products, targetRpm, targetPoint, opts);
+
+  // Верхнюю границу оси P считаем по самим кривым вентиляторов (без хвоста
+  // «Кривой сети», который на большом Q улетает высоко и сжимает всё
+  // остальное в нижнюю четверть графика) — так провалы/горбы видно отчётливо
+  let maxCurveP = 0;
+  for (const s of series) {
+    if (isServiceSeriesName(s.name) || s.name === 'Кривая сети' || !Array.isArray(s.data)) continue;
+    for (const d of s.data) {
+      const v = Array.isArray(d) ? d[1] : null;
+      if (v != null && v > maxCurveP) maxCurveP = v;
+    }
+  }
+  if (targetPoint?.p > maxCurveP) maxCurveP = targetPoint.p;
+  const yMax = maxCurveP > 0 ? maxCurveP * 1.18 : undefined;
 
   const option = {
     tooltip: {
       trigger: 'axis',
       axisPointer: { type: 'cross', label: { backgroundColor: '#6a7985' } },
       textStyle: { fontFamily: qpChartFontFamily, fontSize: 12 },
-      // Служебные серии зоны допуска (tol-*) в подсказку не попадают
+      // Служебные серии (зона допуска, курсорные линии) в подсказку не попадают
       formatter: (params) => {
         const list = (Array.isArray(params) ? params : [params])
-          .filter((pr) => pr && pr.seriesName && !pr.seriesName.startsWith('tol-'));
+          .filter((pr) => pr && pr.seriesName && !isServiceSeriesName(pr.seriesName));
         if (!list.length) return '';
         const first = Array.isArray(list[0].value) ? list[0].value[0] : null;
         const head = first != null ? `Q = ${formatNumber(first)} м³/ч` : '';
@@ -509,28 +583,42 @@ function renderQpChartShared(container, chartRef, products, targetRpm = null, ta
     },
     legend: {
       bottom: 0,
-      data: series.map((s) => s.name).filter((n) => n && !String(n).startsWith('tol-')),
+      data: series.filter((s) => s.name && !isServiceSeriesName(s.name) && !s.__hideLegend).map((s) => s.name),
       textStyle: { fontFamily: qpChartFontFamily, fontSize: 12 }
     },
-    // Зум: колесо/пинч по оси Q + ползунок под графиком (filterMode 'none'
-    // не обрезает линии на краях видимой области)
+    // Зум по X и Y независим: колесо мыши — по Q (основная ось), а по Y —
+    // свой ползунок справа (перетаскивание не задевает масштаб по X)
     dataZoom: [
-      { type: 'inside', xAxisIndex: 0, filterMode: 'none' },
-      { type: 'slider', xAxisIndex: 0, filterMode: 'none', height: 16, bottom: 26, brushSelect: false }
+      { type: 'inside', xAxisIndex: 0, filterMode: 'none', zoomOnMouseWheel: true, moveOnMouseMove: true },
+      { type: 'inside', yAxisIndex: 0, filterMode: 'none', zoomOnMouseWheel: false, moveOnMouseMove: false },
+      { type: 'slider', xAxisIndex: 0, filterMode: 'none', height: 14, bottom: 26, brushSelect: false },
+      { type: 'slider', yAxisIndex: 0, filterMode: 'none', width: 14, right: 8, brushSelect: false, showDataShadow: false }
     ],
     toolbox: {
       feature: {
         dataZoom: { yAxisIndex: 'none', title: { zoom: 'Лупа', back: 'Сброс лупы' } },
         saveAsImage: { title: 'Скачать PNG', name: 'ventsearch-chart' }
       },
-      right: 20,
+      right: 40,
       top: 0
     },
+    graphic: [{
+      type: 'text',
+      left: 4,
+      top: 2,
+      silent: true,
+      style: {
+        text: 'Колесо — зум по Q · ползунок справа — по P',
+        fill: '#9aa5b1',
+        fontSize: 10.5,
+        fontFamily: qpChartFontFamily
+      }
+    }],
     grid: {
       left: '3%',
-      right: '4%',
+      right: 34,
       bottom: 76,
-      top: '10%',
+      top: '12%',
       containLabel: true
     },
     xAxis: {
@@ -547,6 +635,8 @@ function renderQpChartShared(container, chartRef, products, targetRpm = null, ta
       name: 'Давление (P), Па',
       nameLocation: 'end',
       type: 'value',
+      min: 0,
+      max: yMax,
       splitLine: { show: true, lineStyle: { color: '#e0e0e0' } },
       minorSplitLine: { show: true, lineStyle: { color: '#f5f5f5' } },
       axisLabel: { fontFamily: qpChartFontFamily, formatter: (val) => formatNumber(val) },
@@ -555,7 +645,7 @@ function renderQpChartShared(container, chartRef, products, targetRpm = null, ta
     series
   };
 
-  chartRef.setOption(option);
+  chartRef.setOption(option, true);
 
   // Подписываемся один раз при создании графика: повторные перерисовки
   // (слайдер оборотов, добавление модели в сравнение) не должны копить обработчики
@@ -1329,8 +1419,69 @@ async function initComparePage() {
     }
   }
 
+  // Каскадный подбор «модельный ряд → типоразмер» — как выбор поколения,
+  // затем размера экрана у телефона, вместо плоского списка из 300+ моделей.
+  const MAX_COMPARE = 6;
+  async function initFamilyVariantPicker() {
+    const familySelect = $("#familySelect");
+    const variantSelect = $("#variantSelect");
+    const addForm = $("#addCompareForm");
+    if (!familySelect || !variantSelect || !addForm) return;
+
+    let families = [];
+    try {
+      const data = await fetchJson(apiUrl("/api/products/families"));
+      families = Array.isArray(data?.families) ? data.families : [];
+    } catch (err) {
+      console.error("families fetch failed", err);
+      addForm.classList.add("d-none");
+      return;
+    }
+    if (!families.length) {
+      addForm.classList.add("d-none");
+      return;
+    }
+
+    familySelect.innerHTML = "";
+    for (const fam of families) {
+      const opt = document.createElement("option");
+      opt.value = fam.key;
+      const count = (fam.variants || []).length;
+      opt.textContent = `${fam.key} (${count} ${pluralRu(count, "типоразмер", "типоразмера", "типоразмеров")})`;
+      familySelect.appendChild(opt);
+    }
+
+    function fillVariants() {
+      const fam = families.find((f) => f.key === familySelect.value) || families[0];
+      variantSelect.innerHTML = "";
+      for (const v of fam?.variants || []) {
+        const opt = document.createElement("option");
+        opt.value = v.id;
+        opt.textContent = `${v.size || v.model} · ⌀${v.diameter ?? "—"}мм · ${v.airflow?.raw || "—"} м³/ч · ${formatPrice(v.price)}`;
+        variantSelect.appendChild(opt);
+      }
+    }
+    fillVariants();
+    familySelect.addEventListener("change", fillVariants);
+
+    addForm.addEventListener("submit", (e) => {
+      e.preventDefault();
+      const id = variantSelect.value;
+      if (!id) return;
+      const ids = new Set(loadCompareIds());
+      if (ids.size >= MAX_COMPARE && !ids.has(id)) {
+        showError(`Максимум ${MAX_COMPARE} моделей одновременно — уберите одну, чтобы добавить другую.`);
+        return;
+      }
+      ids.add(id);
+      saveCompareIds(ids);
+      window.location.reload();
+    });
+  }
+
   try {
     hideError();
+    await initFamilyVariantPicker();
     const ids = loadCompareIds();
     updateCompareNavBadge();
     if (ids.length < 2) {
@@ -1440,19 +1591,42 @@ async function initProductPage() {
     container.classList.remove("d-none");
     alertBox.classList.add("d-none");
 
-    
-    productChart = renderQpChartShared(chartCanvas, productChart, [data], null, loadWorkingPoint());
-    productCompareMeta.textContent = `Сейчас показана характеристика модели ${data.model || data.id}.`;
+    // Модельный ряд: та же аэродинамическая схема в разных типоразмерах —
+    // показываем всей линейкой на одном графике (текущая модель выделена),
+    // как варианты размера одного поколения телефона на одном сравнении.
+    let familyVariants = null;
+    try {
+      const familiesData = await fetchJson(apiUrl("/api/products/families"));
+      const families = Array.isArray(familiesData?.families) ? familiesData.families : [];
+      const myFamily = families.find((f) => (f.variants || []).some((v) => String(v.id) === String(data.id)));
+      if (myFamily && myFamily.variants.length > 1) familyVariants = myFamily.variants;
 
-    const listData = await fetchJson(
-      apiUrl(`/api/products?type=${encodeURIComponent(data.type || "")}&limit=100&offset=0&sort=price_asc`),
-    );
-    const options = (Array.isArray(listData?.items) ? listData.items : []).filter((x) => x.id !== data.id);
-    for (const item of options) {
-      const opt = document.createElement("option");
-      opt.value = item.id;
-      opt.textContent = `${item.model || item.id} · ${formatPrice(item.price)}`;
-      compareWithSelect.appendChild(opt);
+      // Дропдаун ручного сравнения: группируем по модельному ряду —
+      // плоский список из 300+ моделей был бы бесполезен
+      for (const fam of families) {
+        const items = (fam.variants || []).filter((x) => String(x.id) !== String(data.id));
+        if (!items.length) continue;
+        const group = document.createElement("optgroup");
+        group.label = fam.key || "Прочие";
+        for (const item of items) {
+          const opt = document.createElement("option");
+          opt.value = item.id;
+          opt.textContent = `${item.size || item.model} · ${formatPrice(item.price)}`;
+          group.appendChild(opt);
+        }
+        compareWithSelect.appendChild(group);
+      }
+    } catch (err) {
+      console.error("families fetch failed", err);
+    }
+
+    if (familyVariants) {
+      productChart = renderQpChartShared(chartCanvas, productChart, familyVariants, null, loadWorkingPoint(), { primaryId: data.id });
+      productCompareMeta.textContent =
+        `Модельный ряд ${familyKey(data)}: ${familyVariants.length} ${pluralRu(familyVariants.length, "типоразмер", "типоразмера", "типоразмеров")}, текущая модель выделена цветом.`;
+    } else {
+      productChart = renderQpChartShared(chartCanvas, productChart, [data], null, loadWorkingPoint());
+      productCompareMeta.textContent = `Сейчас показана характеристика модели ${data.model || data.id}.`;
     }
 
     $("#exportProductPdfBtn")?.addEventListener("click", async () => {
@@ -1468,8 +1642,14 @@ async function initProductPage() {
     compareOnProductBtn?.addEventListener("click", async () => {
       const otherId = compareWithSelect.value;
       if (!otherId) {
-        productChart = renderQpChartShared(chartCanvas, productChart, [currentProduct], null, loadWorkingPoint());
-        productCompareMeta.textContent = "Выберите вторую модель для сравнения.";
+        if (familyVariants) {
+          productChart = renderQpChartShared(chartCanvas, productChart, familyVariants, null, loadWorkingPoint(), { primaryId: currentProduct.id });
+          productCompareMeta.textContent =
+            `Модельный ряд ${familyKey(currentProduct)}: ${familyVariants.length} ${pluralRu(familyVariants.length, "типоразмер", "типоразмера", "типоразмеров")}, текущая модель выделена цветом.`;
+        } else {
+          productChart = renderQpChartShared(chartCanvas, productChart, [currentProduct], null, loadWorkingPoint());
+          productCompareMeta.textContent = "Выберите вторую модель для сравнения.";
+        }
         return;
       }
       const second = await fetchJson(apiUrl(`/api/products/${encodeURIComponent(otherId)}`));

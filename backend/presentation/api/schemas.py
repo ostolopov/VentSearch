@@ -156,6 +156,18 @@ class SelectPointOut(BaseModel):
     point: Dict[str, float] = Field(default_factory=dict, description="Эхо рабочей точки {q, p}")
 
 
+class ProductFamilyOut(BaseModel):
+    """Модельный ряд: одна аэродинамическая схема в разных типоразмерах."""
+
+    key: str = Field(..., description="Модель без типоразмера в хвосте")
+    type: str = ""
+    variants: List[ProductOut] = Field(default_factory=list)
+
+
+class ProductFamiliesOut(BaseModel):
+    families: List[ProductFamilyOut] = Field(default_factory=list)
+
+
 class HealthOut(BaseModel):
     model_config = ConfigDict(json_schema_extra={"example": {"ok": True, "products": 120}})
 

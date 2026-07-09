@@ -9,7 +9,7 @@
       rel="stylesheet"
       crossorigin="anonymous"
     />
-    <link rel="stylesheet" href="style.css?v=20260708-1" />
+    <link rel="stylesheet" href="style.css?v=20260709-1" />
 
 <!-- Yandex.Metrika counter -->
 <script type="text/javascript">
@@ -102,6 +102,29 @@
     <main class="container-fluid px-3 px-lg-4 py-4">
       <div id="alertBox" class="alert alert-danger d-none mb-3" role="alert"></div>
 
+      <div class="card shadow-sm border-0 mb-4" style="border-radius: 20px;">
+        <div class="card-body p-4">
+          <h2 class="h6 fw-bold mb-3">Добавить модель для сравнения</h2>
+          <p class="small text-secondary mb-3">
+            Сначала выберите модельный ряд (аэродинамическую схему), затем — конкретный типоразмер внутри него,
+            как размер экрана у одного поколения телефона.
+          </p>
+          <form id="addCompareForm" class="row g-2 align-items-end">
+            <div class="col-12 col-md-5">
+              <label for="familySelect" class="form-label text-secondary small mb-1 fw-medium">Модельный ряд</label>
+              <select id="familySelect" class="form-select"></select>
+            </div>
+            <div class="col-12 col-md-5">
+              <label for="variantSelect" class="form-label text-secondary small mb-1 fw-medium">Типоразмер</label>
+              <select id="variantSelect" class="form-select"></select>
+            </div>
+            <div class="col-12 col-md-2">
+              <button type="submit" class="btn btn-dark w-100">Добавить</button>
+            </div>
+          </form>
+        </div>
+      </div>
+
       <div class="row g-4 align-items-stretch">
         <div class="col-12 col-xxl-6">
           <div class="card shadow-sm border-0 h-100" style="border-radius: 20px; overflow: hidden;">
@@ -143,8 +166,8 @@
     <script src="config.js?v=20260424-1"></script>
     <script src="auth.js?v=20260524-10"></script>
     <script src="site-auth.js?v=20260524-10"></script>
-    <script src="script.js?v=20260708-1"></script>
-    <script src="site-layout.js?v=20260708-1"></script>
+    <script src="script.js?v=20260709-1"></script>
+    <script src="site-layout.js?v=20260709-1"></script>
   </body>
 </html>
 

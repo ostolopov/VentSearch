@@ -15,6 +15,8 @@ from presentation.api.schemas import (
     CatalogFacetsOut,
     ErrorOut,
     HTTPValidationErrorOut,
+    ProductFamiliesOut,
+    ProductFamilyOut,
     ProductListPageOut,
     ProductOut,
     QPPointOut,
@@ -25,6 +27,7 @@ from application.use_cases.search_products import SearchProductsUseCase, SearchP
 from application.use_cases.get_product import GetProductUseCase, ProductNotFoundError
 from application.use_cases.get_qp_curve import GetQPCurveUseCase, QPCurveQuery, InsufficientQPDataError
 from application.use_cases.select_by_point import SelectByPointUseCase, SelectByPointQuery
+from application.use_cases.list_product_families import ListProductFamiliesUseCase
 from infrastructure.db.connection import get_connection, put_connection
 from infrastructure.db.product_repository import (
     PgProductRepository,
@@ -214,6 +217,42 @@ def api_products_select_point(
         ],
         total_considered=result.total_considered,
         point={"q": point_q, "p": point_p},
+    )
+
+
+@router.get(
+    "/api/products/families",
+    response_model=ProductFamiliesOut,
+    summary="Модельные ряды: группировка вентиляторов по схеме без типоразмера",
+    description=(
+        "Каждая запись — одна аэродинамическая схема (лопасти/угол), выпускаемая "
+        "в нескольких типоразмерах. Варианты внутри ряда отсортированы по диаметру. "
+        "Используется для сравнения типоразмеров одной модели («ВО 13-284-4/15°» "
+        "в разных диаметрах), как выбор iPhone 14 / 14 Pro / 14 Pro Max."
+    ),
+    responses={
+        200: {"description": "Список модельных рядов.", "model": ProductFamiliesOut},
+        **COMMON_ERROR_RESPONSES,
+    },
+)
+def api_products_families():
+    from config import CSV_PATH
+    _ensure_catalog_sync(CSV_PATH)
+
+    with _db_session() as conn:
+        repo = PgProductRepository(conn)
+        uc = ListProductFamiliesUseCase(repo)
+        families = uc.execute()
+
+    return ProductFamiliesOut(
+        families=[
+            ProductFamilyOut(
+                key=fam.key,
+                type=fam.type,
+                variants=[ProductOut.model_validate(v) for v in fam.variants],
+            )
+            for fam in families
+        ]
     )
 
 
