@@ -72,6 +72,7 @@ class GetQPCurveUseCase:
             p_min=float(p_min),
             p_max=float(p_max),
             fan_type=product.get("type"),
+            model=product.get("model"),
             pressure_coefficients=product.get("pressure_coefficients"),
             nominal_rpm=product.get("nominal_rpm"),
             target_rpm=query.target_rpm,

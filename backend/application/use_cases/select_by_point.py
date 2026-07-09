@@ -72,6 +72,7 @@ class SelectByPointUseCase:
                 q_min=float(q_min), q_max=float(q_max),
                 p_min=float(p_min), p_max=float(p_max),
                 fan_type=p.get("type"),
+                model=p.get("model"),
                 pressure_coefficients=p.get("pressure_coefficients"),
                 nominal_rpm=p.get("nominal_rpm"),
             )

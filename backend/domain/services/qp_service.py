@@ -4,12 +4,16 @@
 Содержит бизнес-знания о форме аэродинамических характеристик разных типов вентиляторов.
 α — коэффициент кривизны Безье: чем выше, тем «выпуклее» кривая давления.
 
-Зависимости: только стандартная библиотека. Не знает о БД, HTTP или форматах данных.
+Зависимости: только стандартная библиотека (json/re — из stdlib). Не знает о БД, HTTP
+или форматах данных.
 """
 from __future__ import annotations
 
+import json
+import re
 from dataclasses import dataclass
-from typing import List, Optional
+from pathlib import Path
+from typing import List, Optional, Tuple
 
 
 # Кривизна кривой Q-P по типу вентилятора (подобрана по паспортным характеристикам)
@@ -37,6 +41,48 @@ AXIAL_HUMP_POS: float = 0.60
 AXIAL_HUMP: float = 0.50
 
 
+# Оцифрованные реальные формы кривых (ВО 13-284, каталог производителя):
+# для пары (число лопастей, угол установки) — точки (q_frac, p_frac) в
+# диапазоне [0,1]x[0,1], снятые с растровых графиков и очищенные от «провала»
+# трассировки. По закону подобия безразмерная форма кривой не зависит от
+# типоразмера/оборотов — один и тот же профиль накладывается на q_min..q_max
+# и p_start..p_end конкретного вентилятора.
+_SHAPES_PATH = Path(__file__).parent / "qp_shapes_vo13284.json"
+_MODEL_BLADE_ANGLE_RE = re.compile(r"(\d+к?)/(\d+)°")
+
+
+def _load_digitized_shapes() -> dict:
+    try:
+        with _SHAPES_PATH.open("r", encoding="utf-8") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+_DIGITIZED_SHAPES: dict = _load_digitized_shapes()
+
+
+def shape_points_for_model(model: str | None) -> Optional[List[Tuple[float, float]]]:
+    """
+    Найти оцифрованную форму кривой по числу лопастей и углу установки,
+    извлечённым из строки модели (например, «ВО 13-284-6/20°-...» → лопасти
+    «6», угол «20»). None — если для этой модели нет оцифрованных данных
+    (используется параметрическая кривая Безье как раньше).
+    """
+    if not model:
+        return None
+    m = _MODEL_BLADE_ANGLE_RE.search(model)
+    if not m:
+        return None
+    blade_group = _DIGITIZED_SHAPES.get(m.group(1))
+    if not blade_group:
+        return None
+    points = blade_group.get(m.group(2))
+    if not points:
+        return None
+    return [(q, p) for q, p in points]
+
+
 def alpha_for_type(fan_type: str | None) -> float:
     """Вернуть коэффициент кривизны α для данного типа вентилятора."""
     if not fan_type:
@@ -59,6 +105,23 @@ class QPPoint:
     p: float
 
 
+def _linear_interp(x: float, xs: List[float], ys: List[float]) -> float:
+    """Кусочно-линейная интерполяция по возрастающей сетке xs (без numpy)."""
+    if x <= xs[0]:
+        return ys[0]
+    if x >= xs[-1]:
+        return ys[-1]
+    for i in range(1, len(xs)):
+        if x <= xs[i]:
+            x0, x1 = xs[i - 1], xs[i]
+            y0, y1 = ys[i - 1], ys[i]
+            if x1 == x0:
+                return y0
+            k = (x - x0) / (x1 - x0)
+            return y0 + k * (y1 - y0)
+    return ys[-1]
+
+
 def build_qp_curve(
     *,
     q_min: float,
@@ -66,6 +129,7 @@ def build_qp_curve(
     p_min: float,
     p_max: float,
     fan_type: Optional[str] = None,
+    model: Optional[str] = None,
     pressure_coefficients: Optional[list] = None,
     nominal_rpm: Optional[float] = None,
     target_rpm: Optional[float] = None,
@@ -74,9 +138,11 @@ def build_qp_curve(
     """
     Построить кривую Q-P из диапазонов расхода и давления.
 
-    Два режима:
+    Приоритет источника формы кривой:
     1. Полиномиальные коэффициенты (pressure_coefficients) — точная кривая из паспорта.
-    2. Квадратичная кривая Безье — аппроксимация по диапазонам, α зависит от типа.
+    2. Оцифрованная реальная форма (по числу лопастей/углу из model) — кусочно-линейная
+       интерполяция по реальным точкам с растровых графиков каталога.
+    3. Квадратичная/кубическая кривая Безье — аппроксимация по диапазонам, α зависит от типа.
 
     При наличии target_rpm выполняется пересчёт по законам подобия:
       Q ~ n, P ~ n².
@@ -105,12 +171,22 @@ def build_qp_curve(
     q_c2 = q_min + AXIAL_HUMP_POS * d_q
     p_c2 = p_start + AXIAL_HUMP * d_p
 
+    shape_points = None
+    if not (pressure_coefficients and len(pressure_coefficients) > 0):
+        shape_points = shape_points_for_model(model)
+    shape_qs = [pt[0] for pt in shape_points] if shape_points else None
+    shape_ps = [pt[1] for pt in shape_points] if shape_points else None
+
     result: List[QPPoint] = []
     for i in range(points):
         t = i / (points - 1)
         one_minus_t = 1.0 - t
 
-        if pressure_coefficients and len(pressure_coefficients) > 0:
+        if shape_qs is not None:
+            q_nom = q_min + d_q * t
+            p_frac = _linear_interp(t, shape_qs, shape_ps)
+            p_nom = p_end + p_frac * d_p
+        elif pressure_coefficients and len(pressure_coefficients) > 0:
             q_nom = q_min + d_q * t
             p_nom = sum(c * (q_nom ** idx) for idx, c in enumerate(pressure_coefficients))
         elif axial:
@@ -134,6 +210,7 @@ def pressure_at_flow(
     p_min: float,
     p_max: float,
     fan_type: Optional[str] = None,
+    model: Optional[str] = None,
     pressure_coefficients: Optional[list] = None,
     nominal_rpm: Optional[float] = None,
     target_rpm: Optional[float] = None,
@@ -145,7 +222,7 @@ def pressure_at_flow(
     """
     curve = build_qp_curve(
         q_min=q_min, q_max=q_max, p_min=p_min, p_max=p_max,
-        fan_type=fan_type, pressure_coefficients=pressure_coefficients,
+        fan_type=fan_type, model=model, pressure_coefficients=pressure_coefficients,
         nominal_rpm=nominal_rpm, target_rpm=target_rpm, points=101,
     )
     if not curve:
