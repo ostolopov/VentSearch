@@ -20,6 +20,58 @@ function $(sel) {
   return document.querySelector(sel);
 }
 
+// Перехват console.log/warn/error для показа в админке (для пользователя,
+// который не откроет DevTools сам) — буфер на случай, если вкладка
+// «Диагностика» ещё не открыта/не отрисована.
+const _consoleBuffer = [];
+const _CONSOLE_BUFFER_MAX = 300;
+
+function _captureConsole(level, args) {
+  const text = args.map((a) => {
+    if (a instanceof Error) return `${a.name}: ${a.message}`;
+    if (typeof a === "object") { try { return JSON.stringify(a); } catch { return String(a); } }
+    return String(a);
+  }).join(" ");
+  const entry = { time: new Date().toLocaleTimeString("ru-RU"), level, text };
+  _consoleBuffer.push(entry);
+  if (_consoleBuffer.length > _CONSOLE_BUFFER_MAX) _consoleBuffer.shift();
+  const el = document.getElementById("debugConsoleLog");
+  if (el) {
+    const cls = level === "error" ? "text-danger" : level === "warn" ? "text-warning" : "text-secondary";
+    const line = document.createElement("div");
+    line.className = cls;
+    line.textContent = `[${entry.time}] ${level.toUpperCase()}: ${entry.text}`;
+    el.appendChild(line);
+    el.scrollTop = el.scrollHeight;
+  }
+}
+
+(function installConsoleCapture() {
+  ["log", "warn", "error"].forEach((level) => {
+    const original = console[level].bind(console);
+    console[level] = (...args) => {
+      original(...args);
+      _captureConsole(level, args);
+    };
+  });
+  window.addEventListener("error", (e) => _captureConsole("error", [`${e.message} (${e.filename}:${e.lineno})`]));
+  window.addEventListener("unhandledrejection", (e) => _captureConsole("error", [`Unhandled promise rejection: ${e.reason}`]));
+})();
+
+function renderConsoleLogBuffer() {
+  const el = $("#debugConsoleLog");
+  if (!el) return;
+  el.innerHTML = "";
+  for (const entry of _consoleBuffer) {
+    const cls = entry.level === "error" ? "text-danger" : entry.level === "warn" ? "text-warning" : "text-secondary";
+    const line = document.createElement("div");
+    line.className = cls;
+    line.textContent = `[${entry.time}] ${entry.level.toUpperCase()}: ${entry.text}`;
+    el.appendChild(line);
+  }
+  el.scrollTop = el.scrollHeight;
+}
+
 function escapeHtml(v) {
   if (v === null || v === undefined) return "";
   return String(v)
@@ -175,6 +227,43 @@ function bindAdminEvents() {
   root.addEventListener("click", (e) => {
     if (e.target.closest("#debugRefreshBtn")) {
       loadDebug().catch((err) => showAdminError(err.message));
+      return;
+    }
+    if (e.target.closest("#debugClearConsoleBtn")) {
+      _consoleBuffer.length = 0;
+      renderConsoleLogBuffer();
+      return;
+    }
+    if (e.target.closest("#debugReloadCsvBtn")) {
+      const btn = e.target.closest("#debugReloadCsvBtn");
+      btn.disabled = true;
+      va().apiAuthFetch("/api/admin/reload-csv", { method: "POST" })
+        .then((r) => {
+          const msg = `CSV перечитан: строк в файле ${r.total_data_rows}, загружено ${r.inserted}`
+            + (r.unrecognized_columns?.length ? `; не читаются колонки: ${r.unrecognized_columns.join(", ")}` : "")
+            + (r.error_rows?.length ? `; ошибок в строках: ${r.error_rows.length}` : "");
+          showAdminSuccess(msg);
+          return loadDebug();
+        })
+        .catch((err) => showAdminError(err.message))
+        .finally(() => { btn.disabled = false; });
+      return;
+    }
+    if (e.target.closest("#debugLoadTestBtn")) {
+      const btn = e.target.closest("#debugLoadTestBtn");
+      btn.disabled = true;
+      const originalText = btn.textContent;
+      btn.textContent = "Идёт нагрузочный тест…";
+      va().apiAuthFetch("/api/admin/load-test?requests=2000", { method: "POST" })
+        .then((r) => {
+          showAdminSuccess(
+            `Нагрузочный тест: ${r.requests} запросов за ${r.elapsed_ms} мс `
+            + `(${r.requests_per_second} запросов/сек, ${r.avg_latency_us} мкс/запрос, CPU ${r.process_cpu_percent_during}%)`,
+          );
+          return loadDebug();
+        })
+        .catch((err) => showAdminError(err.message))
+        .finally(() => { btn.disabled = false; btn.textContent = originalText; });
       return;
     }
     if (e.target.closest("#productSearchBtn")) {
@@ -604,6 +693,27 @@ function renderBloomCard(title, bloom) {
   const shown = knownValues.slice(0, 40).map(escapeHtml).join(", ");
   const knownPreview = shown + (knownValues.length > 40 ? `, … ещё ${knownValues.length - 40}` : "");
 
+  const fpp = bloom.false_positive_probability;
+  const fppHtml = typeof fpp === "number"
+    ? `<div class="mt-2"><strong>Вероятность ложного срабатывания:</strong> ${fpp.toExponential(2)}
+        <span class="text-secondary">(теоретическая формула (1&minus;e<sup>&minus;kn/m</sup>)<sup>k</sup>, n=${knownValues.length})</span></div>`
+    : "";
+
+  const bench = bloom.speed_benchmark;
+  const benchHtml = bench && typeof bench.bloom_per_op_us === "number"
+    ? `<div class="mt-2">
+        <strong>Скорость (замер на текущем каталоге, ${bench.haystack_size} записей, ${bench.probes} проб):</strong>
+        <table class="table table-sm mb-0 mt-1" style="max-width: 420px;">
+          <thead><tr><th></th><th>время/проверку</th><th>сложность</th></tr></thead>
+          <tbody>
+            <tr><td>Bloom-фильтр</td><td>${bench.bloom_per_op_us.toFixed(2)} мкс</td><td><code>O(1)</code></td></tr>
+            <tr><td>Линейный перебор</td><td>${bench.linear_per_op_us.toFixed(2)} мкс</td><td><code>O(n)</code></td></tr>
+          </tbody>
+        </table>
+        <div class="text-secondary mt-1">${escapeHtml(bench.note || "")}</div>
+      </div>`
+    : "";
+
   return `
     <div class="col-12">
       <div class="card shadow-sm h-100">
@@ -618,6 +728,8 @@ function renderBloomCard(title, bloom) {
           <div class="small text-secondary" style="min-width: 220px; max-width: 480px;">
             <div class="mb-1"><strong>${knownValues.length}</strong> ${pluralRu(knownValues.length, "известное значение", "известных значения", "известных значений")} в индексе:</div>
             <div>${knownPreview || "—"}</div>
+            ${fppHtml}
+            ${benchHtml}
           </div>
         </div>
       </div>
@@ -680,7 +792,26 @@ async function loadDebug() {
     ["Загружен в БД", debugBoolBadge(cat.synced === true)],
     cat.synced ? ["Синхронизирован", debugBoolBadge(cat.in_sync === true)] : undefined,
     cat.synced ? ["SHA-256 (нач.)", `<code class="small">${escapeHtml(cat.synced_sha256 ?? "—")}</code>`] : undefined,
+    cat.last_load ? ["Последняя загрузка", escapeHtml(`строк в файле: ${cat.last_load.total_data_rows}, загружено: ${cat.last_load.inserted}`)] : undefined,
   ].filter(Boolean)));
+  if (cat.last_load?.unrecognized_columns?.length) {
+    cards.push(renderDebugCard("⚠ Колонки CSV, которые сайт не читает", [
+      ["Колонки", cat.last_load.unrecognized_columns.map((c) => `<code class="small">${escapeHtml(c)}</code>`).join(", ")],
+      ["Что это значит", "Эти заголовки есть в файле, но программа не знает, куда их положить — данные из них нигде не отображаются (ни на сайте, ни в PDF). Нужно либо переименовать в уже известный заголовок, либо попросить разработчика добавить сопоставление."],
+    ]));
+  }
+  if (cat.last_load?.error_rows?.length) {
+    cards.push(renderDebugCard("⚠ Строки CSV с ошибками загрузки", [
+      ["Строк", String(cat.last_load.error_rows.length)],
+      ["Примеры", cat.last_load.error_rows.slice(0, 10).map((r) => `<div>№${r.row} (${escapeHtml(r.number || "?")}): ${escapeHtml(r.error)}</div>`).join("")],
+    ]));
+  }
+  if (cat.last_load?.skipped_rows?.length) {
+    cards.push(renderDebugCard("Строки CSV, пропущенные при загрузке", [
+      ["Строк", String(cat.last_load.skipped_rows.length)],
+      ["Примеры", cat.last_load.skipped_rows.slice(0, 10).map((r) => `<div>№${r.row} (${escapeHtml(r.number || "?")}): ${escapeHtml(r.reason)}</div>`).join("")],
+    ]));
+  }
 
   const idx = d.search_index || {};
   cards.push(renderDebugCard("Поисковый индекс", idx.error ? [
@@ -704,6 +835,20 @@ async function loadDebug() {
     ["CORS origins", `<code class="small">${escapeHtml((sec.cors_origins || []).join(", ") || "—")}</code>`],
   ]));
 
+  const res = d.resources || {};
+  const proc = res.process || {};
+  const sys = res.system || {};
+  cards.push(renderDebugCard("Нагрузка (процесс/система)", res.error ? [
+    ["Ошибка", escapeHtml(res.error)],
+  ] : [
+    ["CPU процесса", escapeHtml(`${proc.cpu_percent ?? "—"}%`)],
+    ["Память процесса (RSS)", escapeHtml(`${proc.rss_mb ?? "—"} МБ`)],
+    ["Потоков", escapeHtml(proc.threads ?? "—")],
+    ["CPU системы", escapeHtml(`${sys.cpu_percent ?? "—"}% из ${sys.cpu_count ?? "—"} ядер`)],
+    ["Память системы", escapeHtml(`${sys.memory_used_percent ?? "—"}% из ${sys.memory_total_mb ?? "—"} МБ`)],
+    ["Диск занят", escapeHtml(`${sys.disk_used_percent ?? "—"}%`)],
+  ]));
+
   content.innerHTML = cards.join("");
   drawPendingBloomCanvases();
 
@@ -719,6 +864,25 @@ async function loadDebug() {
       alertEl.classList.add("d-none");
     }
   }
+
+  const csvAlertEl = $("#debugCsvAlert");
+  if (csvAlertEl) {
+    const csvProblems = [];
+    if (cat.last_load?.unrecognized_columns?.length) {
+      csvProblems.push(`не читаются колонки: ${cat.last_load.unrecognized_columns.join(", ")}`);
+    }
+    if (cat.last_load?.error_rows?.length) {
+      csvProblems.push(`${cat.last_load.error_rows.length} строк с ошибками`);
+    }
+    if (csvProblems.length) {
+      csvAlertEl.textContent = `⚠ CSV: ${csvProblems.join("; ")}. Подробности — в карточках ниже.`;
+      csvAlertEl.classList.remove("d-none");
+    } else {
+      csvAlertEl.classList.add("d-none");
+    }
+  }
+
+  renderConsoleLogBuffer();
 
   const meta = $("#debugMeta");
   if (meta) meta.textContent = `Обновлено: ${new Date().toLocaleTimeString("ru-RU")}`;

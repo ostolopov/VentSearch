@@ -51,12 +51,30 @@ _SHAPES_PATH = Path(__file__).parent / "qp_shapes_vo13284.json"
 _MODEL_BLADE_ANGLE_RE = re.compile(r"(\d+к?)/(\d+)°")
 
 
+def _enforce_monotonic_decreasing(points: list) -> list:
+    """
+    Гарантирует p_frac не возрастает по мере роста q_frac — реальная кривая
+    вентилятора всегда монотонна. Прижимает случайные всплески трассировки
+    (шум сканирования/пересечения линий на исходном графике) к предыдущему
+    значению вместо того, чтобы пропускать их в данные как «колебание».
+    """
+    cleaned = [list(p) for p in points]
+    for i in range(1, len(cleaned)):
+        if cleaned[i][1] > cleaned[i - 1][1]:
+            cleaned[i][1] = cleaned[i - 1][1]
+    return cleaned
+
+
 def _load_digitized_shapes() -> dict:
     try:
         with _SHAPES_PATH.open("r", encoding="utf-8") as f:
-            return json.load(f)
+            raw = json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
         return {}
+    return {
+        blade: {angle: _enforce_monotonic_decreasing(points) for angle, points in angles.items()}
+        for blade, angles in raw.items()
+    }
 
 
 _DIGITIZED_SHAPES: dict = _load_digitized_shapes()

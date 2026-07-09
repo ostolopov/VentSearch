@@ -7,3 +7,4 @@ httpx
 reportlab
 bcrypt>=4.2.0,<5
 PyJWT>=2.8.0,<3
+psutil>=5.9,<8

@@ -445,23 +445,44 @@ def create_app() -> FastAPI:
 
     @app.get("/api/health", response_model=HealthOut, summary="Проверка работоспособности", tags=["system"])
     def api_health():
+        from config import DEMO_MODE
+
         conn = get_connection()
         try:
             n = count_products(conn)
         finally:
             put_connection(conn)
-        return HealthOut(ok=True, products=n)
+        return HealthOut(ok=True, products=n, demo_mode=DEMO_MODE)
 
     @app.get("/api/share-links", summary="Ссылки для открытия в локальной сети", tags=["system"])
     def api_share_links(request: Request):
         scheme = request.url.scheme or "http"
         port = request.url.port
         current_host = request.url.hostname or "localhost"
-        urls = [_format_url(scheme, current_host, port)]
+        current_url = _format_url(scheme, current_host, port)
+
+        # Реально доступные с других устройств адреса — из сетевых интерфейсов.
+        lan_urls = []
         for ip in _discover_local_ips():
             url = _format_url(scheme, ip, port)
-            if url not in urls:
-                urls.append(url)
+            if url not in lan_urls:
+                lan_urls.append(url)
+
+        try:
+            current_is_loopback = ipaddress.ip_address(current_host).is_loopback
+        except ValueError:
+            current_is_loopback = current_host.lower() == "localhost"
+
+        if current_is_loopback:
+            # localhost/127.0.0.1 работает только на этом же компьютере — не
+            # ставим первым (это как раз то, что копируется в буфер обмена);
+            # первым должен быть реально открывающийся с других устройств адрес.
+            urls = lan_urls + ([current_url] if current_url not in lan_urls else [])
+        else:
+            urls = [current_url] + [u for u in lan_urls if u != current_url]
+        if not urls:
+            urls = [current_url]
+
         return {"urls": urls, "hint": "Откройте на другом устройстве в той же локальной сети."}
 
     # --- Export ---

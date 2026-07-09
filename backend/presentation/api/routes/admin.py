@@ -1,10 +1,12 @@
 """Админ API: каталог вентиляторов, пользователи и диагностика."""
 from __future__ import annotations
 
+import math
 import platform
 import sys
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Annotated, Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -273,7 +275,7 @@ def _debug_database_section() -> Dict[str, Any]:
 
 def _debug_catalog_section() -> Dict[str, Any]:
     from config import CSV_PATH
-    from infrastructure.csv.sync import _get_state
+    from infrastructure.csv.sync import _get_state, get_last_load_report
 
     info: Dict[str, Any] = {
         "csv_path": str(CSV_PATH),
@@ -295,7 +297,80 @@ def _debug_catalog_section() -> Dict[str, Any]:
         )
     else:
         info["synced"] = False
+
+    # Отчёт последней загрузки: что сайт увидел в файле, но не смог/не стал
+    # считать — колонки без сопоставления, пропущенные и упавшие строки.
+    report = get_last_load_report()
+    if report is not None:
+        info["last_load"] = {
+            "encoding": report.encoding,
+            "total_data_rows": report.total_data_rows,
+            "inserted": report.inserted,
+            "unrecognized_columns": report.unrecognized_columns,
+            "skipped_rows": report.skipped_rows,
+            "error_rows": report.error_rows,
+        }
+        warnings: list[str] = []
+        if report.unrecognized_columns:
+            warnings.append(
+                "Эти колонки есть в файле, но сайт их не читает (нет сопоставления): "
+                + ", ".join(report.unrecognized_columns)
+            )
+        if report.error_rows:
+            warnings.append(f"{len(report.error_rows)} строк(и) не загрузились из-за ошибок — см. error_rows.")
+        if report.skipped_rows:
+            warnings.append(f"{len(report.skipped_rows)} строк(и) пропущены (нет типа/модели/типоразмера).")
+        info["last_load_warnings"] = warnings
+    else:
+        info["last_load"] = None
     return info
+
+
+def _bloom_false_positive_probability(m: int, k: int, n_items: int) -> float:
+    """
+    Теоретическая вероятность ложного срабатывания Bloom-фильтра:
+    p ≈ (1 - e^(-k·n/m))^k, где m — размер битовой карты, k — число хэш-функций,
+    n — число реально добавленных элементов.
+    """
+    if m <= 0 or k <= 0 or n_items <= 0:
+        return 0.0
+    return (1 - math.exp(-k * n_items / m)) ** k
+
+
+def _bloom_speed_benchmark(bloom, known_values: list[str], haystack: list[str], repeats: int = 300) -> Dict[str, Any]:
+    """
+    Замер по факту (не теория): поиск через Bloom-фильтр (ожидаемо O(1) — не
+    зависит от размера каталога) против линейного перебора списка (O(n) —
+    время растёт с размером каталога). Пробы — вперемешку известные значения
+    и заведомо отсутствующие, чтобы не тестировать только «горячий путь».
+    """
+    if not known_values or not haystack:
+        return {}
+    probes = [known_values[i % len(known_values)] for i in range(repeats)]
+    probes += [f"__нет-такого-значения-{i}__" for i in range(repeats // 10 or 1)]
+
+    t0 = time.perf_counter()
+    for v in probes:
+        bloom.might_contain(v)
+    bloom_elapsed = time.perf_counter() - t0
+
+    t0 = time.perf_counter()
+    for v in probes:
+        _ = v in haystack  # линейный перебор — Python делает это за O(n)
+    linear_elapsed = time.perf_counter() - t0
+
+    n_probes = len(probes)
+    return {
+        "probes": n_probes,
+        "haystack_size": len(haystack),
+        "bloom_total_ms": round(bloom_elapsed * 1000, 3),
+        "bloom_per_op_us": round(bloom_elapsed / n_probes * 1e6, 3),
+        "linear_total_ms": round(linear_elapsed * 1000, 3),
+        "linear_per_op_us": round(linear_elapsed / n_probes * 1e6, 3),
+        "speedup_x": round(linear_elapsed / bloom_elapsed, 1) if bloom_elapsed > 0 else None,
+        "note": "Bloom — O(1) (не зависит от размера каталога), линейный перебор — O(n). "
+                "На маленьком каталоге разница в наносекундах, но растёт с ростом n.",
+    }
 
 
 def _debug_index_section() -> Dict[str, Any]:
@@ -304,21 +379,39 @@ def _debug_index_section() -> Dict[str, Any]:
     idx = get_catalog_index()
     if idx is None:
         return {"built": False}
-    result: Dict[str, Any] = {"built": True, "rows": len(getattr(idx, "_rows", []) or [])}
+    rows = getattr(idx, "_rows", []) or []
+    result: Dict[str, Any] = {"built": True, "rows": len(rows)}
 
     # Bloom-фильтры категориальных полей — битовая карта для отладочной
-    # визуализации в админке (какие ячейки заняты, насколько заполнен фильтр)
+    # визуализации в админке (какие ячейки заняты, насколько заполнен фильтр),
+    # теоретическая вероятность коллизии и замер скорости против O(n)-перебора.
     type_bloom = getattr(idx, "_type_bloom", None)
     if type_bloom is not None:
+        known = sorted(getattr(idx, "_type_to_ids", {}).keys())
+        stats = type_bloom.stats()
         result["bloom_type"] = {
-            **type_bloom.stats(),
-            "known_values": sorted(getattr(idx, "_type_to_ids", {}).keys()),
+            **stats,
+            "known_values": known,
+            "false_positive_probability": _bloom_false_positive_probability(
+                stats.get("m", 0), stats.get("k", 0), len(known)
+            ),
+            "speed_benchmark": _bloom_speed_benchmark(
+                type_bloom, known, [str(r.get("type", "")) for r in rows]
+            ),
         }
     size_bloom = getattr(idx, "_size_bloom", None)
     if size_bloom is not None:
+        known = sorted(getattr(idx, "_size_to_ids", {}).keys())
+        stats = size_bloom.stats()
         result["bloom_size"] = {
-            **size_bloom.stats(),
-            "known_values": sorted(getattr(idx, "_size_to_ids", {}).keys()),
+            **stats,
+            "known_values": known,
+            "false_positive_probability": _bloom_false_positive_probability(
+                stats.get("m", 0), stats.get("k", 0), len(known)
+            ),
+            "speed_benchmark": _bloom_speed_benchmark(
+                size_bloom, known, [str(r.get("size", "")) for r in rows]
+            ),
         }
     return result
 
@@ -336,6 +429,33 @@ def _debug_security_section() -> Dict[str, Any]:
         "login_rate_limit": {
             "max_attempts": login_limiter.max_attempts,
             "window_seconds": login_limiter.window_seconds,
+        },
+    }
+
+
+def _debug_resources_section() -> Dict[str, Any]:
+    """Нагрузка процесса/системы — то же, что видно в Docker/htop, но прямо в админке."""
+    import psutil
+
+    proc = psutil.Process()
+    with proc.oneshot():
+        cpu_percent = proc.cpu_percent(interval=0.1)
+        mem = proc.memory_info()
+        num_threads = proc.num_threads()
+    vm = psutil.virtual_memory()
+    disk = psutil.disk_usage(str(Path(__file__).resolve().parents[4]))
+    return {
+        "process": {
+            "cpu_percent": cpu_percent,
+            "rss_mb": round(mem.rss / (1024 * 1024), 1),
+            "threads": num_threads,
+        },
+        "system": {
+            "cpu_percent": psutil.cpu_percent(interval=0.1),
+            "cpu_count": psutil.cpu_count(),
+            "memory_used_percent": vm.percent,
+            "memory_total_mb": round(vm.total / (1024 * 1024), 1),
+            "disk_used_percent": disk.percent,
         },
     }
 
@@ -363,9 +483,98 @@ def admin_debug(_: Annotated[dict, Depends(require_admin)]) -> Dict[str, Any]:
         ("catalog", _debug_catalog_section),
         ("search_index", _debug_index_section),
         ("security", _debug_security_section),
+        ("resources", _debug_resources_section),
     ):
         try:
             report[name] = builder()
         except Exception as exc:  # диагностика не должна падать целиком
             report[name] = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
     return report
+
+
+@router.post("/reload-csv", summary="Принудительно перечитать CSV (админ)")
+def admin_reload_csv(_: Annotated[dict, Depends(require_admin)]) -> Dict[str, Any]:
+    """
+    Форсирует перезагрузку каталога из CSV прямо сейчас (не дожидаясь изменения
+    mtime/размера файла) и возвращает отчёт: что распозналось, что пропущено,
+    какие колонки не читаются. Полезно после ручного редактирования CSV.
+    """
+    from config import CSV_PATH
+    from infrastructure.csv.loader import load_csv_into_db
+    from infrastructure.csv.sync import _file_sha256, _remember_report, _save_state
+
+    if not CSV_PATH.exists():
+        raise HTTPException(status_code=404, detail=f"CSV не найден: {CSV_PATH}")
+
+    resolved = CSV_PATH.resolve()
+    with db_session() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM products")
+        report = load_csv_into_db(conn, resolved)
+        _remember_report(report)
+        st = resolved.stat()
+        _save_state(conn, str(resolved), int(st.st_mtime_ns), int(st.st_size), _file_sha256(resolved))
+        conn.commit()
+
+    from infrastructure.search.catalog_index import CatalogIndex
+    from presentation.app import set_catalog_index
+    with db_session() as conn:
+        set_catalog_index(CatalogIndex.build(conn))
+
+    return {
+        "encoding": report.encoding,
+        "total_data_rows": report.total_data_rows,
+        "inserted": report.inserted,
+        "unrecognized_columns": report.unrecognized_columns,
+        "skipped_rows": report.skipped_rows,
+        "error_rows": report.error_rows,
+    }
+
+
+@router.post("/load-test", summary="Синтетическая нагрузка на поиск (админ)")
+def admin_load_test(
+    _: Annotated[dict, Depends(require_admin)],
+    requests: Annotated[int, Query(ge=1, le=20000)] = 2000,
+) -> Dict[str, Any]:
+    """
+    Прогоняет N синтетических поисковых запросов через тот же индекс, что
+    обслуживает каталог, и измеряет пропускную способность (запросов/сек) —
+    наглядно, без Docker/сторонних инструментов.
+    """
+    from infrastructure.search.catalog_index import get_catalog_index
+
+    idx = get_catalog_index()
+    if idx is None:
+        raise HTTPException(status_code=503, detail="Индекс каталога ещё не построен")
+
+    known_types = sorted(getattr(idx, "_type_to_ids", {}).keys()) or [""]
+    known_sizes = sorted(getattr(idx, "_size_to_ids", {}).keys()) or [""]
+
+    import psutil
+    proc = psutil.Process()
+    cpu_before = proc.cpu_percent(interval=None)
+    t0 = time.perf_counter()
+    for i in range(requests):
+        idx.search(
+            q=None,
+            type_=known_types[i % len(known_types)] or None,
+            series=known_sizes[i % len(known_sizes)] or None,
+            diameter=None,
+            min_price=None, max_price=None,
+            min_power=None, max_power=None,
+            min_noise=None, max_noise=None,
+            min_diameter=None, max_diameter=None,
+            min_airflow=None, max_airflow=None,
+            min_pressure=None, max_pressure=None,
+            sort="price_asc", limit=24, offset=0,
+        )
+    elapsed = time.perf_counter() - t0
+    cpu_after = proc.cpu_percent(interval=None)
+
+    return {
+        "requests": requests,
+        "elapsed_ms": round(elapsed * 1000, 2),
+        "requests_per_second": round(requests / elapsed, 1) if elapsed > 0 else None,
+        "avg_latency_us": round(elapsed / requests * 1e6, 2),
+        "process_cpu_percent_during": cpu_after,
+    }

@@ -7,8 +7,36 @@
 import csv
 import json
 import re
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
+
+@dataclass
+class CsvLoadReport:
+    """
+    Итог загрузки CSV — для админ-панели: что реально произошло, а не только
+    «успех/провал». Колонки, которых нет в _HEADER_TO_CANONICAL, не считаются
+    ошибкой (это нормально для дополнительных заметок в файле), но админ должен
+    их видеть — иначе непонятно, почему новые данные не отображаются на сайте.
+    """
+
+    encoding: str = ""
+    total_data_rows: int = 0
+    inserted: int = 0
+    unrecognized_columns: list[str] = field(default_factory=list)
+    skipped_rows: list[dict[str, Any]] = field(default_factory=list)
+    error_rows: list[dict[str, Any]] = field(default_factory=list)
+
+    _MAX_LISTED = 50
+
+    def note_skip(self, row_number: int, reason: str, number: str = "") -> None:
+        if len(self.skipped_rows) < self._MAX_LISTED:
+            self.skipped_rows.append({"row": row_number, "reason": reason, "number": number})
+
+    def note_error(self, row_number: int, error: str, number: str = "") -> None:
+        if len(self.error_rows) < self._MAX_LISTED:
+            self.error_rows.append({"row": row_number, "error": error, "number": number})
 
 
 def norm_header(h: str) -> str:
@@ -131,8 +159,9 @@ def airflow_m3s_to_m3h(af_min, af_max):
     return new_min, new_max, raw
 
 
-def load_csv_into_db(conn, csv_path: Path) -> int:
-    """Читает CSV и вставляет строки в products. Возвращает количество вставленных строк."""
+def load_csv_into_db(conn, csv_path: Path) -> CsvLoadReport:
+    """Читает CSV и вставляет строки в products. Возвращает отчёт о загрузке
+    (см. CsvLoadReport) — для отображения в админ-панели, не только число строк."""
     if not csv_path.exists():
         raise FileNotFoundError(f"CSV не найден: {csv_path}")
 
@@ -188,19 +217,26 @@ def load_csv_into_db(conn, csv_path: Path) -> int:
             dialect.delimiter = ";"
         reader = csv.DictReader(f, dialect=dialect)
 
-        inserted = 0
+        report = CsvLoadReport(encoding=used_encoding)
+        report.unrecognized_columns = sorted(
+            h for h in (reader.fieldnames or [])
+            if h and not _HEADER_TO_CANONICAL.get(norm_header(h))
+        )
+
         seen_ids: set[str] = set()
         with conn.cursor() as cur:
-            for i, row in enumerate(reader, start=1):
-                row = _canonical_row(row)
+            for i, raw_row in enumerate(reader, start=1):
+                report.total_data_rows = i
+                row = _canonical_row(raw_row)
                 number = normalize_whitespace(row.get("number")) or str(i)
-                row_id = number if number not in seen_ids else f"{number}-{i}"
-                seen_ids.add(row_id)
                 type_ = normalize_whitespace(row.get("type"))
                 model = normalize_whitespace(row.get("model"))
                 size = normalize_whitespace(row.get("size"))
                 if not (type_ or model or size):
+                    report.note_skip(i, "нет ни типа, ни модели, ни типоразмера — строка пропущена", number)
                     continue
+                row_id = number if number not in seen_ids else f"{number}-{i}"
+                seen_ids.add(row_id)
 
                 diameter = parse_number_loose(row.get("diameter"))
                 if row.get("efficiency_m3s") is not None and normalize_whitespace(row.get("efficiency_m3s")):
@@ -225,46 +261,57 @@ def load_csv_into_db(conn, csv_path: Path) -> int:
                 pressure_coefficients = parse_json_loose(row.get("pressure_coefficients"))
                 efficiency_coefficients = parse_json_loose(row.get("efficiency_coefficients"))
 
-                cur.execute(
-                    """
-                    INSERT INTO products (
-                        id, number, type, model, size, diameter,
-                        airflow_min, airflow_max, airflow_raw,
-                        pressure_min, pressure_max, pressure_raw,
-                        power, noise_level, price,
-                        raw_diameter, raw_efficiency, raw_pressure, raw_power, raw_noise_level, raw_price,
-                        model_slug, nominal_rpm, pressure_coefficients, efficiency_coefficients
-                    ) VALUES (
-                        %s, %s, %s, %s, %s, %s,
-                        %s, %s, %s, %s, %s, %s,
-                        %s, %s, %s,
-                        %s, %s, %s, %s, %s, %s,
-                        %s, %s, %s, %s
+                # Savepoint на строку: если конкретная строка ломает INSERT (например,
+                # некорректные новые колонки дают значение не того типа), откатываем
+                # только её — остальной каталог загружается, а не падает целиком.
+                cur.execute("SAVEPOINT csv_row")
+                try:
+                    cur.execute(
+                        """
+                        INSERT INTO products (
+                            id, number, type, model, size, diameter,
+                            airflow_min, airflow_max, airflow_raw,
+                            pressure_min, pressure_max, pressure_raw,
+                            power, noise_level, price,
+                            raw_diameter, raw_efficiency, raw_pressure, raw_power, raw_noise_level, raw_price,
+                            model_slug, nominal_rpm, pressure_coefficients, efficiency_coefficients
+                        ) VALUES (
+                            %s, %s, %s, %s, %s, %s,
+                            %s, %s, %s, %s, %s, %s,
+                            %s, %s, %s,
+                            %s, %s, %s, %s, %s, %s,
+                            %s, %s, %s, %s
+                        )
+                        ON CONFLICT (id) DO UPDATE SET
+                            number = EXCLUDED.number, type = EXCLUDED.type, model = EXCLUDED.model,
+                            size = EXCLUDED.size, diameter = EXCLUDED.diameter,
+                            airflow_min = EXCLUDED.airflow_min, airflow_max = EXCLUDED.airflow_max, airflow_raw = EXCLUDED.airflow_raw,
+                            pressure_min = EXCLUDED.pressure_min, pressure_max = EXCLUDED.pressure_max, pressure_raw = EXCLUDED.pressure_raw,
+                            power = EXCLUDED.power, noise_level = EXCLUDED.noise_level, price = EXCLUDED.price,
+                            raw_diameter = EXCLUDED.raw_diameter, raw_efficiency = EXCLUDED.raw_efficiency,
+                            raw_pressure = EXCLUDED.raw_pressure, raw_power = EXCLUDED.raw_power,
+                            raw_noise_level = EXCLUDED.raw_noise_level, raw_price = EXCLUDED.raw_price,
+                            model_slug = EXCLUDED.model_slug,
+                            nominal_rpm = EXCLUDED.nominal_rpm,
+                            pressure_coefficients = EXCLUDED.pressure_coefficients,
+                            efficiency_coefficients = EXCLUDED.efficiency_coefficients
+                        """,
+                        (
+                            row_id, number, type_, model, size, diameter,
+                            af_min, af_max, af_raw, pr_min, pr_max, pr_raw,
+                            power, noise_level, price,
+                            raw_diameter, raw_efficiency, raw_pressure, raw_power, raw_noise_level, raw_price,
+                            model_slug, nominal_rpm,
+                            json.dumps(pressure_coefficients) if pressure_coefficients else None,
+                            json.dumps(efficiency_coefficients) if efficiency_coefficients else None,
+                        ),
                     )
-                    ON CONFLICT (id) DO UPDATE SET
-                        number = EXCLUDED.number, type = EXCLUDED.type, model = EXCLUDED.model,
-                        size = EXCLUDED.size, diameter = EXCLUDED.diameter,
-                        airflow_min = EXCLUDED.airflow_min, airflow_max = EXCLUDED.airflow_max, airflow_raw = EXCLUDED.airflow_raw,
-                        pressure_min = EXCLUDED.pressure_min, pressure_max = EXCLUDED.pressure_max, pressure_raw = EXCLUDED.pressure_raw,
-                        power = EXCLUDED.power, noise_level = EXCLUDED.noise_level, price = EXCLUDED.price,
-                        raw_diameter = EXCLUDED.raw_diameter, raw_efficiency = EXCLUDED.raw_efficiency,
-                        raw_pressure = EXCLUDED.raw_pressure, raw_power = EXCLUDED.raw_power,
-                        raw_noise_level = EXCLUDED.raw_noise_level, raw_price = EXCLUDED.raw_price,
-                        model_slug = EXCLUDED.model_slug,
-                        nominal_rpm = EXCLUDED.nominal_rpm,
-                        pressure_coefficients = EXCLUDED.pressure_coefficients,
-                        efficiency_coefficients = EXCLUDED.efficiency_coefficients
-                    """,
-                    (
-                        row_id, number, type_, model, size, diameter,
-                        af_min, af_max, af_raw, pr_min, pr_max, pr_raw,
-                        power, noise_level, price,
-                        raw_diameter, raw_efficiency, raw_pressure, raw_power, raw_noise_level, raw_price,
-                        model_slug, nominal_rpm,
-                        json.dumps(pressure_coefficients) if pressure_coefficients else None,
-                        json.dumps(efficiency_coefficients) if efficiency_coefficients else None,
-                    ),
-                )
-                inserted += 1
+                except Exception as exc:
+                    cur.execute("ROLLBACK TO SAVEPOINT csv_row")
+                    report.note_error(i, f"{type(exc).__name__}: {exc}", number)
+                    continue
+                else:
+                    cur.execute("RELEASE SAVEPOINT csv_row")
+                    report.inserted += 1
         conn.commit()
-        return inserted
+        return report

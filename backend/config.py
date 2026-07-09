@@ -59,6 +59,10 @@ CORS_ORIGINS = [
     if o.strip()
 ]
 
+# Инсайдерский/демо-режим: каталог отображается, но данные скрыты (для показа
+# интерфейса внешним людям без раскрытия реальных цен/характеристик завода).
+DEMO_MODE = os.environ.get("DEMO_MODE", "").strip().lower() in ("1", "true", "yes", "on")
+
 # Аутентификация (JWT) и учётная запись администратора при первом старте
 JWT_SECRET = os.environ.get("JWT_SECRET", "change-me-in-production")
 JWT_EXPIRE_HOURS = int(os.environ.get("JWT_EXPIRE_HOURS", "168"))  # 7 суток

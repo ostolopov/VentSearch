@@ -173,6 +173,7 @@ class HealthOut(BaseModel):
 
     ok: bool = True
     products: int = Field(..., description="Количество записей в таблице products")
+    demo_mode: bool = Field(False, description="Инсайдерский/демо-режим — каталог скрыт для внешнего показа")
 
 
 class ErrorOut(BaseModel):

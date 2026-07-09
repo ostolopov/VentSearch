@@ -1,6 +1,7 @@
 import pytest
 from domain.services.qp_service import (
     alpha_for_type, ALPHA_DEFAULT, build_qp_curve, shape_points_for_model,
+    _DIGITIZED_SHAPES,
 )
 
 def test_alpha_known_types():
@@ -48,6 +49,22 @@ def test_shape_points_monotonic_no_dip():
         # большого отскока вверх нигде на кривой
         for a, b in zip(p_values, p_values[1:]):
             assert b <= a + 0.02
+
+def test_all_digitized_shapes_strictly_non_increasing():
+    """
+    Регрессия: один traced-артефакт (6/30°, колебание на конце q_frac=0.9..0.95)
+    проскочил через прежнюю проверку truncate-after-global-min. Теперь каждая
+    точка из всех 19 оцифрованных форм обязана быть <= предыдущей без допуска.
+    """
+    assert len(_DIGITIZED_SHAPES) == 5
+    checked = 0
+    for blade, angles in _DIGITIZED_SHAPES.items():
+        for angle, points in angles.items():
+            p_values = [p for _, p in points]
+            for a, b in zip(p_values, p_values[1:]):
+                assert b <= a, f"{blade}/{angle}°: {a} -> {b} возрастает"
+            checked += 1
+    assert checked == 19
 
 def test_build_qp_curve_uses_digitized_shape_when_available():
     curve = build_qp_curve(

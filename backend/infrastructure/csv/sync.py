@@ -7,12 +7,29 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from infrastructure.csv.loader import load_csv_into_db
+from infrastructure.csv.loader import CsvLoadReport, load_csv_into_db
 from infrastructure.db.product_repository import count_products
 
 logger = logging.getLogger(__name__)
 
 _CHUNK = 1 << 20  # 1 MiB
+
+# Отчёт о последней загрузке CSV — для админ-панели (какие строки/колонки
+# не считались). Хранится в памяти процесса, сбрасывается при перезапуске.
+_last_load_report: Optional[CsvLoadReport] = None
+
+
+def get_last_load_report() -> Optional[CsvLoadReport]:
+    return _last_load_report
+
+
+def _remember_report(report: CsvLoadReport) -> None:
+    global _last_load_report
+    _last_load_report = report
+    if report.unrecognized_columns:
+        logger.warning("CSV: нераспознанные колонки (не читаются сайтом): %s", report.unrecognized_columns)
+    if report.error_rows:
+        logger.warning("CSV: %d строк с ошибками при загрузке (см. admin/debug)", len(report.error_rows))
 
 
 def _file_sha256(path: Path) -> str:
@@ -73,7 +90,7 @@ def _reload_from_csv(
     sha256_hex: Optional[str] = None,
 ) -> None:
     _clear_products(conn)
-    load_csv_into_db(conn, resolved)
+    _remember_report(load_csv_into_db(conn, resolved))
     sha = sha256_hex if sha256_hex is not None else _file_sha256(resolved)
     _save_state(conn, path_str, mtime_ns, size_bytes, sha)
     conn.commit()
@@ -112,7 +129,7 @@ def sync_catalog_from_csv(conn, csv_path: Path) -> bool:
         return False
 
     if state is None and count_products(conn) == 0:
-        load_csv_into_db(conn, resolved)
+        _remember_report(load_csv_into_db(conn, resolved))
         current_hash = _file_sha256(resolved)
         _save_state(conn, path_str, mtime_ns, size_bytes, current_hash)
         conn.commit()

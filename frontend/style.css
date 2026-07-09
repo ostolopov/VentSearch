@@ -1021,3 +1021,37 @@ body[data-page="product"] .tabs-card .card-body {
 }
 
 
+
+/* Инсайдерский/демо-режим (DEMO_MODE на бэкенде): каталог/таблицы визуально
+   скрыты для показа интерфейса внешним людям без раскрытия реальных данных. */
+.vs-demo-guard-wrap {
+  position: relative;
+}
+
+.vs-demo-guard-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  background: rgba(230, 233, 238, 0.88);
+  backdrop-filter: blur(3px);
+  border-radius: var(--vs-radius-sm, 8px);
+}
+
+/* sticky, а не center по всей (часто очень высокой) области — иначе надпись
+   рисуется по центру всей прокручиваемой сетки карточек и уезжает за экран */
+.vs-demo-guard-overlay .vs-demo-guard-label {
+  position: sticky;
+  top: 40%;
+  display: flex;
+  justify-content: center;
+  text-align: center;
+  padding: 1rem;
+  color: var(--vs-text-secondary, #555);
+  font-weight: 600;
+}
+
+.vs-demo-guard-wrap > :not(.vs-demo-guard-overlay) {
+  filter: grayscale(1) blur(2px);
+  pointer-events: none;
+  user-select: none;
+}
