@@ -1006,7 +1006,7 @@ async function initCatalogPage() {
       return;
     }
 
-    for (const p of state.currentItems) {
+    function buildProductCard(p) {
       state.cacheById.set(p.id, p);
       const col = document.createElement("div");
       col.className = "col-6 col-md-6 col-xl-4";
@@ -1066,7 +1066,36 @@ async function initCatalogPage() {
       card.appendChild(imgWrap);
       card.appendChild(body);
       col.appendChild(card);
-      grid.appendChild(col);
+      return col;
+    }
+
+    // Группировка по модельному ряду (та же схема, что и на графике Q-P):
+    // одинаковые типоразмеры собираются подряд под общим заголовком, вместо
+    // того чтобы перемежаться карточками других рядов. Сама сортировка и
+    // поиск не меняются — группы просто «стягивают» совпадающие карточки
+    // в один блок, сохраняя порядок первого появления ряда в списке.
+    const groups = new Map();
+    for (const p of state.currentItems) {
+      const key = familyKey(p);
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(p);
+    }
+
+    for (const [key, items] of groups) {
+      if (groups.size > 1) {
+        const header = document.createElement("div");
+        header.className = "col-12";
+        header.innerHTML = `
+          <div class="d-flex align-items-baseline gap-2 model-group-header ${groups.size > 1 && grid.childElementCount > 0 ? "mt-2" : ""} mb-1">
+            <h3 class="h6 fw-bold mb-0">${escapeHtml(key || "Прочие")}</h3>
+            <span class="text-secondary small">${items.length} ${pluralRu(items.length, "модель", "модели", "моделей")}</span>
+          </div>
+        `;
+        grid.appendChild(header);
+      }
+      for (const p of items) {
+        grid.appendChild(buildProductCard(p));
+      }
     }
 
     syncSelectionUi();
