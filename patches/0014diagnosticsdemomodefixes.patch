@@ -1,0 +1,2417 @@
+From f636f6eb69b842ef11469ccbd16866844f56bb0f Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 9 Jul 2026 18:49:01 +0000
+Subject: [PATCH] =?UTF-8?q?=D0=A4=D0=B8=D0=BA=D1=81=20=D0=BA=D0=BE=D0=BB?=
+ =?UTF-8?q?=D0=B5=D0=B1=D0=B0=D0=BD=D0=B8=D1=8F=20=D0=B2=20=D0=BA=D0=BE?=
+ =?UTF-8?q?=D0=BD=D1=86=D0=B5=20Q-P=20=D0=BA=D1=80=D0=B8=D0=B2=D1=8B=D1=85?=
+ =?UTF-8?q?,=20=D0=B4=D0=B8=D0=B0=D0=B3=D0=BD=D0=BE=D1=81=D1=82=D0=B8?=
+ =?UTF-8?q?=D0=BA=D0=B0=20CSV/Bloom=20=D0=B2=20=D0=B0=D0=B4=D0=BC=D0=B8?=
+ =?UTF-8?q?=D0=BD=D0=BA=D0=B5,=20share-=D0=BB=D0=B8=D0=BD=D0=BA,=20favicon?=
+ =?UTF-8?q?,=20=D0=B4=D0=B5=D0=BC=D0=BE-=D1=80=D0=B5=D0=B6=D0=B8=D0=BC?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+- Q-P кривые: убрал оставшееся колебание в хвосте (6/30°), добавил защиту от
+  возрастания p_frac на всех уровнях (данные, backend, frontend, пайплайн
+  оцифровки) + регрессионный тест на все 19 форм.
+- CSV-загрузчик: возвращает подробный отчёт (нераспознанные колонки, пропущенные
+  и упавшие строки), каждая строка защищена SAVEPOINT — одна плохая строка
+  больше не откатывает весь импорт.
+- Админка: перечитать CSV по кнопке, нагрузочный тест поиска, живые логи
+  консоли браузера, вероятность коллизии Bloom-фильтра (формула
+  (1-e^(-kn/m))^k) и замер скорости Bloom O(1) против линейного перебора O(n),
+  нагрузка процесса/системы (psutil).
+- /api/share-links: реально доступный LAN-адрес теперь первым (раньше первым
+  шёл request.url.hostname, обычно localhost — недоступный с других устройств);
+  запасной вариант копирования в буфер через execCommand для http без localhost.
+- Фавикон сайта (сгенерирован из существующего логотипа).
+- Демо/инсайдерский режим (DEMO_MODE=1): каталог и графики Q-P визуально
+  скрыты (серо, блюр) с пометкой «Недоступно в инсайдерской версии».
+---
+ backend/config.py                             |   4 +
+ backend/domain/services/qp_service.py         |  20 +-
+ .../domain/services/qp_shapes_vo13284.json    |   2 +-
+ backend/infrastructure/csv/loader.py          | 143 +++++++----
+ backend/infrastructure/csv/sync.py            |  23 +-
+ backend/presentation/api/routes/admin.py      | 223 +++++++++++++++++-
+ backend/presentation/api/schemas.py           |   1 +
+ backend/presentation/app.py                   |  29 ++-
+ backend/requirements.txt                      |   1 +
+ backend/tests/test_csv_loader.py              | 140 +++++++++++
+ backend/tests/test_qp_model.py                |  17 ++
+ backend/tests/test_share_links.py             |  38 +++
+ frontend/404.html                             |   4 +
+ frontend/500.html                             |   4 +
+ frontend/admin.html                           |  14 ++
+ frontend/admin.js                             | 164 +++++++++++++
+ frontend/apple-touch-icon.png                 | Bin 0 -> 31742 bytes
+ frontend/auth.html                            |   4 +
+ frontend/compare.html                         |   8 +-
+ frontend/delivery.html                        |   4 +
+ frontend/favicon-16x16.png                    | Bin 0 -> 887 bytes
+ frontend/favicon-32x32.png                    | Bin 0 -> 2517 bytes
+ frontend/favicon.ico                          | Bin 0 -> 7975 bytes
+ frontend/index.html                           |   8 +-
+ frontend/product.html                         |   8 +-
+ frontend/project.html                         |   4 +
+ frontend/script.js                            |  82 ++++++-
+ frontend/style.css                            |  34 +++
+ 28 files changed, 904 insertions(+), 75 deletions(-)
+ create mode 100644 backend/tests/test_csv_loader.py
+ create mode 100644 backend/tests/test_share_links.py
+ create mode 100644 frontend/apple-touch-icon.png
+ create mode 100644 frontend/favicon-16x16.png
+ create mode 100644 frontend/favicon-32x32.png
+ create mode 100644 frontend/favicon.ico
+
+diff --git a/backend/config.py b/backend/config.py
+index 4b28fb0..f2ce172 100644
+--- a/backend/config.py
++++ b/backend/config.py
+@@ -59,6 +59,10 @@ CORS_ORIGINS = [
+     if o.strip()
+ ]
+ 
++# Инсайдерский/демо-режим: каталог отображается, но данные скрыты (для показа
++# интерфейса внешним людям без раскрытия реальных цен/характеристик завода).
++DEMO_MODE = os.environ.get("DEMO_MODE", "").strip().lower() in ("1", "true", "yes", "on")
++
+ # Аутентификация (JWT) и учётная запись администратора при первом старте
+ JWT_SECRET = os.environ.get("JWT_SECRET", "change-me-in-production")
+ JWT_EXPIRE_HOURS = int(os.environ.get("JWT_EXPIRE_HOURS", "168"))  # 7 суток
+diff --git a/backend/domain/services/qp_service.py b/backend/domain/services/qp_service.py
+index 4f6ec94..5087cdb 100644
+--- a/backend/domain/services/qp_service.py
++++ b/backend/domain/services/qp_service.py
+@@ -51,12 +51,30 @@ _SHAPES_PATH = Path(__file__).parent / "qp_shapes_vo13284.json"
+ _MODEL_BLADE_ANGLE_RE = re.compile(r"(\d+к?)/(\d+)°")
+ 
+ 
++def _enforce_monotonic_decreasing(points: list) -> list:
++    """
++    Гарантирует p_frac не возрастает по мере роста q_frac — реальная кривая
++    вентилятора всегда монотонна. Прижимает случайные всплески трассировки
++    (шум сканирования/пересечения линий на исходном графике) к предыдущему
++    значению вместо того, чтобы пропускать их в данные как «колебание».
++    """
++    cleaned = [list(p) for p in points]
++    for i in range(1, len(cleaned)):
++        if cleaned[i][1] > cleaned[i - 1][1]:
++            cleaned[i][1] = cleaned[i - 1][1]
++    return cleaned
++
++
+ def _load_digitized_shapes() -> dict:
+     try:
+         with _SHAPES_PATH.open("r", encoding="utf-8") as f:
+-            return json.load(f)
++            raw = json.load(f)
+     except (FileNotFoundError, json.JSONDecodeError):
+         return {}
++    return {
++        blade: {angle: _enforce_monotonic_decreasing(points) for angle, points in angles.items()}
++        for blade, angles in raw.items()
++    }
+ 
+ 
+ _DIGITIZED_SHAPES: dict = _load_digitized_shapes()
+diff --git a/backend/domain/services/qp_shapes_vo13284.json b/backend/domain/services/qp_shapes_vo13284.json
+index d0ddf13..a555b98 100644
+--- a/backend/domain/services/qp_shapes_vo13284.json
++++ b/backend/domain/services/qp_shapes_vo13284.json
+@@ -9,7 +9,7 @@
+     "15": [[0.0,1.0], [0.05,0.986], [0.1,0.9721], [0.15,0.9538], [0.2,0.9268], [0.25,0.9046], [0.3,0.8671], [0.35,0.8273], [0.4,0.786], [0.45,0.7357], [0.5,0.6833], [0.55,0.6254], [0.6,0.5663], [0.65,0.5032], [0.7,0.4367], [0.75,0.3668], [0.8,0.2959], [0.85,0.218], [0.9,0.1435], [0.95,0.0671], [1.0,0.0]],
+     "20": [[0.0,1.0], [0.05,0.989], [0.1,0.9836], [0.15,0.9727], [0.2,0.9565], [0.25,0.9399], [0.3,0.9139], [0.35,0.8868], [0.4,0.8563], [0.45,0.8118], [0.5,0.7638], [0.55,0.7154], [0.6,0.6579], [0.65,0.5886], [0.7,0.519], [0.75,0.4394], [0.8,0.3548], [0.85,0.2588], [0.9,0.1533], [0.95,0.0531], [1.0,0.0]],
+     "25": [[0.0,1.0], [0.05,0.8873], [0.1,0.8655], [0.15,0.845], [0.2,0.8272], [0.25,0.8034], [0.3,0.7754], [0.35,0.7503], [0.4,0.7176], [0.45,0.6856], [0.5,0.6461], [0.55,0.5992], [0.6,0.5565], [0.65,0.5059], [0.7,0.4488], [0.75,0.3848], [0.8,0.312], [0.85,0.2361], [0.9,0.1657], [0.95,0.0952], [1.0,0.0]],
+-    "30": [[0.0,1.0], [0.05,0.9799], [0.1,0.9599], [0.15,0.94], [0.2,0.9106], [0.25,0.8811], [0.3,0.852], [0.35,0.8137], [0.4,0.7663], [0.45,0.7196], [0.5,0.6682], [0.55,0.6067], [0.6,0.5309], [0.65,0.4711], [0.7,0.3945], [0.75,0.314], [0.8,0.2211], [0.85,0.1475], [0.9,0.0581], [0.95,0.0873], [1.0,0.0]]
++    "30": [[0.0,1.0], [0.05,0.9799], [0.1,0.9599], [0.15,0.94], [0.2,0.9106], [0.25,0.8811], [0.3,0.852], [0.35,0.8137], [0.4,0.7663], [0.45,0.7196], [0.5,0.6682], [0.55,0.6067], [0.6,0.5309], [0.65,0.4711], [0.7,0.3945], [0.75,0.314], [0.8,0.2211], [0.85,0.1475], [0.9,0.0581], [0.95,0.0581], [1.0,0.0]]
+   },
+   "8": {
+     "20": [[0.0,1.0], [0.05,0.9215], [0.1,0.9125], [0.15,0.8932], [0.2,0.8725], [0.25,0.8463], [0.3,0.8205], [0.35,0.785], [0.4,0.7455], [0.45,0.6976], [0.5,0.6573], [0.55,0.6122], [0.6,0.553], [0.65,0.4968], [0.7,0.4305], [0.75,0.3654], [0.8,0.2969], [0.85,0.2254], [0.9,0.1533], [0.95,0.0723], [1.0,0.0]],
+diff --git a/backend/infrastructure/csv/loader.py b/backend/infrastructure/csv/loader.py
+index 57d0655..c949228 100644
+--- a/backend/infrastructure/csv/loader.py
++++ b/backend/infrastructure/csv/loader.py
+@@ -7,9 +7,37 @@
+ import csv
+ import json
+ import re
++from dataclasses import dataclass, field
+ from pathlib import Path
++from typing import Any
+ 
+ 
++@dataclass
++class CsvLoadReport:
++    """
++    Итог загрузки CSV — для админ-панели: что реально произошло, а не только
++    «успех/провал». Колонки, которых нет в _HEADER_TO_CANONICAL, не считаются
++    ошибкой (это нормально для дополнительных заметок в файле), но админ должен
++    их видеть — иначе непонятно, почему новые данные не отображаются на сайте.
++    """
++
++    encoding: str = ""
++    total_data_rows: int = 0
++    inserted: int = 0
++    unrecognized_columns: list[str] = field(default_factory=list)
++    skipped_rows: list[dict[str, Any]] = field(default_factory=list)
++    error_rows: list[dict[str, Any]] = field(default_factory=list)
++
++    _MAX_LISTED = 50
++
++    def note_skip(self, row_number: int, reason: str, number: str = "") -> None:
++        if len(self.skipped_rows) < self._MAX_LISTED:
++            self.skipped_rows.append({"row": row_number, "reason": reason, "number": number})
++
++    def note_error(self, row_number: int, error: str, number: str = "") -> None:
++        if len(self.error_rows) < self._MAX_LISTED:
++            self.error_rows.append({"row": row_number, "error": error, "number": number})
++
+ 
+ def norm_header(h: str) -> str:
+     if h is None:
+@@ -131,8 +159,9 @@ def airflow_m3s_to_m3h(af_min, af_max):
+     return new_min, new_max, raw
+ 
+ 
+-def load_csv_into_db(conn, csv_path: Path) -> int:
+-    """Читает CSV и вставляет строки в products. Возвращает количество вставленных строк."""
++def load_csv_into_db(conn, csv_path: Path) -> CsvLoadReport:
++    """Читает CSV и вставляет строки в products. Возвращает отчёт о загрузке
++    (см. CsvLoadReport) — для отображения в админ-панели, не только число строк."""
+     if not csv_path.exists():
+         raise FileNotFoundError(f"CSV не найден: {csv_path}")
+ 
+@@ -188,19 +217,26 @@ def load_csv_into_db(conn, csv_path: Path) -> int:
+             dialect.delimiter = ";"
+         reader = csv.DictReader(f, dialect=dialect)
+ 
+-        inserted = 0
++        report = CsvLoadReport(encoding=used_encoding)
++        report.unrecognized_columns = sorted(
++            h for h in (reader.fieldnames or [])
++            if h and not _HEADER_TO_CANONICAL.get(norm_header(h))
++        )
++
+         seen_ids: set[str] = set()
+         with conn.cursor() as cur:
+-            for i, row in enumerate(reader, start=1):
+-                row = _canonical_row(row)
++            for i, raw_row in enumerate(reader, start=1):
++                report.total_data_rows = i
++                row = _canonical_row(raw_row)
+                 number = normalize_whitespace(row.get("number")) or str(i)
+-                row_id = number if number not in seen_ids else f"{number}-{i}"
+-                seen_ids.add(row_id)
+                 type_ = normalize_whitespace(row.get("type"))
+                 model = normalize_whitespace(row.get("model"))
+                 size = normalize_whitespace(row.get("size"))
+                 if not (type_ or model or size):
++                    report.note_skip(i, "нет ни типа, ни модели, ни типоразмера — строка пропущена", number)
+                     continue
++                row_id = number if number not in seen_ids else f"{number}-{i}"
++                seen_ids.add(row_id)
+ 
+                 diameter = parse_number_loose(row.get("diameter"))
+                 if row.get("efficiency_m3s") is not None and normalize_whitespace(row.get("efficiency_m3s")):
+@@ -225,46 +261,57 @@ def load_csv_into_db(conn, csv_path: Path) -> int:
+                 pressure_coefficients = parse_json_loose(row.get("pressure_coefficients"))
+                 efficiency_coefficients = parse_json_loose(row.get("efficiency_coefficients"))
+ 
+-                cur.execute(
+-                    """
+-                    INSERT INTO products (
+-                        id, number, type, model, size, diameter,
+-                        airflow_min, airflow_max, airflow_raw,
+-                        pressure_min, pressure_max, pressure_raw,
+-                        power, noise_level, price,
+-                        raw_diameter, raw_efficiency, raw_pressure, raw_power, raw_noise_level, raw_price,
+-                        model_slug, nominal_rpm, pressure_coefficients, efficiency_coefficients
+-                    ) VALUES (
+-                        %s, %s, %s, %s, %s, %s,
+-                        %s, %s, %s, %s, %s, %s,
+-                        %s, %s, %s,
+-                        %s, %s, %s, %s, %s, %s,
+-                        %s, %s, %s, %s
++                # Savepoint на строку: если конкретная строка ломает INSERT (например,
++                # некорректные новые колонки дают значение не того типа), откатываем
++                # только её — остальной каталог загружается, а не падает целиком.
++                cur.execute("SAVEPOINT csv_row")
++                try:
++                    cur.execute(
++                        """
++                        INSERT INTO products (
++                            id, number, type, model, size, diameter,
++                            airflow_min, airflow_max, airflow_raw,
++                            pressure_min, pressure_max, pressure_raw,
++                            power, noise_level, price,
++                            raw_diameter, raw_efficiency, raw_pressure, raw_power, raw_noise_level, raw_price,
++                            model_slug, nominal_rpm, pressure_coefficients, efficiency_coefficients
++                        ) VALUES (
++                            %s, %s, %s, %s, %s, %s,
++                            %s, %s, %s, %s, %s, %s,
++                            %s, %s, %s,
++                            %s, %s, %s, %s, %s, %s,
++                            %s, %s, %s, %s
++                        )
++                        ON CONFLICT (id) DO UPDATE SET
++                            number = EXCLUDED.number, type = EXCLUDED.type, model = EXCLUDED.model,
++                            size = EXCLUDED.size, diameter = EXCLUDED.diameter,
++                            airflow_min = EXCLUDED.airflow_min, airflow_max = EXCLUDED.airflow_max, airflow_raw = EXCLUDED.airflow_raw,
++                            pressure_min = EXCLUDED.pressure_min, pressure_max = EXCLUDED.pressure_max, pressure_raw = EXCLUDED.pressure_raw,
++                            power = EXCLUDED.power, noise_level = EXCLUDED.noise_level, price = EXCLUDED.price,
++                            raw_diameter = EXCLUDED.raw_diameter, raw_efficiency = EXCLUDED.raw_efficiency,
++                            raw_pressure = EXCLUDED.raw_pressure, raw_power = EXCLUDED.raw_power,
++                            raw_noise_level = EXCLUDED.raw_noise_level, raw_price = EXCLUDED.raw_price,
++                            model_slug = EXCLUDED.model_slug,
++                            nominal_rpm = EXCLUDED.nominal_rpm,
++                            pressure_coefficients = EXCLUDED.pressure_coefficients,
++                            efficiency_coefficients = EXCLUDED.efficiency_coefficients
++                        """,
++                        (
++                            row_id, number, type_, model, size, diameter,
++                            af_min, af_max, af_raw, pr_min, pr_max, pr_raw,
++                            power, noise_level, price,
++                            raw_diameter, raw_efficiency, raw_pressure, raw_power, raw_noise_level, raw_price,
++                            model_slug, nominal_rpm,
++                            json.dumps(pressure_coefficients) if pressure_coefficients else None,
++                            json.dumps(efficiency_coefficients) if efficiency_coefficients else None,
++                        ),
+                     )
+-                    ON CONFLICT (id) DO UPDATE SET
+-                        number = EXCLUDED.number, type = EXCLUDED.type, model = EXCLUDED.model,
+-                        size = EXCLUDED.size, diameter = EXCLUDED.diameter,
+-                        airflow_min = EXCLUDED.airflow_min, airflow_max = EXCLUDED.airflow_max, airflow_raw = EXCLUDED.airflow_raw,
+-                        pressure_min = EXCLUDED.pressure_min, pressure_max = EXCLUDED.pressure_max, pressure_raw = EXCLUDED.pressure_raw,
+-                        power = EXCLUDED.power, noise_level = EXCLUDED.noise_level, price = EXCLUDED.price,
+-                        raw_diameter = EXCLUDED.raw_diameter, raw_efficiency = EXCLUDED.raw_efficiency,
+-                        raw_pressure = EXCLUDED.raw_pressure, raw_power = EXCLUDED.raw_power,
+-                        raw_noise_level = EXCLUDED.raw_noise_level, raw_price = EXCLUDED.raw_price,
+-                        model_slug = EXCLUDED.model_slug,
+-                        nominal_rpm = EXCLUDED.nominal_rpm,
+-                        pressure_coefficients = EXCLUDED.pressure_coefficients,
+-                        efficiency_coefficients = EXCLUDED.efficiency_coefficients
+-                    """,
+-                    (
+-                        row_id, number, type_, model, size, diameter,
+-                        af_min, af_max, af_raw, pr_min, pr_max, pr_raw,
+-                        power, noise_level, price,
+-                        raw_diameter, raw_efficiency, raw_pressure, raw_power, raw_noise_level, raw_price,
+-                        model_slug, nominal_rpm,
+-                        json.dumps(pressure_coefficients) if pressure_coefficients else None,
+-                        json.dumps(efficiency_coefficients) if efficiency_coefficients else None,
+-                    ),
+-                )
+-                inserted += 1
++                except Exception as exc:
++                    cur.execute("ROLLBACK TO SAVEPOINT csv_row")
++                    report.note_error(i, f"{type(exc).__name__}: {exc}", number)
++                    continue
++                else:
++                    cur.execute("RELEASE SAVEPOINT csv_row")
++                    report.inserted += 1
+         conn.commit()
+-        return inserted
+\ No newline at end of file
++        return report
+\ No newline at end of file
+diff --git a/backend/infrastructure/csv/sync.py b/backend/infrastructure/csv/sync.py
+index 684e689..6794e2a 100644
+--- a/backend/infrastructure/csv/sync.py
++++ b/backend/infrastructure/csv/sync.py
+@@ -7,13 +7,30 @@ import logging
+ from pathlib import Path
+ from typing import Any, Dict, Optional
+ 
+-from infrastructure.csv.loader import load_csv_into_db
++from infrastructure.csv.loader import CsvLoadReport, load_csv_into_db
+ from infrastructure.db.product_repository import count_products
+ 
+ logger = logging.getLogger(__name__)
+ 
+ _CHUNK = 1 << 20  # 1 MiB
+ 
++# Отчёт о последней загрузке CSV — для админ-панели (какие строки/колонки
++# не считались). Хранится в памяти процесса, сбрасывается при перезапуске.
++_last_load_report: Optional[CsvLoadReport] = None
++
++
++def get_last_load_report() -> Optional[CsvLoadReport]:
++    return _last_load_report
++
++
++def _remember_report(report: CsvLoadReport) -> None:
++    global _last_load_report
++    _last_load_report = report
++    if report.unrecognized_columns:
++        logger.warning("CSV: нераспознанные колонки (не читаются сайтом): %s", report.unrecognized_columns)
++    if report.error_rows:
++        logger.warning("CSV: %d строк с ошибками при загрузке (см. admin/debug)", len(report.error_rows))
++
+ 
+ def _file_sha256(path: Path) -> str:
+     h = hashlib.sha256()
+@@ -73,7 +90,7 @@ def _reload_from_csv(
+     sha256_hex: Optional[str] = None,
+ ) -> None:
+     _clear_products(conn)
+-    load_csv_into_db(conn, resolved)
++    _remember_report(load_csv_into_db(conn, resolved))
+     sha = sha256_hex if sha256_hex is not None else _file_sha256(resolved)
+     _save_state(conn, path_str, mtime_ns, size_bytes, sha)
+     conn.commit()
+@@ -112,7 +129,7 @@ def sync_catalog_from_csv(conn, csv_path: Path) -> bool:
+         return False
+ 
+     if state is None and count_products(conn) == 0:
+-        load_csv_into_db(conn, resolved)
++        _remember_report(load_csv_into_db(conn, resolved))
+         current_hash = _file_sha256(resolved)
+         _save_state(conn, path_str, mtime_ns, size_bytes, current_hash)
+         conn.commit()
+diff --git a/backend/presentation/api/routes/admin.py b/backend/presentation/api/routes/admin.py
+index 196c09b..3965725 100644
+--- a/backend/presentation/api/routes/admin.py
++++ b/backend/presentation/api/routes/admin.py
+@@ -1,10 +1,12 @@
+ """Админ API: каталог вентиляторов, пользователи и диагностика."""
+ from __future__ import annotations
+ 
++import math
+ import platform
+ import sys
+ import time
+ from datetime import datetime, timezone
++from pathlib import Path
+ from typing import Annotated, Any, Dict, Optional
+ 
+ from fastapi import APIRouter, Depends, HTTPException, Query
+@@ -273,7 +275,7 @@ def _debug_database_section() -> Dict[str, Any]:
+ 
+ def _debug_catalog_section() -> Dict[str, Any]:
+     from config import CSV_PATH
+-    from infrastructure.csv.sync import _get_state
++    from infrastructure.csv.sync import _get_state, get_last_load_report
+ 
+     info: Dict[str, Any] = {
+         "csv_path": str(CSV_PATH),
+@@ -295,30 +297,121 @@ def _debug_catalog_section() -> Dict[str, Any]:
+         )
+     else:
+         info["synced"] = False
++
++    # Отчёт последней загрузки: что сайт увидел в файле, но не смог/не стал
++    # считать — колонки без сопоставления, пропущенные и упавшие строки.
++    report = get_last_load_report()
++    if report is not None:
++        info["last_load"] = {
++            "encoding": report.encoding,
++            "total_data_rows": report.total_data_rows,
++            "inserted": report.inserted,
++            "unrecognized_columns": report.unrecognized_columns,
++            "skipped_rows": report.skipped_rows,
++            "error_rows": report.error_rows,
++        }
++        warnings: list[str] = []
++        if report.unrecognized_columns:
++            warnings.append(
++                "Эти колонки есть в файле, но сайт их не читает (нет сопоставления): "
++                + ", ".join(report.unrecognized_columns)
++            )
++        if report.error_rows:
++            warnings.append(f"{len(report.error_rows)} строк(и) не загрузились из-за ошибок — см. error_rows.")
++        if report.skipped_rows:
++            warnings.append(f"{len(report.skipped_rows)} строк(и) пропущены (нет типа/модели/типоразмера).")
++        info["last_load_warnings"] = warnings
++    else:
++        info["last_load"] = None
+     return info
+ 
+ 
++def _bloom_false_positive_probability(m: int, k: int, n_items: int) -> float:
++    """
++    Теоретическая вероятность ложного срабатывания Bloom-фильтра:
++    p ≈ (1 - e^(-k·n/m))^k, где m — размер битовой карты, k — число хэш-функций,
++    n — число реально добавленных элементов.
++    """
++    if m <= 0 or k <= 0 or n_items <= 0:
++        return 0.0
++    return (1 - math.exp(-k * n_items / m)) ** k
++
++
++def _bloom_speed_benchmark(bloom, known_values: list[str], haystack: list[str], repeats: int = 300) -> Dict[str, Any]:
++    """
++    Замер по факту (не теория): поиск через Bloom-фильтр (ожидаемо O(1) — не
++    зависит от размера каталога) против линейного перебора списка (O(n) —
++    время растёт с размером каталога). Пробы — вперемешку известные значения
++    и заведомо отсутствующие, чтобы не тестировать только «горячий путь».
++    """
++    if not known_values or not haystack:
++        return {}
++    probes = [known_values[i % len(known_values)] for i in range(repeats)]
++    probes += [f"__нет-такого-значения-{i}__" for i in range(repeats // 10 or 1)]
++
++    t0 = time.perf_counter()
++    for v in probes:
++        bloom.might_contain(v)
++    bloom_elapsed = time.perf_counter() - t0
++
++    t0 = time.perf_counter()
++    for v in probes:
++        _ = v in haystack  # линейный перебор — Python делает это за O(n)
++    linear_elapsed = time.perf_counter() - t0
++
++    n_probes = len(probes)
++    return {
++        "probes": n_probes,
++        "haystack_size": len(haystack),
++        "bloom_total_ms": round(bloom_elapsed * 1000, 3),
++        "bloom_per_op_us": round(bloom_elapsed / n_probes * 1e6, 3),
++        "linear_total_ms": round(linear_elapsed * 1000, 3),
++        "linear_per_op_us": round(linear_elapsed / n_probes * 1e6, 3),
++        "speedup_x": round(linear_elapsed / bloom_elapsed, 1) if bloom_elapsed > 0 else None,
++        "note": "Bloom — O(1) (не зависит от размера каталога), линейный перебор — O(n). "
++                "На маленьком каталоге разница в наносекундах, но растёт с ростом n.",
++    }
++
++
+ def _debug_index_section() -> Dict[str, Any]:
+     from infrastructure.search.catalog_index import get_catalog_index
+ 
+     idx = get_catalog_index()
+     if idx is None:
+         return {"built": False}
+-    result: Dict[str, Any] = {"built": True, "rows": len(getattr(idx, "_rows", []) or [])}
++    rows = getattr(idx, "_rows", []) or []
++    result: Dict[str, Any] = {"built": True, "rows": len(rows)}
+ 
+     # Bloom-фильтры категориальных полей — битовая карта для отладочной
+-    # визуализации в админке (какие ячейки заняты, насколько заполнен фильтр)
++    # визуализации в админке (какие ячейки заняты, насколько заполнен фильтр),
++    # теоретическая вероятность коллизии и замер скорости против O(n)-перебора.
+     type_bloom = getattr(idx, "_type_bloom", None)
+     if type_bloom is not None:
++        known = sorted(getattr(idx, "_type_to_ids", {}).keys())
++        stats = type_bloom.stats()
+         result["bloom_type"] = {
+-            **type_bloom.stats(),
+-            "known_values": sorted(getattr(idx, "_type_to_ids", {}).keys()),
++            **stats,
++            "known_values": known,
++            "false_positive_probability": _bloom_false_positive_probability(
++                stats.get("m", 0), stats.get("k", 0), len(known)
++            ),
++            "speed_benchmark": _bloom_speed_benchmark(
++                type_bloom, known, [str(r.get("type", "")) for r in rows]
++            ),
+         }
+     size_bloom = getattr(idx, "_size_bloom", None)
+     if size_bloom is not None:
++        known = sorted(getattr(idx, "_size_to_ids", {}).keys())
++        stats = size_bloom.stats()
+         result["bloom_size"] = {
+-            **size_bloom.stats(),
+-            "known_values": sorted(getattr(idx, "_size_to_ids", {}).keys()),
++            **stats,
++            "known_values": known,
++            "false_positive_probability": _bloom_false_positive_probability(
++                stats.get("m", 0), stats.get("k", 0), len(known)
++            ),
++            "speed_benchmark": _bloom_speed_benchmark(
++                size_bloom, known, [str(r.get("size", "")) for r in rows]
++            ),
+         }
+     return result
+ 
+@@ -340,6 +433,33 @@ def _debug_security_section() -> Dict[str, Any]:
+     }
+ 
+ 
++def _debug_resources_section() -> Dict[str, Any]:
++    """Нагрузка процесса/системы — то же, что видно в Docker/htop, но прямо в админке."""
++    import psutil
++
++    proc = psutil.Process()
++    with proc.oneshot():
++        cpu_percent = proc.cpu_percent(interval=0.1)
++        mem = proc.memory_info()
++        num_threads = proc.num_threads()
++    vm = psutil.virtual_memory()
++    disk = psutil.disk_usage(str(Path(__file__).resolve().parents[4]))
++    return {
++        "process": {
++            "cpu_percent": cpu_percent,
++            "rss_mb": round(mem.rss / (1024 * 1024), 1),
++            "threads": num_threads,
++        },
++        "system": {
++            "cpu_percent": psutil.cpu_percent(interval=0.1),
++            "cpu_count": psutil.cpu_count(),
++            "memory_used_percent": vm.percent,
++            "memory_total_mb": round(vm.total / (1024 * 1024), 1),
++            "disk_used_percent": disk.percent,
++        },
++    }
++
++
+ @router.get("/debug", summary="Диагностика системы (админ)")
+ def admin_debug(_: Annotated[dict, Depends(require_admin)]) -> Dict[str, Any]:
+     """
+@@ -363,9 +483,98 @@ def admin_debug(_: Annotated[dict, Depends(require_admin)]) -> Dict[str, Any]:
+         ("catalog", _debug_catalog_section),
+         ("search_index", _debug_index_section),
+         ("security", _debug_security_section),
++        ("resources", _debug_resources_section),
+     ):
+         try:
+             report[name] = builder()
+         except Exception as exc:  # диагностика не должна падать целиком
+             report[name] = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+     return report
++
++
++@router.post("/reload-csv", summary="Принудительно перечитать CSV (админ)")
++def admin_reload_csv(_: Annotated[dict, Depends(require_admin)]) -> Dict[str, Any]:
++    """
++    Форсирует перезагрузку каталога из CSV прямо сейчас (не дожидаясь изменения
++    mtime/размера файла) и возвращает отчёт: что распозналось, что пропущено,
++    какие колонки не читаются. Полезно после ручного редактирования CSV.
++    """
++    from config import CSV_PATH
++    from infrastructure.csv.loader import load_csv_into_db
++    from infrastructure.csv.sync import _file_sha256, _remember_report, _save_state
++
++    if not CSV_PATH.exists():
++        raise HTTPException(status_code=404, detail=f"CSV не найден: {CSV_PATH}")
++
++    resolved = CSV_PATH.resolve()
++    with db_session() as conn:
++        with conn.cursor() as cur:
++            cur.execute("DELETE FROM products")
++        report = load_csv_into_db(conn, resolved)
++        _remember_report(report)
++        st = resolved.stat()
++        _save_state(conn, str(resolved), int(st.st_mtime_ns), int(st.st_size), _file_sha256(resolved))
++        conn.commit()
++
++    from infrastructure.search.catalog_index import CatalogIndex
++    from presentation.app import set_catalog_index
++    with db_session() as conn:
++        set_catalog_index(CatalogIndex.build(conn))
++
++    return {
++        "encoding": report.encoding,
++        "total_data_rows": report.total_data_rows,
++        "inserted": report.inserted,
++        "unrecognized_columns": report.unrecognized_columns,
++        "skipped_rows": report.skipped_rows,
++        "error_rows": report.error_rows,
++    }
++
++
++@router.post("/load-test", summary="Синтетическая нагрузка на поиск (админ)")
++def admin_load_test(
++    _: Annotated[dict, Depends(require_admin)],
++    requests: Annotated[int, Query(ge=1, le=20000)] = 2000,
++) -> Dict[str, Any]:
++    """
++    Прогоняет N синтетических поисковых запросов через тот же индекс, что
++    обслуживает каталог, и измеряет пропускную способность (запросов/сек) —
++    наглядно, без Docker/сторонних инструментов.
++    """
++    from infrastructure.search.catalog_index import get_catalog_index
++
++    idx = get_catalog_index()
++    if idx is None:
++        raise HTTPException(status_code=503, detail="Индекс каталога ещё не построен")
++
++    known_types = sorted(getattr(idx, "_type_to_ids", {}).keys()) or [""]
++    known_sizes = sorted(getattr(idx, "_size_to_ids", {}).keys()) or [""]
++
++    import psutil
++    proc = psutil.Process()
++    cpu_before = proc.cpu_percent(interval=None)
++    t0 = time.perf_counter()
++    for i in range(requests):
++        idx.search(
++            q=None,
++            type_=known_types[i % len(known_types)] or None,
++            series=known_sizes[i % len(known_sizes)] or None,
++            diameter=None,
++            min_price=None, max_price=None,
++            min_power=None, max_power=None,
++            min_noise=None, max_noise=None,
++            min_diameter=None, max_diameter=None,
++            min_airflow=None, max_airflow=None,
++            min_pressure=None, max_pressure=None,
++            sort="price_asc", limit=24, offset=0,
++        )
++    elapsed = time.perf_counter() - t0
++    cpu_after = proc.cpu_percent(interval=None)
++
++    return {
++        "requests": requests,
++        "elapsed_ms": round(elapsed * 1000, 2),
++        "requests_per_second": round(requests / elapsed, 1) if elapsed > 0 else None,
++        "avg_latency_us": round(elapsed / requests * 1e6, 2),
++        "process_cpu_percent_during": cpu_after,
++    }
+diff --git a/backend/presentation/api/schemas.py b/backend/presentation/api/schemas.py
+index f95d5fd..1dcdc01 100644
+--- a/backend/presentation/api/schemas.py
++++ b/backend/presentation/api/schemas.py
+@@ -173,6 +173,7 @@ class HealthOut(BaseModel):
+ 
+     ok: bool = True
+     products: int = Field(..., description="Количество записей в таблице products")
++    demo_mode: bool = Field(False, description="Инсайдерский/демо-режим — каталог скрыт для внешнего показа")
+ 
+ 
+ class ErrorOut(BaseModel):
+diff --git a/backend/presentation/app.py b/backend/presentation/app.py
+index 3a8559a..10f23ce 100644
+--- a/backend/presentation/app.py
++++ b/backend/presentation/app.py
+@@ -445,23 +445,44 @@ def create_app() -> FastAPI:
+ 
+     @app.get("/api/health", response_model=HealthOut, summary="Проверка работоспособности", tags=["system"])
+     def api_health():
++        from config import DEMO_MODE
++
+         conn = get_connection()
+         try:
+             n = count_products(conn)
+         finally:
+             put_connection(conn)
+-        return HealthOut(ok=True, products=n)
++        return HealthOut(ok=True, products=n, demo_mode=DEMO_MODE)
+ 
+     @app.get("/api/share-links", summary="Ссылки для открытия в локальной сети", tags=["system"])
+     def api_share_links(request: Request):
+         scheme = request.url.scheme or "http"
+         port = request.url.port
+         current_host = request.url.hostname or "localhost"
+-        urls = [_format_url(scheme, current_host, port)]
++        current_url = _format_url(scheme, current_host, port)
++
++        # Реально доступные с других устройств адреса — из сетевых интерфейсов.
++        lan_urls = []
+         for ip in _discover_local_ips():
+             url = _format_url(scheme, ip, port)
+-            if url not in urls:
+-                urls.append(url)
++            if url not in lan_urls:
++                lan_urls.append(url)
++
++        try:
++            current_is_loopback = ipaddress.ip_address(current_host).is_loopback
++        except ValueError:
++            current_is_loopback = current_host.lower() == "localhost"
++
++        if current_is_loopback:
++            # localhost/127.0.0.1 работает только на этом же компьютере — не
++            # ставим первым (это как раз то, что копируется в буфер обмена);
++            # первым должен быть реально открывающийся с других устройств адрес.
++            urls = lan_urls + ([current_url] if current_url not in lan_urls else [])
++        else:
++            urls = [current_url] + [u for u in lan_urls if u != current_url]
++        if not urls:
++            urls = [current_url]
++
+         return {"urls": urls, "hint": "Откройте на другом устройстве в той же локальной сети."}
+ 
+     # --- Export ---
+diff --git a/backend/requirements.txt b/backend/requirements.txt
+index cc8a7ae..783b3d5 100644
+--- a/backend/requirements.txt
++++ b/backend/requirements.txt
+@@ -7,3 +7,4 @@ httpx
+ reportlab
+ bcrypt>=4.2.0,<5
+ PyJWT>=2.8.0,<3
++psutil>=5.9,<8
+diff --git a/backend/tests/test_csv_loader.py b/backend/tests/test_csv_loader.py
+new file mode 100644
+index 0000000..3dc4745
+--- /dev/null
++++ b/backend/tests/test_csv_loader.py
+@@ -0,0 +1,140 @@
++"""
++Тесты загрузчика CSV: нераспознанные колонки, пропущенные и упавшие строки.
++Без реальной БД — фиктивный курсор, который либо просто пишет запись, либо
++бросает исключение (эмулирует поломанную строку), но помнит SAVEPOINT/ROLLBACK.
++"""
++from __future__ import annotations
++
++import io
++from pathlib import Path
++
++import pytest
++
++from infrastructure.csv.loader import CsvLoadReport, load_csv_into_db, norm_header
++
++
++class _FakeCursor:
++    def __init__(self, fail_on_row_ids: set[str]):
++        self.fail_on_row_ids = fail_on_row_ids
++        self.inserted_ids: list[str] = []
++        self.savepoints: list[str] = []
++
++    def execute(self, sql: str, params=None):
++        sql_stripped = sql.strip()
++        if sql_stripped.startswith("SAVEPOINT"):
++            self.savepoints.append("save")
++            return
++        if sql_stripped.startswith("ROLLBACK TO SAVEPOINT"):
++            self.savepoints.append("rollback")
++            return
++        if sql_stripped.startswith("RELEASE SAVEPOINT"):
++            self.savepoints.append("release")
++            return
++        if sql_stripped.startswith("INSERT INTO products"):
++            row_id = params[0]
++            if row_id in self.fail_on_row_ids:
++                raise RuntimeError(f"simulated DB error for {row_id}")
++            self.inserted_ids.append(row_id)
++            return
++        raise AssertionError(f"unexpected SQL: {sql_stripped[:50]}")
++
++    def __enter__(self):
++        return self
++
++    def __exit__(self, *exc):
++        return False
++
++
++class _FakeConn:
++    def __init__(self, fail_on_row_ids: set[str] = frozenset()):
++        self.cur = _FakeCursor(fail_on_row_ids)
++        self.committed = False
++
++    def cursor(self):
++        return self.cur
++
++    def commit(self):
++        self.committed = True
++
++
++CSV_HEADER = "Номер;Тип;Модель;Типоразмер;Диаметр ММ;Производительность м3/с;Давление(па);Мощность(ВТ);Уровень шума;Цена в рублях;nominal_rpm;pressure_coefficients;efficiency_coefficients"
++
++
++def _write_csv(tmp_path: Path, body: str, header: str = CSV_HEADER) -> Path:
++    p = tmp_path / "test.csv"
++    p.write_text(header + "\n" + body, encoding="utf-8")
++    return p
++
++
++def test_norm_header_variants():
++    assert norm_header("Номер") == norm_header(" номер ")
++    assert norm_header("Производительность м³/с") == norm_header("Производительность м3/с")
++
++
++def test_unrecognized_columns_detected(tmp_path):
++    header = CSV_HEADER + ";Чертёж двигателя;Масса, кг"
++    body = "V1;Осевой;ВО 13-284-4/15°-456A4;456A4;405;0.25 - 0.70;52 - 223;120;-;-;1370;-;-;drawing.dwg;12.5\n"
++    path = _write_csv(tmp_path, body, header=header)
++
++    conn = _FakeConn()
++    report = load_csv_into_db(conn, path)
++
++    assert report.unrecognized_columns == ["Масса, кг", "Чертёж двигателя"]
++    assert report.inserted == 1
++    assert conn.committed
++
++
++def test_no_unrecognized_columns_for_plain_header(tmp_path):
++    body = "V1;Осевой;ВО 13-284-4/15°-456A4;456A4;405;0.25 - 0.70;52 - 223;120;-;-;1370;-;-\n"
++    path = _write_csv(tmp_path, body)
++
++    conn = _FakeConn()
++    report = load_csv_into_db(conn, path)
++    assert report.unrecognized_columns == []
++    assert report.inserted == 1
++
++
++def test_row_missing_type_model_size_is_skipped(tmp_path):
++    body = ";;;;;;;;;;;;\nV2;Осевой;ВО 13-284-4/20°-456A4;456A4;405;0.3 - 0.8;60 - 30;120;-;-;1370;-;-\n"
++    path = _write_csv(tmp_path, body)
++
++    conn = _FakeConn()
++    report = load_csv_into_db(conn, path)
++
++    assert report.total_data_rows == 2
++    assert report.inserted == 1
++    assert len(report.skipped_rows) == 1
++    assert report.skipped_rows[0]["row"] == 1
++    assert "нет ни типа" in report.skipped_rows[0]["reason"]
++
++
++def test_row_that_breaks_insert_does_not_abort_whole_load(tmp_path):
++    """
++    Регрессия ровно под жалобу «после добавления новых данных сайт перестал
++    читать файл»: одна плохая строка не должна откатывать уже загруженные —
++    транзакция продолжается через SAVEPOINT/ROLLBACK TO SAVEPOINT.
++    """
++    body = (
++        "VBAD;Осевой;ВО 13-284-4/15°-456A4;456A4;405;0.25 - 0.70;52 - 223;120;-;-;1370;-;-\n"
++        "VGOOD;Осевой;ВО 13-284-4/20°-456A4;456A4;405;0.36 - 0.82;59 - 33;120;-;-;1370;-;-\n"
++    )
++    path = _write_csv(tmp_path, body)
++
++    conn = _FakeConn(fail_on_row_ids={"VBAD"})
++    report = load_csv_into_db(conn, path)
++
++    assert report.inserted == 1
++    assert conn.cur.inserted_ids == ["VGOOD"]
++    assert len(report.error_rows) == 1
++    assert report.error_rows[0]["number"] == "VBAD"
++    assert "simulated DB error" in report.error_rows[0]["error"]
++    # SAVEPOINT-протокол: save+rollback для плохой строки, save+release для хорошей
++    assert conn.cur.savepoints == ["save", "rollback", "save", "release"]
++    assert conn.committed
++
++
++def test_report_caps_listed_rows_but_keeps_counting(tmp_path):
++    report = CsvLoadReport()
++    for i in range(100):
++        report.note_skip(i, "test reason", f"num{i}")
++    assert len(report.skipped_rows) == CsvLoadReport._MAX_LISTED
+diff --git a/backend/tests/test_qp_model.py b/backend/tests/test_qp_model.py
+index 78830e9..7242f5c 100644
+--- a/backend/tests/test_qp_model.py
++++ b/backend/tests/test_qp_model.py
+@@ -1,6 +1,7 @@
+ import pytest
+ from domain.services.qp_service import (
+     alpha_for_type, ALPHA_DEFAULT, build_qp_curve, shape_points_for_model,
++    _DIGITIZED_SHAPES,
+ )
+ 
+ def test_alpha_known_types():
+@@ -49,6 +50,22 @@ def test_shape_points_monotonic_no_dip():
+         for a, b in zip(p_values, p_values[1:]):
+             assert b <= a + 0.02
+ 
++def test_all_digitized_shapes_strictly_non_increasing():
++    """
++    Регрессия: один traced-артефакт (6/30°, колебание на конце q_frac=0.9..0.95)
++    проскочил через прежнюю проверку truncate-after-global-min. Теперь каждая
++    точка из всех 19 оцифрованных форм обязана быть <= предыдущей без допуска.
++    """
++    assert len(_DIGITIZED_SHAPES) == 5
++    checked = 0
++    for blade, angles in _DIGITIZED_SHAPES.items():
++        for angle, points in angles.items():
++            p_values = [p for _, p in points]
++            for a, b in zip(p_values, p_values[1:]):
++                assert b <= a, f"{blade}/{angle}°: {a} -> {b} возрастает"
++            checked += 1
++    assert checked == 19
++
+ def test_build_qp_curve_uses_digitized_shape_when_available():
+     curve = build_qp_curve(
+         q_min=0.29, q_max=0.7, p_min=69, p_max=26,
+diff --git a/backend/tests/test_share_links.py b/backend/tests/test_share_links.py
+new file mode 100644
+index 0000000..2ec22d8
+--- /dev/null
++++ b/backend/tests/test_share_links.py
+@@ -0,0 +1,38 @@
++import presentation.app as pres_app
++from tests.conftest import make_test_client
++
++
++def test_share_links_prioritizes_lan_ip_over_localhost(monkeypatch):
++    """
++    Регрессия: раньше первым (и, значит, автокопируемым в буфер обмена) шёл
++    request.url.hostname — обычно localhost/127.0.0.1, недоступный с других
++    устройств. Реально рабочий LAN-адрес должен быть первым.
++    """
++    monkeypatch.setattr(pres_app, "_discover_local_ips", lambda: ["192.168.1.42"])
++    client = make_test_client(monkeypatch)
++
++    r = client.get("/api/share-links", headers={"host": "localhost:8000"})
++    assert r.status_code == 200
++    urls = r.json()["urls"]
++    assert urls[0] == "http://192.168.1.42:8000/"
++    assert "http://localhost:8000/" in urls
++
++
++def test_share_links_keeps_current_host_first_when_not_loopback(monkeypatch):
++    monkeypatch.setattr(pres_app, "_discover_local_ips", lambda: ["192.168.1.42"])
++    client = make_test_client(monkeypatch)
++
++    r = client.get("/api/share-links", headers={"host": "192.168.1.42:8000"})
++    assert r.status_code == 200
++    urls = r.json()["urls"]
++    assert urls[0] == "http://192.168.1.42:8000/"
++    assert urls.count("http://192.168.1.42:8000/") == 1
++
++
++def test_share_links_falls_back_to_current_host_when_no_lan_ip_found(monkeypatch):
++    monkeypatch.setattr(pres_app, "_discover_local_ips", lambda: [])
++    client = make_test_client(monkeypatch)
++
++    r = client.get("/api/share-links", headers={"host": "localhost:8000"})
++    assert r.status_code == 200
++    assert r.json()["urls"] == ["http://localhost:8000/"]
+diff --git a/frontend/404.html b/frontend/404.html
+index 9648392..4f4c7ec 100644
+--- a/frontend/404.html
++++ b/frontend/404.html
+@@ -4,6 +4,10 @@
+     <meta charset="utf-8" />
+     <meta name="viewport" content="width=device-width, initial-scale=1" />
+     <title>Страница не найдена — VENTSEARCH</title>
++    <link rel="icon" type="image/x-icon" href="favicon.ico">
++    <link rel="icon" type="image/png" sizes="32x32" href="favicon-32x32.png">
++    <link rel="icon" type="image/png" sizes="16x16" href="favicon-16x16.png">
++    <link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png">
+     <link
+       href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css"
+       rel="stylesheet"
+diff --git a/frontend/500.html b/frontend/500.html
+index 497578b..42581ad 100644
+--- a/frontend/500.html
++++ b/frontend/500.html
+@@ -4,6 +4,10 @@
+     <meta charset="utf-8" />
+     <meta name="viewport" content="width=device-width, initial-scale=1" />
+     <title>Ошибка сервера — VENTSEARCH</title>
++    <link rel="icon" type="image/x-icon" href="favicon.ico">
++    <link rel="icon" type="image/png" sizes="32x32" href="favicon-32x32.png">
++    <link rel="icon" type="image/png" sizes="16x16" href="favicon-16x16.png">
++    <link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png">
+     <link
+       href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css"
+       rel="stylesheet"
+diff --git a/frontend/admin.html b/frontend/admin.html
+index fc3002f..6390bc0 100644
+--- a/frontend/admin.html
++++ b/frontend/admin.html
+@@ -4,6 +4,10 @@
+     <meta charset="utf-8" />
+     <meta name="viewport" content="width=device-width, initial-scale=1" />
+     <title>Управление каталогом — VENTSEARCH</title>
++    <link rel="icon" type="image/x-icon" href="favicon.ico">
++    <link rel="icon" type="image/png" sizes="32x32" href="favicon-32x32.png">
++    <link rel="icon" type="image/png" sizes="16x16" href="favicon-16x16.png">
++    <link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png">
+     <link
+       href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css"
+       rel="stylesheet"
+@@ -186,12 +190,22 @@
+           <div class="tab-pane fade" id="tabDebug" role="tabpanel">
+             <div class="d-flex flex-wrap gap-2 align-items-center mb-2">
+               <button id="debugRefreshBtn" class="btn btn-outline-dark btn-sm" type="button">Обновить</button>
++              <button id="debugReloadCsvBtn" class="btn btn-outline-primary btn-sm" type="button">Перечитать CSV сейчас</button>
++              <button id="debugLoadTestBtn" class="btn btn-outline-danger btn-sm" type="button">Нагрузочный тест (2000 запросов)</button>
+               <span id="debugMeta" class="small text-secondary ms-auto"></span>
+             </div>
+             <div id="debugSecurityAlert" class="alert alert-warning d-none" role="alert"></div>
++            <div id="debugCsvAlert" class="alert alert-warning d-none" role="alert"></div>
+             <div id="debugContent" class="row g-3">
+               <div class="text-secondary small py-4 text-center">Откройте вкладку, чтобы загрузить диагностику…</div>
+             </div>
++            <div class="card shadow-sm mt-3">
++              <div class="card-header py-2 fw-semibold d-flex justify-content-between align-items-center">
++                <span>Логи консоли (этой вкладки браузера)</span>
++                <button id="debugClearConsoleBtn" class="btn btn-outline-secondary btn-sm" type="button">Очистить</button>
++              </div>
++              <div id="debugConsoleLog" class="small font-monospace p-2" style="max-height: 260px; overflow-y: auto; white-space: pre-wrap;"></div>
++            </div>
+           </div>
+         </div>
+       </section>
+diff --git a/frontend/admin.js b/frontend/admin.js
+index 16e3e47..b781d55 100644
+--- a/frontend/admin.js
++++ b/frontend/admin.js
+@@ -20,6 +20,58 @@ function $(sel) {
+   return document.querySelector(sel);
+ }
+ 
++// Перехват console.log/warn/error для показа в админке (для пользователя,
++// который не откроет DevTools сам) — буфер на случай, если вкладка
++// «Диагностика» ещё не открыта/не отрисована.
++const _consoleBuffer = [];
++const _CONSOLE_BUFFER_MAX = 300;
++
++function _captureConsole(level, args) {
++  const text = args.map((a) => {
++    if (a instanceof Error) return `${a.name}: ${a.message}`;
++    if (typeof a === "object") { try { return JSON.stringify(a); } catch { return String(a); } }
++    return String(a);
++  }).join(" ");
++  const entry = { time: new Date().toLocaleTimeString("ru-RU"), level, text };
++  _consoleBuffer.push(entry);
++  if (_consoleBuffer.length > _CONSOLE_BUFFER_MAX) _consoleBuffer.shift();
++  const el = document.getElementById("debugConsoleLog");
++  if (el) {
++    const cls = level === "error" ? "text-danger" : level === "warn" ? "text-warning" : "text-secondary";
++    const line = document.createElement("div");
++    line.className = cls;
++    line.textContent = `[${entry.time}] ${level.toUpperCase()}: ${entry.text}`;
++    el.appendChild(line);
++    el.scrollTop = el.scrollHeight;
++  }
++}
++
++(function installConsoleCapture() {
++  ["log", "warn", "error"].forEach((level) => {
++    const original = console[level].bind(console);
++    console[level] = (...args) => {
++      original(...args);
++      _captureConsole(level, args);
++    };
++  });
++  window.addEventListener("error", (e) => _captureConsole("error", [`${e.message} (${e.filename}:${e.lineno})`]));
++  window.addEventListener("unhandledrejection", (e) => _captureConsole("error", [`Unhandled promise rejection: ${e.reason}`]));
++})();
++
++function renderConsoleLogBuffer() {
++  const el = $("#debugConsoleLog");
++  if (!el) return;
++  el.innerHTML = "";
++  for (const entry of _consoleBuffer) {
++    const cls = entry.level === "error" ? "text-danger" : entry.level === "warn" ? "text-warning" : "text-secondary";
++    const line = document.createElement("div");
++    line.className = cls;
++    line.textContent = `[${entry.time}] ${entry.level.toUpperCase()}: ${entry.text}`;
++    el.appendChild(line);
++  }
++  el.scrollTop = el.scrollHeight;
++}
++
+ function escapeHtml(v) {
+   if (v === null || v === undefined) return "";
+   return String(v)
+@@ -177,6 +229,43 @@ function bindAdminEvents() {
+       loadDebug().catch((err) => showAdminError(err.message));
+       return;
+     }
++    if (e.target.closest("#debugClearConsoleBtn")) {
++      _consoleBuffer.length = 0;
++      renderConsoleLogBuffer();
++      return;
++    }
++    if (e.target.closest("#debugReloadCsvBtn")) {
++      const btn = e.target.closest("#debugReloadCsvBtn");
++      btn.disabled = true;
++      va().apiAuthFetch("/api/admin/reload-csv", { method: "POST" })
++        .then((r) => {
++          const msg = `CSV перечитан: строк в файле ${r.total_data_rows}, загружено ${r.inserted}`
++            + (r.unrecognized_columns?.length ? `; не читаются колонки: ${r.unrecognized_columns.join(", ")}` : "")
++            + (r.error_rows?.length ? `; ошибок в строках: ${r.error_rows.length}` : "");
++          showAdminSuccess(msg);
++          return loadDebug();
++        })
++        .catch((err) => showAdminError(err.message))
++        .finally(() => { btn.disabled = false; });
++      return;
++    }
++    if (e.target.closest("#debugLoadTestBtn")) {
++      const btn = e.target.closest("#debugLoadTestBtn");
++      btn.disabled = true;
++      const originalText = btn.textContent;
++      btn.textContent = "Идёт нагрузочный тест…";
++      va().apiAuthFetch("/api/admin/load-test?requests=2000", { method: "POST" })
++        .then((r) => {
++          showAdminSuccess(
++            `Нагрузочный тест: ${r.requests} запросов за ${r.elapsed_ms} мс `
++            + `(${r.requests_per_second} запросов/сек, ${r.avg_latency_us} мкс/запрос, CPU ${r.process_cpu_percent_during}%)`,
++          );
++          return loadDebug();
++        })
++        .catch((err) => showAdminError(err.message))
++        .finally(() => { btn.disabled = false; btn.textContent = originalText; });
++      return;
++    }
+     if (e.target.closest("#productSearchBtn")) {
+       state.products.q = $("#productSearch")?.value.trim() || "";
+       state.products.offset = 0;
+@@ -604,6 +693,27 @@ function renderBloomCard(title, bloom) {
+   const shown = knownValues.slice(0, 40).map(escapeHtml).join(", ");
+   const knownPreview = shown + (knownValues.length > 40 ? `, … ещё ${knownValues.length - 40}` : "");
+ 
++  const fpp = bloom.false_positive_probability;
++  const fppHtml = typeof fpp === "number"
++    ? `<div class="mt-2"><strong>Вероятность ложного срабатывания:</strong> ${fpp.toExponential(2)}
++        <span class="text-secondary">(теоретическая формула (1&minus;e<sup>&minus;kn/m</sup>)<sup>k</sup>, n=${knownValues.length})</span></div>`
++    : "";
++
++  const bench = bloom.speed_benchmark;
++  const benchHtml = bench && typeof bench.bloom_per_op_us === "number"
++    ? `<div class="mt-2">
++        <strong>Скорость (замер на текущем каталоге, ${bench.haystack_size} записей, ${bench.probes} проб):</strong>
++        <table class="table table-sm mb-0 mt-1" style="max-width: 420px;">
++          <thead><tr><th></th><th>время/проверку</th><th>сложность</th></tr></thead>
++          <tbody>
++            <tr><td>Bloom-фильтр</td><td>${bench.bloom_per_op_us.toFixed(2)} мкс</td><td><code>O(1)</code></td></tr>
++            <tr><td>Линейный перебор</td><td>${bench.linear_per_op_us.toFixed(2)} мкс</td><td><code>O(n)</code></td></tr>
++          </tbody>
++        </table>
++        <div class="text-secondary mt-1">${escapeHtml(bench.note || "")}</div>
++      </div>`
++    : "";
++
+   return `
+     <div class="col-12">
+       <div class="card shadow-sm h-100">
+@@ -618,6 +728,8 @@ function renderBloomCard(title, bloom) {
+           <div class="small text-secondary" style="min-width: 220px; max-width: 480px;">
+             <div class="mb-1"><strong>${knownValues.length}</strong> ${pluralRu(knownValues.length, "известное значение", "известных значения", "известных значений")} в индексе:</div>
+             <div>${knownPreview || "—"}</div>
++            ${fppHtml}
++            ${benchHtml}
+           </div>
+         </div>
+       </div>
+@@ -680,7 +792,26 @@ async function loadDebug() {
+     ["Загружен в БД", debugBoolBadge(cat.synced === true)],
+     cat.synced ? ["Синхронизирован", debugBoolBadge(cat.in_sync === true)] : undefined,
+     cat.synced ? ["SHA-256 (нач.)", `<code class="small">${escapeHtml(cat.synced_sha256 ?? "—")}</code>`] : undefined,
++    cat.last_load ? ["Последняя загрузка", escapeHtml(`строк в файле: ${cat.last_load.total_data_rows}, загружено: ${cat.last_load.inserted}`)] : undefined,
+   ].filter(Boolean)));
++  if (cat.last_load?.unrecognized_columns?.length) {
++    cards.push(renderDebugCard("⚠ Колонки CSV, которые сайт не читает", [
++      ["Колонки", cat.last_load.unrecognized_columns.map((c) => `<code class="small">${escapeHtml(c)}</code>`).join(", ")],
++      ["Что это значит", "Эти заголовки есть в файле, но программа не знает, куда их положить — данные из них нигде не отображаются (ни на сайте, ни в PDF). Нужно либо переименовать в уже известный заголовок, либо попросить разработчика добавить сопоставление."],
++    ]));
++  }
++  if (cat.last_load?.error_rows?.length) {
++    cards.push(renderDebugCard("⚠ Строки CSV с ошибками загрузки", [
++      ["Строк", String(cat.last_load.error_rows.length)],
++      ["Примеры", cat.last_load.error_rows.slice(0, 10).map((r) => `<div>№${r.row} (${escapeHtml(r.number || "?")}): ${escapeHtml(r.error)}</div>`).join("")],
++    ]));
++  }
++  if (cat.last_load?.skipped_rows?.length) {
++    cards.push(renderDebugCard("Строки CSV, пропущенные при загрузке", [
++      ["Строк", String(cat.last_load.skipped_rows.length)],
++      ["Примеры", cat.last_load.skipped_rows.slice(0, 10).map((r) => `<div>№${r.row} (${escapeHtml(r.number || "?")}): ${escapeHtml(r.reason)}</div>`).join("")],
++    ]));
++  }
+ 
+   const idx = d.search_index || {};
+   cards.push(renderDebugCard("Поисковый индекс", idx.error ? [
+@@ -704,6 +835,20 @@ async function loadDebug() {
+     ["CORS origins", `<code class="small">${escapeHtml((sec.cors_origins || []).join(", ") || "—")}</code>`],
+   ]));
+ 
++  const res = d.resources || {};
++  const proc = res.process || {};
++  const sys = res.system || {};
++  cards.push(renderDebugCard("Нагрузка (процесс/система)", res.error ? [
++    ["Ошибка", escapeHtml(res.error)],
++  ] : [
++    ["CPU процесса", escapeHtml(`${proc.cpu_percent ?? "—"}%`)],
++    ["Память процесса (RSS)", escapeHtml(`${proc.rss_mb ?? "—"} МБ`)],
++    ["Потоков", escapeHtml(proc.threads ?? "—")],
++    ["CPU системы", escapeHtml(`${sys.cpu_percent ?? "—"}% из ${sys.cpu_count ?? "—"} ядер`)],
++    ["Память системы", escapeHtml(`${sys.memory_used_percent ?? "—"}% из ${sys.memory_total_mb ?? "—"} МБ`)],
++    ["Диск занят", escapeHtml(`${sys.disk_used_percent ?? "—"}%`)],
++  ]));
++
+   content.innerHTML = cards.join("");
+   drawPendingBloomCanvases();
+ 
+@@ -720,6 +865,25 @@ async function loadDebug() {
+     }
+   }
+ 
++  const csvAlertEl = $("#debugCsvAlert");
++  if (csvAlertEl) {
++    const csvProblems = [];
++    if (cat.last_load?.unrecognized_columns?.length) {
++      csvProblems.push(`не читаются колонки: ${cat.last_load.unrecognized_columns.join(", ")}`);
++    }
++    if (cat.last_load?.error_rows?.length) {
++      csvProblems.push(`${cat.last_load.error_rows.length} строк с ошибками`);
++    }
++    if (csvProblems.length) {
++      csvAlertEl.textContent = `⚠ CSV: ${csvProblems.join("; ")}. Подробности — в карточках ниже.`;
++      csvAlertEl.classList.remove("d-none");
++    } else {
++      csvAlertEl.classList.add("d-none");
++    }
++  }
++
++  renderConsoleLogBuffer();
++
+   const meta = $("#debugMeta");
+   if (meta) meta.textContent = `Обновлено: ${new Date().toLocaleTimeString("ru-RU")}`;
+ }
+diff --git a/frontend/apple-touch-icon.png b/frontend/apple-touch-icon.png
+new file mode 100644
+index 0000000000000000000000000000000000000000..f3115f4715e56bd74b648907708aeb860b8cd4cd
+GIT binary patch
+literal 31742
+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%0Agk)VvrE<
+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
+
+literal 0
+HcmV?d00001
+
+diff --git a/frontend/auth.html b/frontend/auth.html
+index f7bbee7..2d3fd28 100644
+--- a/frontend/auth.html
++++ b/frontend/auth.html
+@@ -4,6 +4,10 @@
+     <meta charset="utf-8" />
+     <meta name="viewport" content="width=device-width, initial-scale=1" />
+     <title>Вход и регистрация — VENTSEARCH</title>
++    <link rel="icon" type="image/x-icon" href="favicon.ico">
++    <link rel="icon" type="image/png" sizes="32x32" href="favicon-32x32.png">
++    <link rel="icon" type="image/png" sizes="16x16" href="favicon-16x16.png">
++    <link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png">
+     <link
+       href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css"
+       rel="stylesheet"
+diff --git a/frontend/compare.html b/frontend/compare.html
+index 2a52593..bcbf07d 100644
+--- a/frontend/compare.html
++++ b/frontend/compare.html
+@@ -4,6 +4,10 @@
+     <meta charset="utf-8" />
+     <meta name="viewport" content="width=device-width, initial-scale=1" />
+     <title>Сравнение моделей — VENTSEARCH</title>
++    <link rel="icon" type="image/x-icon" href="favicon.ico">
++    <link rel="icon" type="image/png" sizes="32x32" href="favicon-32x32.png">
++    <link rel="icon" type="image/png" sizes="16x16" href="favicon-16x16.png">
++    <link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png">
+     <link
+       href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css"
+       rel="stylesheet"
+@@ -131,7 +135,7 @@
+             <div class="card-header bg-white border-bottom-0 pt-4 px-4 pb-0">
+               <h2 class="h5 fw-bold mb-0">Аэродинамика (Q–P)</h2>
+             </div>
+-            <div class="card-body p-4">
++            <div class="card-body p-4" data-demo-guard>
+               <div class="chart-canvas-wrap bg-light rounded-4 p-3 border h-100" style="min-height: 480px;">
+                 <div id="qpChart" style="height: 100%; width: 100%; min-height: 450px;"></div>
+               </div>
+@@ -145,7 +149,7 @@
+               <h2 class="h5 fw-bold mb-0">Сводная таблица параметров</h2>
+               <span class="badge bg-success bg-opacity-10 text-success px-3 py-2" style="font-size: 0.85rem;">Зелёным выделен лучший показатель</span>
+             </div>
+-            <div class="card-body p-0 mt-3">
++            <div class="card-body p-0 mt-3" data-demo-guard>
+               <div class="table-responsive">
+                 <table class="table table-hover align-middle compare-table mb-0 bg-white">
+                   <thead id="compareTableHead" class="bg-light text-secondary"></thead>
+diff --git a/frontend/delivery.html b/frontend/delivery.html
+index 28b7575..a23af12 100644
+--- a/frontend/delivery.html
++++ b/frontend/delivery.html
+@@ -4,6 +4,10 @@
+     <meta charset="utf-8" />
+     <meta name="viewport" content="width=device-width, initial-scale=1" />
+     <title>Доставка — VENTSEARCH</title>
++    <link rel="icon" type="image/x-icon" href="favicon.ico">
++    <link rel="icon" type="image/png" sizes="32x32" href="favicon-32x32.png">
++    <link rel="icon" type="image/png" sizes="16x16" href="favicon-16x16.png">
++    <link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png">
+     <link
+       href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css"
+       rel="stylesheet"
+diff --git a/frontend/favicon-16x16.png b/frontend/favicon-16x16.png
+new file mode 100644
+index 0000000000000000000000000000000000000000..754b5c9ac679346311e2a0e8ae8e820d1e77e635
+GIT binary patch
+literal 887
+zcmV--1Bm>IP)<h;3K|Lk000e1NJLTq000mG000mO1^@s6AM^iV0009%Nkl<Zc${5R
+zT}+c_7(LJX_M;_G1QaqHvWlRF%`JnuWh!HdGa45(Dy`F`b{G?vxXs^0mu(@L$*znE
+z+b-P2F2sbyA}UVPsL59Rfq=Hd_)EaB3<QyamHyK2d%tHF6(OFR=jwTK&Uwxu005W(
+z!4iz@-JOn@vez1hDgz+~rLLo?(gy%=dL>$13bR1zWq_GLbv-}9rqu$*L#gSHl_D!N
+z+cF}uvmV=zrsdtQ9}#f22(Qy6sJ7Gljr+YH1{+KD%LfXZIgXgjv;%tdH&*HwBFhDM
+z0;|#DQfOfDih=}y^*6r%&d1EmQ_Re(j)j=&2iS5T#^ec{1^~FbJ|<7F56)`^Y1V1x
+zLRI;S97}TcY%Y&<gcG3A7rJ?)XDG#nu8h#5Hk_>53II6uQ75x`7PicN05NL(GVQ_k
+z?n7_n$-<|@sm$sX<zM>`%{A5?8;~R8rYg2ie0Jr&tmf>zN={51hZ*^oguRJReXtr}
+z0K@_s%AP)&=t5TJ+t=@f@!^lXV(*%{w0x08l$R8pH?6rxrDoeiGUFoHlprMFzM2mZ
+z155%5=sUkyv}*ButpKKhz?~@l?jJ|rGecA?u;;E{M#>l-(WNbGjuf`{0Tn^gqRo8a
+zzu293mn_(K>0tRg6@|(uU1-CWs$6WW%)x2@7@yejrr2LMUo%F-5v$Or0FecZjipT_
+z2FhBCmmYcWoLQw}iDZP?i2n5;YGCU>jN04$>(w!4X7=@jBYT=d{rJ4&s04tTzb&)g
+zc=PAOt>ethZLQrCPiWTw!xc2KIml;jg_)W4(KvJQxA#L0fFJ<VSs*yQvUm^~!xc;0
+zi?YS#C*4CQOIA1<7Z+I9Y+sqf_0{>})(|Y)8vB!v2VdN_%(457-j3sFuTP?Z1-;U;
+z;k+IBrGJo)3{Oo?-lmmreKKX3XbVi@OvkgnseuuXR+8n==T$W$boWn0d+X5RO3_T2
+zhzS7K2Wya&YZ2G;pd*e%stc2MFN(nKxass}!0Kqkyo#?7?mq{9zH?Tum}YdPy|KKU
+zG~L9P@r65h0(&P}xH}ILUPt=KOj-PXp#4)d9UMR~z`&QmUC<+!{s+oNh6s$&D6;?n
+N002ovPDHLkV1oY{wLt&?
+
+literal 0
+HcmV?d00001
+
+diff --git a/frontend/favicon-32x32.png b/frontend/favicon-32x32.png
+new file mode 100644
+index 0000000000000000000000000000000000000000..348a62357681afba3f51a6f49e5e57d7a2e9250e
+GIT binary patch
+literal 2517
+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
+
+literal 0
+HcmV?d00001
+
+diff --git a/frontend/favicon.ico b/frontend/favicon.ico
+new file mode 100644
+index 0000000000000000000000000000000000000000..c0326ed660d42ae61e2d39fa2977d8f80e3dfc14
+GIT binary patch
+literal 7975
+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
+jHM-I!P!PGpM^8E%wc&^Ef1kjS{e@7!%0AftzohwpWIz2r
+
+literal 0
+HcmV?d00001
+
+diff --git a/frontend/index.html b/frontend/index.html
+index 6eaf05e..f57053a 100644
+--- a/frontend/index.html
++++ b/frontend/index.html
+@@ -4,6 +4,10 @@
+     <meta charset="utf-8" />
+     <meta name="viewport" content="width=device-width, initial-scale=1" />
+     <title>VENTSEARCH — каталог промышленных вентиляторов</title>
++    <link rel="icon" type="image/x-icon" href="favicon.ico">
++    <link rel="icon" type="image/png" sizes="32x32" href="favicon-32x32.png">
++    <link rel="icon" type="image/png" sizes="16x16" href="favicon-16x16.png">
++    <link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png">
+     <link
+       href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css"
+       rel="stylesheet"
+@@ -281,7 +285,9 @@
+           </div>
+ 
+           <div id="loading" class="py-4 text-center text-secondary">Загрузка каталога...</div>
+-          <div id="productsGrid" class="row g-3"></div>
++          <div data-demo-guard style="min-height: 200px;">
++            <div id="productsGrid" class="row g-3"></div>
++          </div>
+ 
+           <nav
+             id="paginationNav"
+diff --git a/frontend/product.html b/frontend/product.html
+index 4ee63d7..f9a6c02 100644
+--- a/frontend/product.html
++++ b/frontend/product.html
+@@ -4,6 +4,10 @@
+     <meta charset="utf-8" />
+     <meta name="viewport" content="width=device-width, initial-scale=1" />
+     <title>Карточка вентилятора — VENTSEARCH</title>
++    <link rel="icon" type="image/x-icon" href="favicon.ico">
++    <link rel="icon" type="image/png" sizes="32x32" href="favicon-32x32.png">
++    <link rel="icon" type="image/png" sizes="16x16" href="favicon-16x16.png">
++    <link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png">
+     <link
+       href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css"
+       rel="stylesheet"
+@@ -146,7 +150,7 @@
+             <div class="card shadow-sm border-0 mt-4" style="border-radius: 20px;">
+               <div class="card-body p-4">
+                 <h2 class="h6 fw-bold mb-2">Характеристики</h2>
+-                <div class="table-responsive">
++                <div class="table-responsive" data-demo-guard>
+                   <table class="table table-sm align-middle mb-0" style="width: 100%;">
+                     <tbody id="specTableBody"></tbody>
+                   </table>
+@@ -168,7 +172,7 @@
+                     <button id="exportProductPdfBtn" type="button" class="btn btn-danger btn-sm text-nowrap">Скачать PDF</button>
+                   </div>
+                 </div>
+-                <div class="product-chart-wrap flex-grow-1" style="min-height: 460px;">
++                <div class="product-chart-wrap flex-grow-1" style="min-height: 460px;" data-demo-guard>
+                   <div id="productQpChart" style="height: 100%; width: 100%; min-height: 460px;"></div>
+                 </div>
+                 <div id="productCompareMeta" class="small text-secondary mt-2 text-center"></div>
+diff --git a/frontend/project.html b/frontend/project.html
+index 81c24ab..e5050e0 100644
+--- a/frontend/project.html
++++ b/frontend/project.html
+@@ -4,6 +4,10 @@
+     <meta charset="utf-8" />
+     <meta name="viewport" content="width=device-width, initial-scale=1" />
+     <title>Личный кабинет — VENTSEARCH</title>
++    <link rel="icon" type="image/x-icon" href="favicon.ico">
++    <link rel="icon" type="image/png" sizes="32x32" href="favicon-32x32.png">
++    <link rel="icon" type="image/png" sizes="16x16" href="favicon-16x16.png">
++    <link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png">
+     <link
+       href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css"
+       rel="stylesheet"
+diff --git a/frontend/script.js b/frontend/script.js
+index cce31eb..21bc11d 100644
+--- a/frontend/script.js
++++ b/frontend/script.js
+@@ -21,6 +21,37 @@ function apiUrl(path) {
+   return base ? `${base}${p}` : p;
+ }
+ 
++// navigator.clipboard.writeText требует secure context (HTTPS или localhost) —
++// по локальной сети через http://192.168.x.x браузер её не даёт, и copy
++// молча ничего не делает. Запасной вариант — document.execCommand('copy')
++// через скрытый textarea, он работает и без HTTPS. Возвращает true/false.
++async function copyTextToClipboard(text) {
++  if (navigator.clipboard?.writeText) {
++    try {
++      await navigator.clipboard.writeText(text);
++      return true;
++    } catch (err) {
++      console.warn("navigator.clipboard.writeText недоступен, пробуем execCommand", err);
++    }
++  }
++  try {
++    const ta = document.createElement("textarea");
++    ta.value = text;
++    ta.style.position = "fixed";
++    ta.style.opacity = "0";
++    ta.style.left = "-9999px";
++    document.body.appendChild(ta);
++    ta.focus();
++    ta.select();
++    const ok = document.execCommand("copy");
++    document.body.removeChild(ta);
++    return ok;
++  } catch (err) {
++    console.warn("execCommand('copy') не сработал", err);
++    return false;
++  }
++}
++
+ const FAN_IMAGES_BY_MODEL = {
+   // "вкоп-30-160-050-3": "vkop-30-160-050-3.jpg",
+ };
+@@ -347,9 +378,20 @@ const AXIAL_HUMP = 0.50;
+ // Оцифрованные реальные формы кривых (ВО 13-284, каталог производителя) — точки
+ // (q_frac, p_frac) в [0,1]x[0,1] по числу лопастей/углу установки. Синхронизировано
+ // с backend/domain/services/qp_shapes_vo13284.json — при обновлении менять оба места.
+-const QP_DIGITIZED_SHAPES = {"4":{"15":[[0.0,1.0],[0.05,0.9775],[0.1,0.9597],[0.15,0.9377],[0.2,0.9204],[0.25,0.8925],[0.3,0.8629],[0.35,0.8279],[0.4,0.788],[0.45,0.7429],[0.5,0.6935],[0.55,0.6386],[0.6,0.5801],[0.65,0.5124],[0.7,0.4419],[0.75,0.3691],[0.8,0.2889],[0.85,0.2076],[0.9,0.1311],[0.95,0.0596],[1.0,0.0]],"20":[[0.0,1.0],[0.05,0.9768],[0.1,0.9539],[0.15,0.9312],[0.2,0.9032],[0.25,0.8786],[0.3,0.8473],[0.35,0.8105],[0.4,0.7735],[0.45,0.7278],[0.5,0.6845],[0.55,0.6322],[0.6,0.5736],[0.65,0.5141],[0.7,0.4472],[0.75,0.3814],[0.8,0.3045],[0.85,0.2278],[0.9,0.1457],[0.95,0.0658],[1.0,0.0]],"25":[[0.0,1.0],[0.05,0.9833],[0.1,0.9585],[0.15,0.942],[0.2,0.9174],[0.25,0.8978],[0.3,0.8768],[0.35,0.8449],[0.4,0.8108],[0.45,0.7737],[0.5,0.7278],[0.55,0.6764],[0.6,0.6225],[0.65,0.5555],[0.7,0.4784],[0.75,0.3984],[0.8,0.3099],[0.85,0.2265],[0.9,0.1405],[0.95,0.0661],[1.0,0.0]],"30":[[0.0,1.0],[0.05,0.9826],[0.1,0.9652],[0.15,0.9478],[0.2,0.9305],[0.25,0.9133],[0.3,0.9034],[0.35,0.8789],[0.4,0.8447],[0.45,0.8107],[0.5,0.7769],[0.55,0.7097],[0.6,0.6624],[0.65,0.5932],[0.7,0.5101],[0.75,0.4135],[0.8,0.321],[0.85,0.2441],[0.9,0.1659],[0.95,0.0748],[1.0,0.0]]},"6":{"15":[[0.0,1.0],[0.05,0.986],[0.1,0.9721],[0.15,0.9538],[0.2,0.9268],[0.25,0.9046],[0.3,0.8671],[0.35,0.8273],[0.4,0.786],[0.45,0.7357],[0.5,0.6833],[0.55,0.6254],[0.6,0.5663],[0.65,0.5032],[0.7,0.4367],[0.75,0.3668],[0.8,0.2959],[0.85,0.218],[0.9,0.1435],[0.95,0.0671],[1.0,0.0]],"20":[[0.0,1.0],[0.05,0.989],[0.1,0.9836],[0.15,0.9727],[0.2,0.9565],[0.25,0.9399],[0.3,0.9139],[0.35,0.8868],[0.4,0.8563],[0.45,0.8118],[0.5,0.7638],[0.55,0.7154],[0.6,0.6579],[0.65,0.5886],[0.7,0.519],[0.75,0.4394],[0.8,0.3548],[0.85,0.2588],[0.9,0.1533],[0.95,0.0531],[1.0,0.0]],"25":[[0.0,1.0],[0.05,0.8873],[0.1,0.8655],[0.15,0.845],[0.2,0.8272],[0.25,0.8034],[0.3,0.7754],[0.35,0.7503],[0.4,0.7176],[0.45,0.6856],[0.5,0.6461],[0.55,0.5992],[0.6,0.5565],[0.65,0.5059],[0.7,0.4488],[0.75,0.3848],[0.8,0.312],[0.85,0.2361],[0.9,0.1657],[0.95,0.0952],[1.0,0.0]],"30":[[0.0,1.0],[0.05,0.9799],[0.1,0.9599],[0.15,0.94],[0.2,0.9106],[0.25,0.8811],[0.3,0.852],[0.35,0.8137],[0.4,0.7663],[0.45,0.7196],[0.5,0.6682],[0.55,0.6067],[0.6,0.5309],[0.65,0.4711],[0.7,0.3945],[0.75,0.314],[0.8,0.2211],[0.85,0.1475],[0.9,0.0581],[0.95,0.0873],[1.0,0.0]]},"8":{"20":[[0.0,1.0],[0.05,0.9215],[0.1,0.9125],[0.15,0.8932],[0.2,0.8725],[0.25,0.8463],[0.3,0.8205],[0.35,0.785],[0.4,0.7455],[0.45,0.6976],[0.5,0.6573],[0.55,0.6122],[0.6,0.553],[0.65,0.4968],[0.7,0.4305],[0.75,0.3654],[0.8,0.2969],[0.85,0.2254],[0.9,0.1533],[0.95,0.0723],[1.0,0.0]],"25":[[0.0,1.0],[0.05,0.9779],[0.1,0.9571],[0.15,0.936],[0.2,0.9099],[0.25,0.8841],[0.3,0.8536],[0.35,0.8186],[0.4,0.7794],[0.45,0.7353],[0.5,0.6848],[0.55,0.6333],[0.6,0.5849],[0.65,0.5216],[0.7,0.464],[0.75,0.3958],[0.8,0.3332],[0.85,0.2613],[0.9,0.1784],[0.95,0.1021],[1.0,0.0]],"30":[[0.0,1.0],[0.05,0.9771],[0.1,0.961],[0.15,0.9456],[0.2,0.9226],[0.25,0.8997],[0.3,0.862],[0.35,0.8219],[0.4,0.7749],[0.45,0.7201],[0.5,0.6665],[0.55,0.5961],[0.6,0.53],[0.65,0.4618],[0.7,0.3973],[0.75,0.3267],[0.8,0.253],[0.85,0.1853],[0.9,0.1258],[0.95,0.0589],[1.0,0.0]]},"10":{"20":[[0.0,1.0],[0.05,0.9768],[0.1,0.954],[0.15,0.9366],[0.2,0.9069],[0.25,0.8781],[0.3,0.835],[0.35,0.796],[0.4,0.7473],[0.45,0.699],[0.5,0.6365],[0.55,0.5773],[0.6,0.5129],[0.65,0.4365],[0.7,0.3629],[0.75,0.2895],[0.8,0.2093],[0.85,0.1262],[0.9,0.0439],[0.95,0.0324],[1.0,0.0]],"25":[[0.0,1.0],[0.05,0.968],[0.1,0.9365],[0.15,0.9055],[0.2,0.8699],[0.25,0.8312],[0.3,0.7957],[0.35,0.7573],[0.4,0.7149],[0.45,0.667],[0.5,0.6162],[0.55,0.5609],[0.6,0.5035],[0.65,0.4439],[0.7,0.3782],[0.75,0.3069],[0.8,0.2337],[0.85,0.1554],[0.9,0.0809],[0.95,0.0517],[1.0,0.0]],"30":[[0.0,1.0],[0.05,0.8671],[0.1,0.8484],[0.15,0.8254],[0.2,0.8018],[0.25,0.7684],[0.3,0.7372],[0.35,0.6965],[0.4,0.656],[0.45,0.6151],[0.5,0.5604],[0.55,0.5061],[0.6,0.4446],[0.65,0.3909],[0.7,0.3345],[0.75,0.2764],[0.8,0.2223],[0.85,0.1672],[0.9,0.1161],[0.95,0.0523],[1.0,0.0]]},"12к":{"25":[[0.0,1.0],[0.05,0.9904],[0.1,0.9856],[0.15,0.9808],[0.2,0.9713],[0.25,0.9619],[0.3,0.941],[0.35,0.9114],[0.4,0.8747],[0.45,0.8352],[0.5,0.784],[0.55,0.7275],[0.6,0.6711],[0.65,0.6041],[0.7,0.5356],[0.75,0.4596],[0.8,0.381],[0.85,0.2937],[0.9,0.1999],[0.95,0.1003],[1.0,0.0]],"30":[[0.0,1.0],[0.05,0.9819],[0.1,0.9759],[0.15,0.964],[0.2,0.9462],[0.25,0.9281],[0.3,0.9004],[0.35,0.8595],[0.4,0.8188],[0.45,0.7712],[0.5,0.7123],[0.55,0.6544],[0.6,0.5866],[0.65,0.5164],[0.7,0.4428],[0.75,0.3656],[0.8,0.2894],[0.85,0.2109],[0.9,0.1358],[0.95,0.0602],[1.0,0.0]],"35":[[0.0,1.0],[0.05,0.9806],[0.1,0.9608],[0.15,0.9424],[0.2,0.9236],[0.25,0.8987],[0.3,0.8679],[0.35,0.8249],[0.4,0.7842],[0.45,0.7379],[0.5,0.69],[0.55,0.6316],[0.6,0.5768],[0.65,0.5183],[0.7,0.4573],[0.75,0.3884],[0.8,0.3105],[0.85,0.2245],[0.9,0.1364],[0.95,0.0777],[1.0,0.0]],"40":[[0.0,1.0],[0.05,0.791],[0.1,0.7602],[0.15,0.745],[0.2,0.7298],[0.25,0.7222],[0.3,0.6997],[0.35,0.6804],[0.4,0.6552],[0.45,0.6311],[0.5,0.5982],[0.55,0.5671],[0.6,0.5237],[0.65,0.4779],[0.7,0.4212],[0.75,0.3579],[0.8,0.2828],[0.85,0.2104],[0.9,0.136],[0.95,0.0662],[1.0,0.0]],"45":[[0.0,1.0],[0.05,0.9857],[0.1,0.9857],[0.15,0.9572],[0.2,0.9572],[0.25,0.9289],[0.3,0.894],[0.35,0.8589],[0.4,0.8174],[0.45,0.7584],[0.5,0.6949],[0.55,0.6282],[0.6,0.5621],[0.65,0.4929],[0.7,0.4211],[0.75,0.349],[0.8,0.2772],[0.85,0.1992],[0.9,0.1329],[0.95,0.0654],[1.0,0.0]]}};
++const QP_DIGITIZED_SHAPES = {"4":{"15":[[0.0,1.0],[0.05,0.9775],[0.1,0.9597],[0.15,0.9377],[0.2,0.9204],[0.25,0.8925],[0.3,0.8629],[0.35,0.8279],[0.4,0.788],[0.45,0.7429],[0.5,0.6935],[0.55,0.6386],[0.6,0.5801],[0.65,0.5124],[0.7,0.4419],[0.75,0.3691],[0.8,0.2889],[0.85,0.2076],[0.9,0.1311],[0.95,0.0596],[1.0,0.0]],"20":[[0.0,1.0],[0.05,0.9768],[0.1,0.9539],[0.15,0.9312],[0.2,0.9032],[0.25,0.8786],[0.3,0.8473],[0.35,0.8105],[0.4,0.7735],[0.45,0.7278],[0.5,0.6845],[0.55,0.6322],[0.6,0.5736],[0.65,0.5141],[0.7,0.4472],[0.75,0.3814],[0.8,0.3045],[0.85,0.2278],[0.9,0.1457],[0.95,0.0658],[1.0,0.0]],"25":[[0.0,1.0],[0.05,0.9833],[0.1,0.9585],[0.15,0.942],[0.2,0.9174],[0.25,0.8978],[0.3,0.8768],[0.35,0.8449],[0.4,0.8108],[0.45,0.7737],[0.5,0.7278],[0.55,0.6764],[0.6,0.6225],[0.65,0.5555],[0.7,0.4784],[0.75,0.3984],[0.8,0.3099],[0.85,0.2265],[0.9,0.1405],[0.95,0.0661],[1.0,0.0]],"30":[[0.0,1.0],[0.05,0.9826],[0.1,0.9652],[0.15,0.9478],[0.2,0.9305],[0.25,0.9133],[0.3,0.9034],[0.35,0.8789],[0.4,0.8447],[0.45,0.8107],[0.5,0.7769],[0.55,0.7097],[0.6,0.6624],[0.65,0.5932],[0.7,0.5101],[0.75,0.4135],[0.8,0.321],[0.85,0.2441],[0.9,0.1659],[0.95,0.0748],[1.0,0.0]]},"6":{"15":[[0.0,1.0],[0.05,0.986],[0.1,0.9721],[0.15,0.9538],[0.2,0.9268],[0.25,0.9046],[0.3,0.8671],[0.35,0.8273],[0.4,0.786],[0.45,0.7357],[0.5,0.6833],[0.55,0.6254],[0.6,0.5663],[0.65,0.5032],[0.7,0.4367],[0.75,0.3668],[0.8,0.2959],[0.85,0.218],[0.9,0.1435],[0.95,0.0671],[1.0,0.0]],"20":[[0.0,1.0],[0.05,0.989],[0.1,0.9836],[0.15,0.9727],[0.2,0.9565],[0.25,0.9399],[0.3,0.9139],[0.35,0.8868],[0.4,0.8563],[0.45,0.8118],[0.5,0.7638],[0.55,0.7154],[0.6,0.6579],[0.65,0.5886],[0.7,0.519],[0.75,0.4394],[0.8,0.3548],[0.85,0.2588],[0.9,0.1533],[0.95,0.0531],[1.0,0.0]],"25":[[0.0,1.0],[0.05,0.8873],[0.1,0.8655],[0.15,0.845],[0.2,0.8272],[0.25,0.8034],[0.3,0.7754],[0.35,0.7503],[0.4,0.7176],[0.45,0.6856],[0.5,0.6461],[0.55,0.5992],[0.6,0.5565],[0.65,0.5059],[0.7,0.4488],[0.75,0.3848],[0.8,0.312],[0.85,0.2361],[0.9,0.1657],[0.95,0.0952],[1.0,0.0]],"30":[[0.0,1.0],[0.05,0.9799],[0.1,0.9599],[0.15,0.94],[0.2,0.9106],[0.25,0.8811],[0.3,0.852],[0.35,0.8137],[0.4,0.7663],[0.45,0.7196],[0.5,0.6682],[0.55,0.6067],[0.6,0.5309],[0.65,0.4711],[0.7,0.3945],[0.75,0.314],[0.8,0.2211],[0.85,0.1475],[0.9,0.0581],[0.95,0.0581],[1.0,0.0]]},"8":{"20":[[0.0,1.0],[0.05,0.9215],[0.1,0.9125],[0.15,0.8932],[0.2,0.8725],[0.25,0.8463],[0.3,0.8205],[0.35,0.785],[0.4,0.7455],[0.45,0.6976],[0.5,0.6573],[0.55,0.6122],[0.6,0.553],[0.65,0.4968],[0.7,0.4305],[0.75,0.3654],[0.8,0.2969],[0.85,0.2254],[0.9,0.1533],[0.95,0.0723],[1.0,0.0]],"25":[[0.0,1.0],[0.05,0.9779],[0.1,0.9571],[0.15,0.936],[0.2,0.9099],[0.25,0.8841],[0.3,0.8536],[0.35,0.8186],[0.4,0.7794],[0.45,0.7353],[0.5,0.6848],[0.55,0.6333],[0.6,0.5849],[0.65,0.5216],[0.7,0.464],[0.75,0.3958],[0.8,0.3332],[0.85,0.2613],[0.9,0.1784],[0.95,0.1021],[1.0,0.0]],"30":[[0.0,1.0],[0.05,0.9771],[0.1,0.961],[0.15,0.9456],[0.2,0.9226],[0.25,0.8997],[0.3,0.862],[0.35,0.8219],[0.4,0.7749],[0.45,0.7201],[0.5,0.6665],[0.55,0.5961],[0.6,0.53],[0.65,0.4618],[0.7,0.3973],[0.75,0.3267],[0.8,0.253],[0.85,0.1853],[0.9,0.1258],[0.95,0.0589],[1.0,0.0]]},"10":{"20":[[0.0,1.0],[0.05,0.9768],[0.1,0.954],[0.15,0.9366],[0.2,0.9069],[0.25,0.8781],[0.3,0.835],[0.35,0.796],[0.4,0.7473],[0.45,0.699],[0.5,0.6365],[0.55,0.5773],[0.6,0.5129],[0.65,0.4365],[0.7,0.3629],[0.75,0.2895],[0.8,0.2093],[0.85,0.1262],[0.9,0.0439],[0.95,0.0324],[1.0,0.0]],"25":[[0.0,1.0],[0.05,0.968],[0.1,0.9365],[0.15,0.9055],[0.2,0.8699],[0.25,0.8312],[0.3,0.7957],[0.35,0.7573],[0.4,0.7149],[0.45,0.667],[0.5,0.6162],[0.55,0.5609],[0.6,0.5035],[0.65,0.4439],[0.7,0.3782],[0.75,0.3069],[0.8,0.2337],[0.85,0.1554],[0.9,0.0809],[0.95,0.0517],[1.0,0.0]],"30":[[0.0,1.0],[0.05,0.8671],[0.1,0.8484],[0.15,0.8254],[0.2,0.8018],[0.25,0.7684],[0.3,0.7372],[0.35,0.6965],[0.4,0.656],[0.45,0.6151],[0.5,0.5604],[0.55,0.5061],[0.6,0.4446],[0.65,0.3909],[0.7,0.3345],[0.75,0.2764],[0.8,0.2223],[0.85,0.1672],[0.9,0.1161],[0.95,0.0523],[1.0,0.0]]},"12к":{"25":[[0.0,1.0],[0.05,0.9904],[0.1,0.9856],[0.15,0.9808],[0.2,0.9713],[0.25,0.9619],[0.3,0.941],[0.35,0.9114],[0.4,0.8747],[0.45,0.8352],[0.5,0.784],[0.55,0.7275],[0.6,0.6711],[0.65,0.6041],[0.7,0.5356],[0.75,0.4596],[0.8,0.381],[0.85,0.2937],[0.9,0.1999],[0.95,0.1003],[1.0,0.0]],"30":[[0.0,1.0],[0.05,0.9819],[0.1,0.9759],[0.15,0.964],[0.2,0.9462],[0.25,0.9281],[0.3,0.9004],[0.35,0.8595],[0.4,0.8188],[0.45,0.7712],[0.5,0.7123],[0.55,0.6544],[0.6,0.5866],[0.65,0.5164],[0.7,0.4428],[0.75,0.3656],[0.8,0.2894],[0.85,0.2109],[0.9,0.1358],[0.95,0.0602],[1.0,0.0]],"35":[[0.0,1.0],[0.05,0.9806],[0.1,0.9608],[0.15,0.9424],[0.2,0.9236],[0.25,0.8987],[0.3,0.8679],[0.35,0.8249],[0.4,0.7842],[0.45,0.7379],[0.5,0.69],[0.55,0.6316],[0.6,0.5768],[0.65,0.5183],[0.7,0.4573],[0.75,0.3884],[0.8,0.3105],[0.85,0.2245],[0.9,0.1364],[0.95,0.0777],[1.0,0.0]],"40":[[0.0,1.0],[0.05,0.791],[0.1,0.7602],[0.15,0.745],[0.2,0.7298],[0.25,0.7222],[0.3,0.6997],[0.35,0.6804],[0.4,0.6552],[0.45,0.6311],[0.5,0.5982],[0.55,0.5671],[0.6,0.5237],[0.65,0.4779],[0.7,0.4212],[0.75,0.3579],[0.8,0.2828],[0.85,0.2104],[0.9,0.136],[0.95,0.0662],[1.0,0.0]],"45":[[0.0,1.0],[0.05,0.9857],[0.1,0.9857],[0.15,0.9572],[0.2,0.9572],[0.25,0.9289],[0.3,0.894],[0.35,0.8589],[0.4,0.8174],[0.45,0.7584],[0.5,0.6949],[0.55,0.6282],[0.6,0.5621],[0.65,0.4929],[0.7,0.4211],[0.75,0.349],[0.8,0.2772],[0.85,0.1992],[0.9,0.1329],[0.95,0.0654],[1.0,0.0]]}};
+ const QP_MODEL_BLADE_ANGLE_RE = /(\d+к?)\/(\d+)°/;
+ 
++// Гарантирует, что p_frac не возрастает по мере роста q_frac (см.
++// _enforce_monotonic_decreasing в qp_service.py) — прижимает случайные
++// всплески трассировки к предыдущему значению вместо колебания на графике.
++function enforceMonotonicDecreasing(points) {
++  const cleaned = points.map((p) => [p[0], p[1]]);
++  for (let i = 1; i < cleaned.length; i += 1) {
++    if (cleaned[i][1] > cleaned[i - 1][1]) cleaned[i][1] = cleaned[i - 1][1];
++  }
++  return cleaned;
++}
++
+ // Найти оцифрованную форму кривой по модели («ВО 13-284-6/20°-...» → лопасти
+ // «6», угол «20»). null — если данных нет (используется параметрическая кривая).
+ function shapePointsForModel(model) {
+@@ -358,7 +400,8 @@ function shapePointsForModel(model) {
+   if (!m) return null;
+   const bladeGroup = QP_DIGITIZED_SHAPES[m[1]];
+   if (!bladeGroup) return null;
+-  return bladeGroup[m[2]] || null;
++  const points = bladeGroup[m[2]];
++  return points ? enforceMonotonicDecreasing(points) : null;
+ }
+ 
+ // Кусочно-линейная интерполяция по возрастающей сетке xs.
+@@ -1475,10 +1518,11 @@ async function initCatalogPage() {
+         return;
+       }
+       const first = urls[0];
+-      if (navigator.clipboard?.writeText) {
+-        await navigator.clipboard.writeText(first);
+-      }
+-      const text = `Ссылка скопирована в буфер обмена:\n${first}\n\nДополнительно:\n${urls.join("\n")}`;
++      const copied = await copyTextToClipboard(first);
++      const status = copied
++        ? "Ссылка скопирована в буфер обмена:"
++        : "Не удалось скопировать автоматически (браузер блокирует буфер обмена вне HTTPS/localhost) — скопируйте вручную:";
++      const text = `${status}\n${first}\n\nДополнительно:\n${urls.join("\n")}`;
+       window.alert(text);
+     } catch (err) {
+       console.error(err);
+@@ -2174,7 +2218,33 @@ async function initProjectPage() {
+   await reloadProject();
+ }
+ 
++// Инсайдерский/демо-режим (DEMO_MODE на бэкенде, см. /api/health): каталожные
++// данные визуально скрыты для показа интерфейса внешним людям без раскрытия
++// реальных цен/характеристик. Помечаем элементы атрибутом data-demo-guard.
++async function applyDemoModeGuardIfNeeded() {
++  const targets = document.querySelectorAll("[data-demo-guard]");
++  if (!targets.length) return;
++  try {
++    const health = await fetchJson(apiUrl("/api/health"));
++    if (!health?.demo_mode) return;
++  } catch (err) {
++    console.warn("Не удалось проверить демо-режим", err);
++    return;
++  }
++  targets.forEach((el) => {
++    el.classList.add("vs-demo-guard-wrap");
++    const overlay = document.createElement("div");
++    overlay.className = "vs-demo-guard-overlay";
++    const label = document.createElement("div");
++    label.className = "vs-demo-guard-label";
++    label.textContent = "Недоступно в инсайдерской версии.";
++    overlay.appendChild(label);
++    el.appendChild(overlay);
++  });
++}
++
+ document.addEventListener("DOMContentLoaded", () => {
++  applyDemoModeGuardIfNeeded();
+   updateProjectNavBadge();
+   updateCompareNavBadge();
+ 
+diff --git a/frontend/style.css b/frontend/style.css
+index c1f2085..f2ed9b5 100644
+--- a/frontend/style.css
++++ b/frontend/style.css
+@@ -1021,3 +1021,37 @@ body[data-page="product"] .tabs-card .card-body {
+ }
+ 
+ 
++
++/* Инсайдерский/демо-режим (DEMO_MODE на бэкенде): каталог/таблицы визуально
++   скрыты для показа интерфейса внешним людям без раскрытия реальных данных. */
++.vs-demo-guard-wrap {
++  position: relative;
++}
++
++.vs-demo-guard-overlay {
++  position: absolute;
++  inset: 0;
++  z-index: 5;
++  background: rgba(230, 233, 238, 0.88);
++  backdrop-filter: blur(3px);
++  border-radius: var(--vs-radius-sm, 8px);
++}
++
++/* sticky, а не center по всей (часто очень высокой) области — иначе надпись
++   рисуется по центру всей прокручиваемой сетки карточек и уезжает за экран */
++.vs-demo-guard-overlay .vs-demo-guard-label {
++  position: sticky;
++  top: 40%;
++  display: flex;
++  justify-content: center;
++  text-align: center;
++  padding: 1rem;
++  color: var(--vs-text-secondary, #555);
++  font-weight: 600;
++}
++
++.vs-demo-guard-wrap > :not(.vs-demo-guard-overlay) {
++  filter: grayscale(1) blur(2px);
++  pointer-events: none;
++  user-select: none;
++}
+-- 
+2.43.0
+

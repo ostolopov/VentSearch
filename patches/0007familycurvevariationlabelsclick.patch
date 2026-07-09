@@ -1,0 +1,238 @@
+From 0800c14b796d0ba1c737f976195fb91727ae1394 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 9 Jul 2026 10:01:08 +0000
+Subject: [PATCH] =?UTF-8?q?=D0=A0=D0=B0=D0=B7=D0=BB=D0=B8=D1=87=D0=B0?=
+ =?UTF-8?q?=D0=B5=D0=BC=20=D0=BA=D1=80=D0=B8=D0=B2=D1=8B=D0=B5=20=D1=82?=
+ =?UTF-8?q?=D0=B8=D0=BF=D0=BE=D1=80=D0=B0=D0=B7=D0=BC=D0=B5=D1=80=D0=BE?=
+ =?UTF-8?q?=D0=B2=20=D0=B2=20=D1=80=D1=8F=D0=B4=D1=83,=20=D0=BF=D0=BE?=
+ =?UTF-8?q?=D0=B4=D0=BF=D0=B8=D1=81=D0=B8=20=D0=BD=D0=B0=20=D0=B3=D1=80?=
+ =?UTF-8?q?=D0=B0=D1=84=D0=B8=D0=BA=D0=B5,=20=D0=B2=D1=8B=D0=B1=D0=BE?=
+ =?UTF-8?q?=D1=80=20=D0=BA=D0=BB=D0=B8=D0=BA=D0=BE=D0=BC?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+- У геометрически подобных вентиляторов одной схемы (тот же шаг лопастей и
+  угол, только диаметр) кривая по законам подобия получается идеально
+  самоподобной — в ряду из 20 типоразмеров выглядело как один и тот же
+  "волосок", отмасштабированный много раз. Добавили стабильную по id
+  вариацию формы седловины для контекстных (не выделенных) кривых ряда —
+  расчёт запаса по выделенной модели не затрагивается
+- Подпись типоразмера теперь прямо у конца каждой серой кривой — не нужно
+  наводить курсор, чтобы понять, что это за линия
+- Клик по серой кривой в модельном ряду выделяет её основной (курсор
+  подсказывает кликабельность), без ухода со страницы — это и есть выбор
+  типоразмера/исполнения внутри одной схемы
+- "Сравнить с другой моделью": если выбранная модель из того же ряда —
+  просто переключаем выделение, если из другого — обычное сравнение 2 кривых
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01Xo2pb2FaYb5UENKMhgVboE
+---
+ frontend/script.js | 115 ++++++++++++++++++++++++++++++++++++++-------
+ 1 file changed, 99 insertions(+), 16 deletions(-)
+
+diff --git a/frontend/script.js b/frontend/script.js
+index 4937d0d..0f6780c 100644
+--- a/frontend/script.js
++++ b/frontend/script.js
+@@ -347,6 +347,36 @@ function familyKey(product) {
+   return model;
+ }
+ 
++// Стабильный (по строке) псевдослучайный хэш — 32-бит FNV-1a.
++function hashSeed(str) {
++  let h = 0x811c9dc5;
++  const s = String(str || "");
++  for (let i = 0; i < s.length; i += 1) {
++    h ^= s.charCodeAt(i);
++    h = Math.imul(h, 0x01000193);
++  }
++  return h >>> 0;
++}
++
++// Геометрически подобные вентиляторы одной схемы (тот же шаг лопастей и угол,
++// только масштаб) по законам подобия дают идеально самоподобную кривую —
++// в ряду из 20 типоразмеров это выглядит как один «волосок», отмасштабированный
++// много раз. Добавляем небольшую, но стабильную по id вариацию формы седловины
++// для соседних (не выделенных) кривых ряда — только визуальный контекст,
++// расчёт запаса по выделенной модели эта вариация не затрагивает.
++function jitterAxialShape(id) {
++  const seed = hashSeed(id);
++  const r1 = ((seed % 1000) / 1000) * 2 - 1;
++  const r2 = (((seed >>> 8) % 1000) / 1000) * 2 - 1;
++  const r3 = (((seed >>> 16) % 1000) / 1000) * 2 - 1;
++  return {
++    dipPos: AXIAL_DIP_POS + r1 * 0.06,
++    humpPos: AXIAL_HUMP_POS + r2 * 0.07,
++    dip: Math.max(0.18, AXIAL_DIP + r3 * 0.18),
++    hump: Math.max(0.18, AXIAL_HUMP - r1 * 0.15),
++  };
++}
++
+ // opts.primaryId — если задан среди 2+ моделей, остальные рисуются тонкими
+ // серыми (контекст модельного ряда), а выбранная модель — толстой цветной.
+ function buildQpDatasetsShared(products, targetRpm = null, targetPoint = null, opts = {}) {
+@@ -360,12 +390,12 @@ function buildQpDatasetsShared(products, targetRpm = null, targetPoint = null, o
+     let qMax = toNumber(p.airflow?.max) ?? 0;
+     let pMin = toNumber(p.pressure?.min) ?? 0;
+     let pMax = toNumber(p.pressure?.max) ?? 0;
+-    
++
+     let scaleFactor = 1.0;
+     if (targetRpm && p.nominal_rpm) {
+       scaleFactor = targetRpm / p.nominal_rpm;
+     }
+-    
++
+     const pStart = Math.max(pMin, pMax);
+     const pEnd = Math.min(pMin, pMax);
+     const dQ = qMax - qMin;
+@@ -375,12 +405,18 @@ function buildQpDatasetsShared(products, targetRpm = null, targetPoint = null, o
+     const qCtrl = qMin + 0.5 * dQ;
+     const pCtrl = pStart + alpha * dP;
+ 
+-    // Кубическая Безье с седловиной для осевых (как в бумажных каталогах ВО)
++    const isPrimary = familyMode ? String(p.id) === String(primaryId) : true;
++
++    // Кубическая Безье с седловиной для осевых (как в бумажных каталогах ВО).
++    // У контекстных кривых ряда — слегка вариативная форма (см. jitterAxialShape).
+     const axial = isAxialType(p.type);
+-    const qC1 = qMin + AXIAL_DIP_POS * dQ;
+-    const pC1 = pStart - AXIAL_DIP * dP;
+-    const qC2 = qMin + AXIAL_HUMP_POS * dQ;
+-    const pC2 = pStart + AXIAL_HUMP * dP;
++    const shape = familyMode && !isPrimary && axial
++      ? jitterAxialShape(p.id)
++      : { dipPos: AXIAL_DIP_POS, humpPos: AXIAL_HUMP_POS, dip: AXIAL_DIP, hump: AXIAL_HUMP };
++    const qC1 = qMin + shape.dipPos * dQ;
++    const pC1 = pStart - shape.dip * dP;
++    const qC2 = qMin + shape.humpPos * dQ;
++    const pC2 = pStart + shape.hump * dP;
+ 
+     const coeffs = p.pressure_coefficients;
+ 
+@@ -409,23 +445,33 @@ function buildQpDatasetsShared(products, targetRpm = null, targetPoint = null, o
+       points.push([qScaled, pScaled]);
+     }
+ 
+-    const isPrimary = familyMode ? String(p.id) === String(primaryId) : true;
+     const color = familyMode ? (isPrimary ? "#0d6efd" : "#c3ccd6") : colors[idx % colors.length];
++    const siblingLabel = p.size || p.model || p.id;
+ 
+     series.push({
+       // В модельном ряду соседние типоразмеры подписаны коротко (по размеру) —
+       // полное имя модели остаётся только у выделенной кривой
+-      name: familyMode && !isPrimary ? (p.size || p.model || p.id) : (p.model || p.id),
++      name: familyMode && !isPrimary ? siblingLabel : (p.model || p.id),
+       type: 'line',
+       // Точки уже лежат на квадратичной Безье (200 шт.) — дополнительное
+       // сглаживание ECharts даёт «сплайн сплайна» и артефакты (QP_MODEL, п. 5.2)
+       smooth: false,
+       symbol: 'none',
+       data: points,
+-      lineStyle: { width: familyMode ? (isPrimary ? 4 : 1.25) : 3, color, opacity: familyMode && !isPrimary ? 0.7 : 1 },
++      lineStyle: { width: familyMode ? (isPrimary ? 4 : 1.25) : 3, color, opacity: familyMode && !isPrimary ? 0.85 : 1 },
+       itemStyle: { color },
+       z: isPrimary ? 5 : 1,
+       __hideLegend: familyMode && !isPrimary,
++      __familyProductId: familyMode && !isPrimary ? String(p.id) : null,
++      // Подпись прямо у конца кривой — иначе непонятно, какой типоразмер
++      // за какой серой линией, без наведения курсора на тонкую линию
++      endLabel: familyMode && !isPrimary ? {
++        show: true,
++        formatter: siblingLabel,
++        color: '#94a3b8',
++        fontSize: 10.5,
++        fontFamily: 'system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", "Helvetica Neue", Arial, sans-serif',
++      } : undefined,
+     });
+   });
+ 
+@@ -647,6 +693,11 @@ function renderQpChartShared(container, chartRef, products, targetRpm = null, ta
+ 
+   chartRef.setOption(option, true);
+ 
++  // Клик по серой кривой ряда переключает её в основную (opts.onSelectFamilyMember) —
++  // актуальный колбэк держим на самом инстансе графика, обработчик клика
++  // навешивается один раз и всегда читает свежее значение
++  chartRef._onSelectFamilyMember = typeof opts.onSelectFamilyMember === "function" ? opts.onSelectFamilyMember : null;
++
+   // Подписываемся один раз при создании графика: повторные перерисовки
+   // (слайдер оборотов, добавление модели в сравнение) не должны копить обработчики
+   if (isNewChart) {
+@@ -664,6 +715,22 @@ function renderQpChartShared(container, chartRef, products, targetRpm = null, ta
+       observer.observe(container);
+       chart.on('disposed', () => observer.disconnect());
+     }
++    chart.on('click', (params) => {
++      const cb = chart._onSelectFamilyMember;
++      if (!cb || params.seriesIndex == null) return;
++      const opt = chart.getOption();
++      const s = opt.series && opt.series[params.seriesIndex];
++      const pid = s && s.__familyProductId;
++      if (pid) cb(pid);
++    });
++    chart.on('mouseover', (params) => {
++      const opt = chart.getOption();
++      const s = params.seriesIndex != null && opt.series && opt.series[params.seriesIndex];
++      if (chart._onSelectFamilyMember && s && s.__familyProductId) container.style.cursor = 'pointer';
++    });
++    chart.on('mouseout', (params) => {
++      if (params.componentType === 'series') container.style.cursor = 'default';
++    });
+   }
+ 
+   return chartRef;
+@@ -1620,10 +1687,22 @@ async function initProductPage() {
+       console.error("families fetch failed", err);
+     }
+ 
+-    if (familyVariants) {
+-      productChart = renderQpChartShared(chartCanvas, productChart, familyVariants, null, loadWorkingPoint(), { primaryId: data.id });
++    // Показ ряда с выделенной моделью primaryId — переиспользуется при первой
++    // отрисовке и при клике по серой кривой / выборе типоразмера в дропдауне
++    function renderFamilyView(primaryId) {
++      const focused = familyVariants.find((v) => String(v.id) === String(primaryId)) || currentProduct;
++      productChart = renderQpChartShared(chartCanvas, productChart, familyVariants, null, loadWorkingPoint(), {
++        primaryId,
++        onSelectFamilyMember: (pid) => renderFamilyView(pid),
++      });
++      const count = familyVariants.length;
+       productCompareMeta.textContent =
+-        `Модельный ряд ${familyKey(data)}: ${familyVariants.length} ${pluralRu(familyVariants.length, "типоразмер", "типоразмера", "типоразмеров")}, текущая модель выделена цветом.`;
++        `Модельный ряд ${familyKey(currentProduct)}: ${count} ${pluralRu(count, "типоразмер", "типоразмера", "типоразмеров")}. ` +
++        `Выделено: ${focused.size || focused.model || focused.id} — кликните по серой линии, чтобы выделить другой типоразмер.`;
++    }
++
++    if (familyVariants) {
++      renderFamilyView(data.id);
+     } else {
+       productChart = renderQpChartShared(chartCanvas, productChart, [data], null, loadWorkingPoint());
+       productCompareMeta.textContent = `Сейчас показана характеристика модели ${data.model || data.id}.`;
+@@ -1643,15 +1722,19 @@ async function initProductPage() {
+       const otherId = compareWithSelect.value;
+       if (!otherId) {
+         if (familyVariants) {
+-          productChart = renderQpChartShared(chartCanvas, productChart, familyVariants, null, loadWorkingPoint(), { primaryId: currentProduct.id });
+-          productCompareMeta.textContent =
+-            `Модельный ряд ${familyKey(currentProduct)}: ${familyVariants.length} ${pluralRu(familyVariants.length, "типоразмер", "типоразмера", "типоразмеров")}, текущая модель выделена цветом.`;
++          renderFamilyView(currentProduct.id);
+         } else {
+           productChart = renderQpChartShared(chartCanvas, productChart, [currentProduct], null, loadWorkingPoint());
+           productCompareMeta.textContent = "Выберите вторую модель для сравнения.";
+         }
+         return;
+       }
++      // Тот же модельный ряд — просто переключаем, какой типоразмер выделен,
++      // без ухода из режима «весь ряд на одном графике»
++      if (familyVariants && familyVariants.some((v) => String(v.id) === String(otherId))) {
++        renderFamilyView(otherId);
++        return;
++      }
+       const second = await fetchJson(apiUrl(`/api/products/${encodeURIComponent(otherId)}`));
+       productChart = renderQpChartShared(chartCanvas, productChart, [currentProduct, second], null, loadWorkingPoint());
+       productCompareMeta.textContent = `Сравнение: ${currentProduct.model || currentProduct.id} vs ${second.model || second.id}`;
+-- 
+2.43.0
+

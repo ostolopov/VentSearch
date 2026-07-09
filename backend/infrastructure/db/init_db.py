@@ -41,6 +41,7 @@ CREATE TABLE IF NOT EXISTS products (
     nominal_rpm NUMERIC,
     pressure_coefficients JSONB,
     efficiency_coefficients JSONB,
+    dimensions JSONB,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -51,6 +52,7 @@ ALTER TABLE products ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DE
 ALTER TABLE products ADD COLUMN IF NOT EXISTS nominal_rpm NUMERIC;
 ALTER TABLE products ADD COLUMN IF NOT EXISTS pressure_coefficients JSONB;
 ALTER TABLE products ADD COLUMN IF NOT EXISTS efficiency_coefficients JSONB;
+ALTER TABLE products ADD COLUMN IF NOT EXISTS dimensions JSONB;
 
 -- indexes
 CREATE INDEX IF NOT EXISTS idx_products_type ON products(type);

@@ -13,6 +13,11 @@ REPO_ROOT = _BACKEND_DIR.parent
 _default_csv = REPO_ROOT / "data" / "ventsearch_massive_sorted.csv"
 CSV_PATH = Path(os.environ.get("CSV_PATH", str(_default_csv)))
 
+# JSON «О команде» — для раздела в глубине админ-панели (Диагностика, внизу).
+# Редактируется командой напрямую, без правок кода/переразвёртывания.
+_default_credits = REPO_ROOT / "data" / "credits.json"
+CREDITS_PATH = Path(os.environ.get("CREDITS_PATH", str(_default_credits)))
+
 
 def _database_url_with_password_from_env(raw: str) -> str:
     """

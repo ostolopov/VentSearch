@@ -578,3 +578,25 @@ def admin_load_test(
         "avg_latency_us": round(elapsed / requests * 1e6, 2),
         "process_cpu_percent_during": cpu_after,
     }
+
+
+@router.get("/credits", summary="О команде проекта (админ)")
+def admin_credits(_: Annotated[dict, Depends(require_admin)]) -> Dict[str, Any]:
+    """
+    Информация о создателях — читается из data/credits.json при каждом запросе
+    (без перезапуска сервера). Редактируется командой напрямую в файле; формат
+    описан в поле _comment самого файла-шаблона.
+    """
+    import json
+    from config import CREDITS_PATH
+
+    if not CREDITS_PATH.exists():
+        return {"found": False, "path": str(CREDITS_PATH)}
+    try:
+        with CREDITS_PATH.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, OSError) as exc:
+        return {"found": True, "path": str(CREDITS_PATH), "error": f"{type(exc).__name__}: {exc}"}
+    data.pop("_comment", None)
+    data["found"] = True
+    return data

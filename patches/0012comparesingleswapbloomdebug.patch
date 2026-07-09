@@ -1,0 +1,357 @@
+From 99a1f3e568784e245a0493a5666cd87863431b6f Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 9 Jul 2026 15:04:30 +0000
+Subject: [PATCH] =?UTF-8?q?=D0=A1=D1=80=D0=B0=D0=B2=D0=BD=D0=B5=D0=BD?=
+ =?UTF-8?q?=D0=B8=D0=B5=20=D1=81=201=20=D0=BC=D0=BE=D0=B4=D0=B5=D0=BB?=
+ =?UTF-8?q?=D1=8C=D1=8E,=20=D1=81=D0=B2=D0=B0=D0=BF=20=D1=82=D0=B8=D0=BF?=
+ =?UTF-8?q?=D0=BE=D1=80=D0=B0=D0=B7=D0=BC=D0=B5=D1=80=D0=B0=20=D0=B2=20?=
+ =?UTF-8?q?=D1=88=D0=B0=D0=BF=D0=BA=D0=B5,=20=D0=B2=D0=B8=D0=B7=D1=83?=
+ =?UTF-8?q?=D0=B0=D0=BB=D0=B8=D0=B7=D0=B0=D1=86=D0=B8=D1=8F=20Bloom-=D1=84?=
+ =?UTF-8?q?=D0=B8=D0=BB=D1=8C=D1=82=D1=80=D0=B0?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+- Страница сравнения больше не требует минимум 2 модели: с одной выбранной
+  сразу видно график и таблицу (раньше не показывалось вообще ничего),
+  экспорт в PDF тоже работает от 1 модели
+- В шапке таблицы сравнения — выпадающий список типоразмеров того же
+  модельного ряда прямо у каждой выбранной модели: смена типоразмера
+  больше не требует удалить и добавить заново
+- Админка → Диагностика: новая карточка на каждый Bloom-фильтр (тип,
+  типоразмер) с битовой картой (какие ячейки заняты), m/k/заполнением
+  и списком известных значений — для отладки поискового индекса
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01Xo2pb2FaYb5UENKMhgVboE
+---
+ backend/infrastructure/search/bloom_filter.py | 12 +++
+ backend/presentation/api/routes/admin.py      | 18 ++++-
+ backend/tests/test_bloom.py                   | 20 ++++-
+ frontend/admin.js                             | 66 +++++++++++++++++
+ frontend/script.js                            | 73 ++++++++++++++-----
+ 5 files changed, 168 insertions(+), 21 deletions(-)
+
+diff --git a/backend/infrastructure/search/bloom_filter.py b/backend/infrastructure/search/bloom_filter.py
+index 46307d9..818335e 100644
+--- a/backend/infrastructure/search/bloom_filter.py
++++ b/backend/infrastructure/search/bloom_filter.py
+@@ -46,3 +46,15 @@ class BloomFilter:
+     def might_contain(self, item: str) -> bool:
+         """False — значения точно нет в множестве; True — возможен ложный положительный."""
+         return all(self._get_bit(p) for p in self._positions(item))
++
++    def stats(self) -> dict:
++        """Состояние битовой карты для отладочной визуализации (админ-панель)."""
++        bits = [1 if self._get_bit(i) else 0 for i in range(self._m)]
++        bits_set = sum(bits)
++        return {
++            "m": self._m,
++            "k": self._k,
++            "bits_set": bits_set,
++            "fill_ratio": round(bits_set / self._m, 4) if self._m else 0.0,
++            "bits": bits,
++        }
+diff --git a/backend/presentation/api/routes/admin.py b/backend/presentation/api/routes/admin.py
+index 1185ed8..196c09b 100644
+--- a/backend/presentation/api/routes/admin.py
++++ b/backend/presentation/api/routes/admin.py
+@@ -304,7 +304,23 @@ def _debug_index_section() -> Dict[str, Any]:
+     idx = get_catalog_index()
+     if idx is None:
+         return {"built": False}
+-    return {"built": True, "rows": len(getattr(idx, "_rows", []) or [])}
++    result: Dict[str, Any] = {"built": True, "rows": len(getattr(idx, "_rows", []) or [])}
++
++    # Bloom-фильтры категориальных полей — битовая карта для отладочной
++    # визуализации в админке (какие ячейки заняты, насколько заполнен фильтр)
++    type_bloom = getattr(idx, "_type_bloom", None)
++    if type_bloom is not None:
++        result["bloom_type"] = {
++            **type_bloom.stats(),
++            "known_values": sorted(getattr(idx, "_type_to_ids", {}).keys()),
++        }
++    size_bloom = getattr(idx, "_size_bloom", None)
++    if size_bloom is not None:
++        result["bloom_size"] = {
++            **size_bloom.stats(),
++            "known_values": sorted(getattr(idx, "_size_to_ids", {}).keys()),
++        }
++    return result
+ 
+ 
+ def _debug_security_section() -> Dict[str, Any]:
+diff --git a/backend/tests/test_bloom.py b/backend/tests/test_bloom.py
+index 6bffd66..c76d0db 100644
+--- a/backend/tests/test_bloom.py
++++ b/backend/tests/test_bloom.py
+@@ -32,4 +32,22 @@ def test_bloom_empty_input():
+     """Проверка: корректная работа с пустой строкой"""
+     bf = BloomFilter()
+     bf.add("")
+-    assert bf.might_contain("") is True
+\ No newline at end of file
++    assert bf.might_contain("") is True
++
++
++def test_bloom_stats_shape_and_fill():
++    """stats() отдаёт битовую карту для визуализации в админке."""
++    bf = BloomFilter(expected_items=10)
++    stats = bf.stats()
++    assert stats["bits_set"] == 0
++    assert stats["fill_ratio"] == 0.0
++    assert len(stats["bits"]) == stats["m"]
++    assert all(b == 0 for b in stats["bits"])
++
++    bf.add("ВО")
++    bf.add("ВЦ")
++    stats2 = bf.stats()
++    assert stats2["bits_set"] > 0
++    assert stats2["bits_set"] <= stats2["m"]
++    assert 0 < stats2["fill_ratio"] <= 1.0
++    assert sum(stats2["bits"]) == stats2["bits_set"]
+\ No newline at end of file
+diff --git a/frontend/admin.js b/frontend/admin.js
+index c051258..16e3e47 100644
+--- a/frontend/admin.js
++++ b/frontend/admin.js
+@@ -546,6 +546,14 @@ function formatUptime(totalSeconds) {
+   return `${m} мин ${s % 60} с`;
+ }
+ 
++function pluralRu(n, one, few, many) {
++  const mod10 = n % 10;
++  const mod100 = n % 100;
++  if (mod10 === 1 && mod100 !== 11) return one;
++  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 10 || mod100 >= 20)) return few;
++  return many;
++}
++
+ function formatBytes(bytes) {
+   const n = Number(bytes);
+   if (!Number.isFinite(n)) return "—";
+@@ -577,6 +585,61 @@ function renderDebugCard(title, rows) {
+     </div>`;
+ }
+ 
++// Визуализация Bloom-фильтра: сетка занятых/свободных бит + известные значения.
++// Канвасы рисуются после вставки HTML в DOM — сам renderBloomCard лишь
++// откладывает данные в _pendingBloomCanvases, реальная отрисовка в drawPendingBloomCanvases().
++let _pendingBloomCanvases = [];
++
++function renderBloomCard(title, bloom) {
++  if (!bloom || typeof bloom.m !== "number" || !Array.isArray(bloom.bits)) {
++    return renderDebugCard(title, [["Статус", "нет данных"]]);
++  }
++  const canvasId = `bloomCanvas_${Math.random().toString(36).slice(2)}`;
++  const cols = Math.max(1, Math.round(Math.sqrt(bloom.m)));
++  const rows = Math.ceil(bloom.m / cols);
++  const cellSize = bloom.m <= 64 ? 20 : 8;
++  _pendingBloomCanvases.push({ id: canvasId, bits: bloom.bits, cols, cellSize });
++
++  const knownValues = bloom.known_values || [];
++  const shown = knownValues.slice(0, 40).map(escapeHtml).join(", ");
++  const knownPreview = shown + (knownValues.length > 40 ? `, … ещё ${knownValues.length - 40}` : "");
++
++  return `
++    <div class="col-12">
++      <div class="card shadow-sm h-100">
++        <div class="card-header py-2 fw-semibold d-flex justify-content-between align-items-center flex-wrap gap-2">
++          <span>${escapeHtml(title)}</span>
++          <span class="text-secondary small fw-normal">
++            m=${bloom.m} бит · k=${bloom.k} хэш-функций · занято ${bloom.bits_set} (${(bloom.fill_ratio * 100).toFixed(1)}%)
++          </span>
++        </div>
++        <div class="card-body d-flex flex-wrap gap-4 align-items-start">
++          <canvas id="${canvasId}" width="${cols * cellSize}" height="${rows * cellSize}" style="border:1px solid #dee2e6; border-radius:4px; flex-shrink:0;"></canvas>
++          <div class="small text-secondary" style="min-width: 220px; max-width: 480px;">
++            <div class="mb-1"><strong>${knownValues.length}</strong> ${pluralRu(knownValues.length, "известное значение", "известных значения", "известных значений")} в индексе:</div>
++            <div>${knownPreview || "—"}</div>
++          </div>
++        </div>
++      </div>
++    </div>`;
++}
++
++function drawPendingBloomCanvases() {
++  for (const { id, bits, cols, cellSize } of _pendingBloomCanvases) {
++    const canvas = document.getElementById(id);
++    if (!canvas || !canvas.getContext) continue;
++    const ctx = canvas.getContext("2d");
++    ctx.clearRect(0, 0, canvas.width, canvas.height);
++    bits.forEach((bit, i) => {
++      const x = (i % cols) * cellSize;
++      const y = Math.floor(i / cols) * cellSize;
++      ctx.fillStyle = bit ? "#0d6efd" : "#e9ecef";
++      ctx.fillRect(x, y, cellSize - 1, cellSize - 1);
++    });
++  }
++  _pendingBloomCanvases = [];
++}
++
+ async function loadDebug() {
+   hideAdminMessages();
+   const content = $("#debugContent");
+@@ -626,6 +689,8 @@ async function loadDebug() {
+     ["Построен (Bloom + оси)", debugBoolBadge(idx.built === true)],
+     idx.built ? ["Записей", escapeHtml(idx.rows ?? "—")] : undefined,
+   ].filter(Boolean)));
++  if (idx.built && idx.bloom_type) cards.push(renderBloomCard("Bloom-фильтр: тип вентилятора", idx.bloom_type));
++  if (idx.built && idx.bloom_size) cards.push(renderBloomCard("Bloom-фильтр: типоразмер", idx.bloom_size));
+ 
+   const sec = d.security || {};
+   const rl = sec.login_rate_limit || {};
+@@ -640,6 +705,7 @@ async function loadDebug() {
+   ]));
+ 
+   content.innerHTML = cards.join("");
++  drawPendingBloomCanvases();
+ 
+   const alertEl = $("#debugSecurityAlert");
+   if (alertEl) {
+diff --git a/frontend/script.js b/frontend/script.js
+index 3d84dee..2f6a46f 100644
+--- a/frontend/script.js
++++ b/frontend/script.js
+@@ -1474,6 +1474,7 @@ async function initComparePage() {
+   const qpChartCanvas = $("#qpChart");
+   const compareTableHead = $("#compareTableHead");
+   const compareTableBody = $("#compareTableBody");
++  let families = [];
+ 
+   function showError(message) {
+     if (!alertBox) return;
+@@ -1489,8 +1490,17 @@ async function initComparePage() {
+     compareTableHead.innerHTML = "";
+     compareTableBody.innerHTML = "";
+     const headerRow = document.createElement("tr");
+-    headerRow.innerHTML = `<th style="width:200px;">Параметр</th>${products
+-      .map((p) => `<th>
++    headerRow.innerHTML = `<th style="width:220px;">Параметр</th>${products
++      .map((p) => {
++        const fam = families.find((f) => (f.variants || []).some((v) => String(v.id) === String(p.id)));
++        const siblings = fam ? fam.variants.filter((v) => String(v.id) !== String(p.id)) : [];
++        const swapSelect = fam && siblings.length
++          ? `<select class="form-select form-select-sm mt-1 compare-swap-size" data-slot="${escapeHtml(p.id)}" title="Заменить типоразмер в этом же ряду">
++              <option value="${escapeHtml(p.id)}" selected>${escapeHtml(p.size || p.model)} (текущий)</option>
++              ${siblings.map((v) => `<option value="${escapeHtml(v.id)}">${escapeHtml(v.size || v.model)} · ⌀${v.diameter ?? "—"}мм</option>`).join("")}
++            </select>`
++          : "";
++        return `<th>
+         <div class="d-flex justify-content-between align-items-center">
+           <span>${escapeHtml(p.model || p.id)}</span>
+           <button type="button" class="btn btn-sm btn-link text-danger p-0 ms-2 btn-remove-compare" data-id="${escapeHtml(p.id)}" title="Удалить из сравнения">
+@@ -1500,7 +1510,9 @@ async function initComparePage() {
+             </svg>
+           </button>
+         </div>
+-      </th>`)
++        ${swapSelect}
++      </th>`;
++      })
+       .join("")}`;
+     compareTableHead.appendChild(headerRow);
+ 
+@@ -1514,6 +1526,22 @@ async function initComparePage() {
+       });
+     });
+ 
++    // Смена типоразмера прямо в шапке — без удаления и повторного добавления,
++    // как в модельном ряду на карточке товара
++    headerRow.querySelectorAll(".compare-swap-size").forEach((select) => {
++      select.addEventListener("change", () => {
++        const oldId = select.dataset.slot;
++        const newId = select.value;
++        if (!newId || newId === oldId) return;
++        const ordered = loadCompareIds();
++        const idx = ordered.indexOf(oldId);
++        if (idx === -1) return;
++        ordered[idx] = newId;
++        saveCompareIds(ordered);
++        window.location.reload();
++      });
++    });
++
+     const rows = [
+       { label: "Тип", pick: (p) => p.type || "—", best: "none" },
+       { label: "Расход, м³/ч", pick: (p) => getRangeNominal(p.airflow), display: (p) => p.airflow?.raw || "—", best: "max" },
+@@ -1548,8 +1576,8 @@ async function initComparePage() {
+   }
+ 
+   async function exportCompareToPdf(products) {
+-    if (products.length < 2) {
+-      showError("Для экспорта выберите минимум 2 модели.");
++    if (products.length < 1) {
++      showError("Для экспорта выберите хотя бы одну модель.");
+       return;
+     }
+     hideError();
+@@ -1562,24 +1590,27 @@ async function initComparePage() {
+     }
+   }
+ 
++  // Модельные ряды грузим один раз и переиспользуем и в форме добавления,
++  // и в свопе типоразмера прямо в шапке таблицы сравнения
++  async function loadFamilies() {
++    try {
++      const data = await fetchJson(apiUrl("/api/products/families"));
++      families = Array.isArray(data?.families) ? data.families : [];
++    } catch (err) {
++      console.error("families fetch failed", err);
++      families = [];
++    }
++  }
++
+   // Каскадный подбор «модельный ряд → типоразмер» — как выбор поколения,
+   // затем размера экрана у телефона, вместо плоского списка из 300+ моделей.
+   const MAX_COMPARE = 6;
+-  async function initFamilyVariantPicker() {
++  function initFamilyVariantPicker() {
+     const familySelect = $("#familySelect");
+     const variantSelect = $("#variantSelect");
+     const addForm = $("#addCompareForm");
+     if (!familySelect || !variantSelect || !addForm) return;
+ 
+-    let families = [];
+-    try {
+-      const data = await fetchJson(apiUrl("/api/products/families"));
+-      families = Array.isArray(data?.families) ? data.families : [];
+-    } catch (err) {
+-      console.error("families fetch failed", err);
+-      addForm.classList.add("d-none");
+-      return;
+-    }
+     if (!families.length) {
+       addForm.classList.add("d-none");
+       return;
+@@ -1624,11 +1655,12 @@ async function initComparePage() {
+ 
+   try {
+     hideError();
+-    await initFamilyVariantPicker();
++    await loadFamilies();
++    initFamilyVariantPicker();
+     const ids = loadCompareIds();
+     updateCompareNavBadge();
+-    if (ids.length < 2) {
+-      compareMeta.textContent = "Выберите минимум 2 модели в каталоге и вернитесь на страницу сравнения.";
++    if (ids.length < 1) {
++      compareMeta.textContent = "Выберите модели в каталоге (или через форму выше) и вернитесь на страницу сравнения.";
+       const backBtn = document.createElement("a");
+       backBtn.href = "index.html";
+       backBtn.className = "btn btn-dark btn-sm mt-2";
+@@ -1637,7 +1669,10 @@ async function initComparePage() {
+       compareMeta.appendChild(backBtn);
+       return;
+     }
+-    compareMeta.textContent = `Выбрано моделей: ${ids.length}`;
++    compareMeta.textContent =
++      ids.length === 1
++        ? "Выбрана 1 модель. Добавьте ещё, чтобы сравнить, или посмотрите её характеристику ниже."
++        : `Выбрано моделей: ${ids.length}`;
+     const products = await fetchProductsByIds(ids);
+     renderCompareTable(products);
+     renderCompareChart(products);
+-- 
+2.43.0
+

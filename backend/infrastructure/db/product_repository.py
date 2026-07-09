@@ -88,6 +88,7 @@ def _row_to_product_dict(row: Dict[str, Any]) -> Dict[str, Any]:
         "nominal_rpm": float(row["nominal_rpm"]) if row.get("nominal_rpm") is not None else None,
         "pressure_coefficients": row.get("pressure_coefficients"),
         "efficiency_coefficients": row.get("efficiency_coefficients"),
+        "dimensions": row.get("dimensions"),
         "_raw": {
             "diameter": row["raw_diameter"] or "",
             "efficiency": row["raw_efficiency"] or "",
@@ -112,7 +113,7 @@ _SELECT_COLS = (
     "pressure_min, pressure_max, pressure_raw, "
     "power, noise_level, price, "
     "raw_diameter, raw_efficiency, raw_pressure, raw_power, raw_noise_level, raw_price, "
-    "model_slug, nominal_rpm, pressure_coefficients, efficiency_coefficients"
+    "model_slug, nominal_rpm, pressure_coefficients, efficiency_coefficients, dimensions"
 )
 
 

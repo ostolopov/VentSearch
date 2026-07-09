@@ -1852,7 +1852,21 @@ async function initProductPage() {
       tr.innerHTML = `<th scope="row" class="w-50 text-secondary">${escapeHtml(label)}</th><td>${escapeHtml(value ?? "—")}</td>`;
       specBody.appendChild(tr);
     }
-    
+
+    // Габаритно-присоединительные размеры (чертёж завода) — если есть в CSV.
+    const dims = data.dimensions;
+    if (dims && typeof dims === "object" && Object.keys(dims).length) {
+      const divider = document.createElement("tr");
+      divider.innerHTML = `<td colspan="2" class="pt-3 pb-1 fw-semibold text-secondary small">Присоединительные размеры (по чертежу завода), мм</td>`;
+      specBody.appendChild(divider);
+      for (const [label, value] of Object.entries(dims)) {
+        const tr = document.createElement("tr");
+        tr.innerHTML = `<th scope="row" class="w-50 text-secondary"><code>${escapeHtml(label)}</code></th><td>${escapeHtml(value)}</td>`;
+        specBody.appendChild(tr);
+      }
+      $("#gabaritsCaption")?.replaceChildren(document.createTextNode(`${Object.keys(dims).length} размеров — см. «Характеристики»`));
+    }
+
     container.classList.remove("d-none");
     alertBox.classList.add("d-none");
 

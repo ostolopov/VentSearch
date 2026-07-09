@@ -92,6 +92,26 @@ def _canonical_row(row: dict) -> dict:
     return out
 
 
+# Габаритно-присоединительные размеры (чертёж корпуса/крепления электродвигателя) —
+# в отличие от остальных колонок, регистр здесь смыслоразличающий (D ≠ d, L ≠ l,
+# B ≠ b, D1 ≠ d1): обычная норм_header()-нормализация (lower()) свела бы их в
+# один ключ и данные затирали бы друг друга. Поэтому берём эти колонки из
+# ИСХОДНОЙ (не приведённой к нижнему регистру) строки по точному имени.
+DIMENSION_COLUMNS: tuple[str, ...] = (
+    "Num", "h ed", "D", "D1", "d", "n", "L", "L1 max", "L2", "l", "b", "d1", "B", "H1", "H",
+)
+_DIMENSION_COLUMNS_NORM = {norm_header(c) for c in DIMENSION_COLUMNS}
+
+
+def _extract_dimensions(raw_row: dict) -> dict:
+    out = {}
+    for col in DIMENSION_COLUMNS:
+        v = normalize_whitespace(raw_row.get(col))
+        if v:
+            out[col] = v
+    return out
+
+
 def normalize_whitespace(value) -> str:
     if value is None:
         return ""
@@ -220,7 +240,7 @@ def load_csv_into_db(conn, csv_path: Path) -> CsvLoadReport:
         report = CsvLoadReport(encoding=used_encoding)
         report.unrecognized_columns = sorted(
             h for h in (reader.fieldnames or [])
-            if h and not _HEADER_TO_CANONICAL.get(norm_header(h))
+            if h and h not in DIMENSION_COLUMNS and not _HEADER_TO_CANONICAL.get(norm_header(h))
         )
 
         seen_ids: set[str] = set()
@@ -228,6 +248,7 @@ def load_csv_into_db(conn, csv_path: Path) -> CsvLoadReport:
             for i, raw_row in enumerate(reader, start=1):
                 report.total_data_rows = i
                 row = _canonical_row(raw_row)
+                dimensions = _extract_dimensions(raw_row)
                 number = normalize_whitespace(row.get("number")) or str(i)
                 type_ = normalize_whitespace(row.get("type"))
                 model = normalize_whitespace(row.get("model"))
@@ -274,13 +295,13 @@ def load_csv_into_db(conn, csv_path: Path) -> CsvLoadReport:
                             pressure_min, pressure_max, pressure_raw,
                             power, noise_level, price,
                             raw_diameter, raw_efficiency, raw_pressure, raw_power, raw_noise_level, raw_price,
-                            model_slug, nominal_rpm, pressure_coefficients, efficiency_coefficients
+                            model_slug, nominal_rpm, pressure_coefficients, efficiency_coefficients, dimensions
                         ) VALUES (
                             %s, %s, %s, %s, %s, %s,
                             %s, %s, %s, %s, %s, %s,
                             %s, %s, %s,
                             %s, %s, %s, %s, %s, %s,
-                            %s, %s, %s, %s
+                            %s, %s, %s, %s, %s
                         )
                         ON CONFLICT (id) DO UPDATE SET
                             number = EXCLUDED.number, type = EXCLUDED.type, model = EXCLUDED.model,
@@ -294,7 +315,8 @@ def load_csv_into_db(conn, csv_path: Path) -> CsvLoadReport:
                             model_slug = EXCLUDED.model_slug,
                             nominal_rpm = EXCLUDED.nominal_rpm,
                             pressure_coefficients = EXCLUDED.pressure_coefficients,
-                            efficiency_coefficients = EXCLUDED.efficiency_coefficients
+                            efficiency_coefficients = EXCLUDED.efficiency_coefficients,
+                            dimensions = EXCLUDED.dimensions
                         """,
                         (
                             row_id, number, type_, model, size, diameter,
@@ -304,6 +326,7 @@ def load_csv_into_db(conn, csv_path: Path) -> CsvLoadReport:
                             model_slug, nominal_rpm,
                             json.dumps(pressure_coefficients) if pressure_coefficients else None,
                             json.dumps(efficiency_coefficients) if efficiency_coefficients else None,
+                            json.dumps(dimensions) if dimensions else None,
                         ),
                     )
                 except Exception as exc:

@@ -118,6 +118,10 @@ class ProductOut(BaseModel):
     nominal_rpm: Optional[float] = None
     pressure_coefficients: Optional[List[float]] = None
     efficiency_coefficients: Optional[List[float]] = None
+    dimensions: Optional[Dict[str, str]] = Field(
+        default=None,
+        description="Габаритно-присоединительные размеры по чертежу завода (D, D1, d, n, L, ...)",
+    )
     raw_csv: Dict[str, str] = Field(
         default_factory=dict,
         alias="_raw",

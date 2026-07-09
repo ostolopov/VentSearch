@@ -1,0 +1,272 @@
+From a17d9b83d493ecc9654930d4cb504830dcc636cb Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 9 Jul 2026 14:29:34 +0000
+Subject: [PATCH] =?UTF-8?q?=D0=92=D0=B0=D0=BB=D0=B8=D0=B4=D0=B0=D1=86?=
+ =?UTF-8?q?=D0=B8=D1=8F=20=D0=B4=D0=B8=D0=B0=D0=BF=D0=B0=D0=B7=D0=BE=D0=BD?=
+ =?UTF-8?q?=D0=BE=D0=B2=20=D0=BF=D1=80=D0=B8=20=D1=80=D0=B5=D0=B4=D0=B0?=
+ =?UTF-8?q?=D0=BA=D1=82=D0=B8=D1=80=D0=BE=D0=B2=D0=B0=D0=BD=D0=B8=D0=B8=20?=
+ =?UTF-8?q?=D0=B2=D0=B5=D0=BD=D1=82=D0=B8=D0=BB=D1=8F=D1=82=D0=BE=D1=80?=
+ =?UTF-8?q?=D0=B0=20=D0=B2=20=D0=B0=D0=B4=D0=BC=D0=B8=D0=BD=D0=BA=D0=B5?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Раньше можно было сохранить любые числа в Расход/Давление, включая
+физически бессмысленные (например, расход min > max). Добавили проверку
+на уровне AdminProductIn: расход min ≤ max (арифметическая граница,
+нарушение всегда ошибка) и положительность всех четырёх значений.
+Давление на min ≤ max намеренно НЕ проверяем: pressure_min/pressure_max
+в этом каталоге — «давление при Q_min»/«давление при Q_max», а не
+арифметические границы, и давление обычно падает с ростом расхода —
+pressure_min > pressure_max это норма почти для всех 335 моделей
+(build_qp_curve уже учитывает это через max()/min()).
+
+Попутно нашёлся и почти сразу проявившийся баг общего обработчика ошибок
+валидации: pydantic v2 кладёт исходный объект ValueError в ctx.error при
+падении на @model_validator, а кастомный validation_exception_handler
+сериализовал exc.errors() напрямую через json.dumps без jsonable_encoder —
+это роняло ЛЮБУЮ ошибку валидации, использующую raise ValueError, в 500
+вместо 422. Теперь и понятные сообщения из наших проверок, и потенциальные
+future-валидаторы будут корректно доходить до клиента.
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01Xo2pb2FaYb5UENKMhgVboE
+---
+ backend/presentation/api/schemas.py           |  31 +++-
+ backend/presentation/app.py                   |   6 +-
+ .../tests/test_admin_product_validation.py    | 132 ++++++++++++++++++
+ frontend/auth.js                              |   6 +-
+ 4 files changed, 172 insertions(+), 3 deletions(-)
+ create mode 100644 backend/tests/test_admin_product_validation.py
+
+diff --git a/backend/presentation/api/schemas.py b/backend/presentation/api/schemas.py
+index 1c4239c..f95d5fd 100644
+--- a/backend/presentation/api/schemas.py
++++ b/backend/presentation/api/schemas.py
+@@ -7,7 +7,7 @@ from __future__ import annotations
+ 
+ from typing import Any, Dict, List, Optional
+ 
+-from pydantic import BaseModel, ConfigDict, Field
++from pydantic import BaseModel, ConfigDict, Field, model_validator
+ 
+ 
+ class RangeOut(BaseModel):
+@@ -301,6 +301,35 @@ class AdminProductIn(BaseModel):
+     raw_price: str = ""
+     model_slug: str = ""
+ 
++    @model_validator(mode="after")
++    def _check_ranges(self) -> "AdminProductIn":
++        # π₁: Q_min ≤ Q_max — расход растёт монотонно, это универсальный
++        # арифметический минимум/максимум, инверсия всегда ошибка.
++        if (
++            self.airflow_min is not None
++            and self.airflow_max is not None
++            and self.airflow_min > self.airflow_max
++        ):
++            raise ValueError(
++                f"Расход: минимум ({self.airflow_min}) не может быть больше максимума ({self.airflow_max})"
++            )
++        # Давление НЕ проверяем на min ≤ max: pressure_min/pressure_max в этом
++        # каталоге означают «давление при Q_min» / «давление при Q_max», а не
++        # арифметические границы — у вентилятора давление обычно падает с
++        # ростом расхода, поэтому pressure_min > pressure_max является нормой
++        # (см. build_qp_curve, который явно берёт max()/min() из этой пары).
++        # π₃, π₄: отрицательные и нулевые границы — всегда ошибка независимо
++        # от того, как называется поле.
++        for label, value in (
++            ("Расход (мин)", self.airflow_min),
++            ("Расход (макс)", self.airflow_max),
++            ("Давление (мин)", self.pressure_min),
++            ("Давление (макс)", self.pressure_max),
++        ):
++            if value is not None and value <= 0:
++                raise ValueError(f"{label}: значение должно быть больше нуля (сейчас {value})")
++        return self
++
+ 
+ class PdfExportRequest(BaseModel):
+     model_config = ConfigDict(
+diff --git a/backend/presentation/app.py b/backend/presentation/app.py
+index 9b4f3e5..3a8559a 100644
+--- a/backend/presentation/app.py
++++ b/backend/presentation/app.py
+@@ -25,6 +25,7 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+ load_dotenv(_REPO_ROOT / "secrets" / ".env.local")
+ 
+ from fastapi import FastAPI, HTTPException, Request
++from fastapi.encoders import jsonable_encoder
+ from fastapi.exceptions import RequestValidationError
+ from fastapi.middleware.cors import CORSMiddleware
+ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+@@ -408,7 +409,10 @@ def create_app() -> FastAPI:
+ 
+     @app.exception_handler(RequestValidationError)
+     async def validation_exception_handler(request: Request, exc: RequestValidationError):
+-        return JSONResponse(status_code=422, content={"detail": exc.errors()})
++        # exc.errors() у pydantic v2 кладёт в ctx.error сам объект исключения
++        # (например, при raise ValueError(...) в @model_validator) — он не
++        # сериализуется обычным json.dumps внутри JSONResponse, нужен jsonable_encoder
++        return JSONResponse(status_code=422, content={"detail": jsonable_encoder(exc.errors())})
+ 
+     @app.exception_handler(StarletteHTTPException)
+     async def starlette_http_exception_handler(request: Request, exc: StarletteHTTPException):
+diff --git a/backend/tests/test_admin_product_validation.py b/backend/tests/test_admin_product_validation.py
+new file mode 100644
+index 0000000..a108992
+--- /dev/null
++++ b/backend/tests/test_admin_product_validation.py
+@@ -0,0 +1,132 @@
++"""
++Тесты валидации диапазонов при создании/редактировании вентилятора в админке.
++
++Контекст: pressure_min/pressure_max в этом каталоге означают «давление при
++Q_min» / «давление при Q_max», а не арифметические границы — давление обычно
++падает с ростом расхода, поэтому pressure_min > pressure_max это норма
++(см. domain/services/qp_service.build_qp_curve, который берёт max()/min() из
++пары). Расход, наоборот, всегда возрастает: airflow_min > airflow_max — это
++всегда ошибка ввода.
++"""
++from __future__ import annotations
++
++import pytest
++from pydantic import ValidationError
++
++from infrastructure.auth.jwt_service import create_access_token
++from presentation.api.schemas import AdminProductIn
++from tests.conftest import make_test_client
++
++
++def _base_payload(**overrides):
++    payload = {
++        "id": "test-1",
++        "type": "Осевой",
++        "model": "ВО тест",
++        "size": "456A4",
++        "airflow_min": 900,
++        "airflow_max": 3600,
++        "pressure_min": 260,
++        "pressure_max": 120,
++    }
++    payload.update(overrides)
++    return payload
++
++
++def _auth_headers() -> dict:
++    token = create_access_token(1, "admin@ventsearch.local", "admin")
++    return {"Authorization": f"Bearer {token}"}
++
++
++def _fake_admin_row() -> dict:
++    return {
++        "id": 1, "email": "admin@ventsearch.local", "password_hash": "x",
++        "name": "Admin", "company": "", "phone": "", "role": "admin",
++        "is_active": True, "created_at": None, "updated_at": None,
++    }
++
++
++# ---------------------------------------------------------------------------
++# Схема (без HTTP)
++# ---------------------------------------------------------------------------
++
++def test_pressure_min_greater_than_max_is_allowed():
++    # Давление падает с расходом — pressure_min(260) > pressure_max(120) норма
++    product = AdminProductIn(**_base_payload(pressure_min=260, pressure_max=120))
++    assert product.pressure_min == 260
++    assert product.pressure_max == 120
++
++
++def test_airflow_min_greater_than_max_is_rejected():
++    with pytest.raises(ValidationError, match="Расход"):
++        AdminProductIn(**_base_payload(airflow_min=3600, airflow_max=900))
++
++
++@pytest.mark.parametrize("field", ["airflow_min", "airflow_max", "pressure_min", "pressure_max"])
++def test_zero_or_negative_range_values_rejected(field):
++    with pytest.raises(ValidationError):
++        AdminProductIn(**_base_payload(**{field: 0}))
++    with pytest.raises(ValidationError):
++        AdminProductIn(**_base_payload(**{field: -5}))
++
++
++def test_none_range_values_do_not_trigger_validators():
++    # Частичное обновление (поле не задано) не должно падать на сравнении с None
++    product = AdminProductIn(**_base_payload(airflow_min=None, airflow_max=None))
++    assert product.airflow_min is None
++
++
++# ---------------------------------------------------------------------------
++# HTTP: полный путь через кастомный обработчик RequestValidationError —
++# именно тут ловится регрессия "TypeError: Object of type ValueError is not
++# JSON serializable" (ctx.error у pydantic v2 несериализуем без jsonable_encoder)
++# ---------------------------------------------------------------------------
++
++def test_update_product_rejects_inverted_airflow_with_clean_422(monkeypatch):
++    monkeypatch.setattr(
++        "presentation.api.deps.get_user_by_id", lambda conn, uid: _fake_admin_row()
++    )
++    client = make_test_client(monkeypatch)
++
++    r = client.put(
++        "/api/admin/products/test-1",
++        json=_base_payload(airflow_min=3600, airflow_max=900),
++        headers=_auth_headers(),
++    )
++    assert r.status_code == 422
++    body = r.json()
++    assert "Расход" in body["detail"][0]["msg"]
++
++
++def test_update_product_accepts_normal_decreasing_pressure(monkeypatch):
++    monkeypatch.setattr(
++        "presentation.api.deps.get_user_by_id", lambda conn, uid: _fake_admin_row()
++    )
++    saved = {}
++
++    def _fake_update_product(conn, product_id, data):
++        saved.update(data)
++        return {
++            "id": product_id, "number": product_id, "type": data.get("type", ""),
++            "model": data.get("model", ""), "size": data.get("size", ""),
++            "diameter": data.get("diameter"),
++            "airflow": {"min": data.get("airflow_min"), "max": data.get("airflow_max"), "raw": ""},
++            "pressure": {"min": data.get("pressure_min"), "max": data.get("pressure_max"), "raw": ""},
++            "power": data.get("power"), "noise_level": data.get("noise_level"),
++            "price": data.get("price"), "nominal_rpm": None,
++            "pressure_coefficients": None, "efficiency_coefficients": None,
++            "_raw": {}, "_meta": {},
++        }
++
++    monkeypatch.setattr("presentation.api.routes.admin.update_product", _fake_update_product)
++    monkeypatch.setattr("presentation.api.routes.admin._rebuild_catalog_index", lambda: None)
++    client = make_test_client(monkeypatch)
++
++    r = client.put(
++        "/api/admin/products/test-1",
++        json=_base_payload(pressure_min=260, pressure_max=120),
++        headers=_auth_headers(),
++    )
++    assert r.status_code == 200
++    assert saved["pressure_min"] == 260
++    assert saved["pressure_max"] == 120
+diff --git a/frontend/auth.js b/frontend/auth.js
+index 1c62424..d0f0798 100644
+--- a/frontend/auth.js
++++ b/frontend/auth.js
+@@ -68,7 +68,11 @@ async function apiAuthFetch(path, options = {}) {
+     const detail = data?.detail;
+     if (typeof detail === "string") message = detail;
+     else if (detail && typeof detail === "object" && !Array.isArray(detail) && detail.error) message = detail.error;
+-    else if (Array.isArray(detail) && detail[0]?.msg) message = detail[0].msg;
++    else if (Array.isArray(detail) && detail[0]?.msg) {
++      // pydantic v2 добавляет техническую приставку "Value error, " ко всем
++      // сообщениям из наших @model_validator/@field_validator — админу она не нужна
++      message = String(detail[0].msg).replace(/^Value error,\s*/, "");
++    }
+     else if (data?.error) message = data.error;
+     const err = new Error(message);
+     err.status = res.status;
+-- 
+2.43.0
+

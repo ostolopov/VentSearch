@@ -1,0 +1,43 @@
+From 225b69562c3d5241695f870fd528e822518d7f30 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 9 Jul 2026 11:23:52 +0000
+Subject: [PATCH] =?UTF-8?q?=D0=A4=D0=B8=D0=BA=D1=81=20=D1=81=D0=BE=D1=85?=
+ =?UTF-8?q?=D1=80=D0=B0=D0=BD=D0=B5=D0=BD=D0=B8=D1=8F=20=D0=B2=D0=B5=D0=BD?=
+ =?UTF-8?q?=D1=82=D0=B8=D0=BB=D1=8F=D1=82=D0=BE=D1=80=D0=B0=20=D0=B2=20?=
+ =?UTF-8?q?=D0=B0=D0=B4=D0=BC=D0=B8=D0=BD=D0=BA=D0=B5:=20id=20=D1=83=D1=85?=
+ =?UTF-8?q?=D0=BE=D0=B4=D0=B8=D0=BB=20=D0=BF=D1=83=D1=81=D1=82=D1=8B=D0=BC?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+При редактировании поле id блокировалось через disabled — такие поля
+браузер не включает в FormData, поэтому в payload.id попадала пустая
+строка и бэкенд отклонял запрос ("String should have at least 1
+character"), из-за чего не сохранялась вообще никакая правка, включая
+цену. Заменили на readOnly: поле по-прежнему нельзя редактировать,
+но его значение отправляется вместе с формой.
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01Xo2pb2FaYb5UENKMhgVboE
+---
+ frontend/admin.js | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/frontend/admin.js b/frontend/admin.js
+index db90f1c..c051258 100644
+--- a/frontend/admin.js
++++ b/frontend/admin.js
+@@ -668,7 +668,9 @@ function openProductModal(product, isCreate) {
+   state.products.editingId = isCreate ? null : product?.id;
+   const title = $("#productModalTitle");
+   if (title) title.textContent = isCreate ? "Новый вентилятор" : `Редактирование ${product?.id}`;
+-  form.elements.id.disabled = !isCreate;
++  // disabled-поля не попадают в FormData — при сохранении id ушёл бы пустой
++  // строкой и упал на валидации бэкенда; readOnly не даёт менять, но отправляется
++  form.elements.id.readOnly = !isCreate;
+   fillForm(form, product ? productToForm(product) : { id: "", number: "", type: "", model: "", size: "" });
+   productModal.show();
+ }
+-- 
+2.43.0
+

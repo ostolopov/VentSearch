@@ -234,6 +234,19 @@ function bindAdminEvents() {
       renderConsoleLogBuffer();
       return;
     }
+    if (e.target.closest("#creditsToggleLink")) {
+      e.preventDefault();
+      const section = $("#creditsSection");
+      const link = $("#creditsToggleLink");
+      const willShow = section.classList.contains("d-none");
+      section.classList.toggle("d-none");
+      if (link) link.textContent = `О команде проекта ${willShow ? "▴" : "▾"}`;
+      if (willShow && !_creditsLoaded) {
+        _creditsLoaded = true;
+        loadCredits().catch((err) => console.error(err));
+      }
+      return;
+    }
     if (e.target.closest("#debugReloadCsvBtn")) {
       const btn = e.target.closest("#debugReloadCsvBtn");
       btn.disabled = true;
@@ -886,6 +899,44 @@ async function loadDebug() {
 
   const meta = $("#debugMeta");
   if (meta) meta.textContent = `Обновлено: ${new Date().toLocaleTimeString("ru-RU")}`;
+}
+
+let _creditsLoaded = false;
+
+async function loadCredits() {
+  const section = $("#creditsSection");
+  if (!section) return;
+  section.innerHTML = '<div class="text-secondary small">Загрузка…</div>';
+  try {
+    const d = await va().apiAuthFetch("/api/admin/credits");
+    if (!d.found) {
+      section.innerHTML = `<div class="text-secondary small">Файл ${escapeHtml(d.path || "credits.json")} не найден — создайте его, чтобы заполнить этот раздел.</div>`;
+      return;
+    }
+    if (d.error) {
+      section.innerHTML = `<div class="text-danger small">Не удалось прочитать credits.json: ${escapeHtml(d.error)}</div>`;
+      return;
+    }
+    const people = Array.isArray(d.creators) ? d.creators : [];
+    const peopleHtml = people.map((p) => `
+      <div class="mb-2">
+        <div class="fw-semibold">${escapeHtml(p.name || "—")}</div>
+        <div class="text-secondary small">${escapeHtml(p.role || "")}</div>
+        ${p.contact ? `<div class="small">${escapeHtml(p.contact)}</div>` : ""}
+        ${p.note ? `<div class="text-secondary small fst-italic">${escapeHtml(p.note)}</div>` : ""}
+      </div>`).join("") || '<div class="text-secondary small">Список пуст — добавьте участников в data/credits.json.</div>';
+    section.innerHTML = `
+      <div class="card shadow-sm" style="max-width: 480px;">
+        <div class="card-body">
+          <div class="fw-bold mb-1">${escapeHtml(d.project_name || "Проект")}</div>
+          ${d.tagline ? `<div class="text-secondary small mb-3">${escapeHtml(d.tagline)}</div>` : ""}
+          ${peopleHtml}
+          ${d.updated ? `<div class="text-secondary small mt-2 pt-2 border-top">Обновлено: ${escapeHtml(d.updated)}</div>` : ""}
+        </div>
+      </div>`;
+  } catch (err) {
+    section.innerHTML = `<div class="text-danger small">Ошибка загрузки: ${escapeHtml(err.message)}</div>`;
+  }
 }
 
 function openProductModal(product, isCreate) {

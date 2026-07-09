@@ -1,0 +1,912 @@
+From 4ef4aeefb24356cef3271eac3c19c98c192a72f1 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 9 Jul 2026 09:21:41 +0000
+Subject: [PATCH] =?UTF-8?q?=D0=A4=D0=BE=D1=82=D0=BE=20=D0=BD=D0=B0=20?=
+ =?UTF-8?q?=D0=BA=D0=B0=D1=80=D1=82=D0=BE=D1=87=D0=BA=D0=B5,=20=D0=BD?=
+ =?UTF-8?q?=D0=B5=D0=B7=D0=B0=D0=B2=D0=B8=D1=81=D0=B8=D0=BC=D1=8B=D0=B9=20?=
+ =?UTF-8?q?=D0=B7=D1=83=D0=BC=20=D0=B3=D1=80=D0=B0=D1=84=D0=B8=D0=BA=D0=B0?=
+ =?UTF-8?q?,=20=D0=BC=D0=BE=D0=B4=D0=B5=D0=BB=D1=8C=D0=BD=D1=8B=D0=B9=20?=
+ =?UTF-8?q?=D1=80=D1=8F=D0=B4=20=D0=BD=D0=B0=20=D0=BE=D0=B4=D0=BD=D0=BE?=
+ =?UTF-8?q?=D0=BC=20Q-P?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+- Убрали унаследованный CSS-паддинг 3rem у #productImage — фото вентилятора
+  в углу карточки схлопывалось до ~14px и выглядело пустым
+- Ось P на графике теперь масштабируется по самим кривым вентиляторов, а не
+  по хвосту "Кривой сети" — провалы/горбы больше не сжаты в нижнюю четверть
+- Добавили независимый зум по Y (свой ползунок справа) отдельно от Q
+- Курсорные пунктирные линии от рабочей точки к осям — видно координаты
+  без наведения мыши, маркер точки в стиле паспортных графиков
+- Новый эндпоинт /api/products/families группирует вентиляторы в модельный
+  ряд (одна аэродинамическая схема в разных типоразмерах)
+- Карточка модели теперь по умолчанию показывает весь модельный ряд на
+  одном графике: текущий типоразмер — толстой цветной линией, остальные —
+  тонкими серыми, как разные размеры одного поколения телефона
+- На странице сравнения — каскадный подбор "модельный ряд → типоразмер"
+  вместо плоского списка на 300+ моделей
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01Xo2pb2FaYb5UENKMhgVboE
+---
+ .../use_cases/list_product_families.py        |  55 ++++
+ backend/presentation/api/routes/catalog.py    |  39 +++
+ backend/presentation/api/schemas.py           |  12 +
+ backend/tests/test_product_families.py        |  52 ++++
+ frontend/404.html                             |   6 +-
+ frontend/500.html                             |   6 +-
+ frontend/admin.html                           |   4 +-
+ frontend/auth.html                            |   6 +-
+ frontend/compare.html                         |  29 +-
+ frontend/delivery.html                        |   6 +-
+ frontend/index.html                           |   6 +-
+ frontend/product.html                         |   6 +-
+ frontend/project.html                         |   6 +-
+ frontend/script.js                            | 258 +++++++++++++++---
+ frontend/style.css                            |  12 -
+ 15 files changed, 426 insertions(+), 77 deletions(-)
+ create mode 100644 backend/application/use_cases/list_product_families.py
+ create mode 100644 backend/tests/test_product_families.py
+
+diff --git a/backend/application/use_cases/list_product_families.py b/backend/application/use_cases/list_product_families.py
+new file mode 100644
+index 0000000..350f499
+--- /dev/null
++++ b/backend/application/use_cases/list_product_families.py
+@@ -0,0 +1,55 @@
++"""
++Сценарий: группировка вентиляторов в "модельный ряд".
++
++Одна аэродинамическая схема (число лопастей, угол атаки) выпускается в
++нескольких типоразмерах — как один дизайн, масштабированный под разный
++расход/давление. Ключ ряда — модель без типоразмера в хвосте
++(«ВО 13-284-4/15°-456A4» → «ВО 13-284-4/15°»), внутри ряда варианты
++отсортированы по диаметру.
++"""
++from __future__ import annotations
++
++from dataclasses import dataclass, field
++from typing import Any, Dict, List
++
++from domain.interfaces.product_repository import AbstractProductRepository
++
++
++def family_key(model: str | None, size: str | None) -> str:
++    """Ключ модельного ряда: модель без суффикса-типоразмера."""
++    model = (model or "").strip()
++    size = (size or "").strip()
++    if model and size and model.lower().endswith(f"-{size.lower()}"):
++        return model[: -(len(size) + 1)].strip()
++    return model
++
++
++@dataclass
++class ProductFamily:
++    key: str
++    type: str
++    variants: List[Dict[str, Any]] = field(default_factory=list)
++
++
++class ListProductFamiliesUseCase:
++    """Группировка всего каталога по модельному ряду."""
++
++    def __init__(self, product_repo: AbstractProductRepository) -> None:
++        self._repo = product_repo
++
++    def execute(self) -> List[ProductFamily]:
++        products = self._repo.fetch_all()
++
++        groups: Dict[str, ProductFamily] = {}
++        order: List[str] = []
++        for p in products:
++            key = family_key(p.get("model"), p.get("size"))
++            if key not in groups:
++                groups[key] = ProductFamily(key=key, type=p.get("type") or "")
++                order.append(key)
++            groups[key].variants.append(p)
++
++        families = [groups[k] for k in order]
++        for fam in families:
++            fam.variants.sort(key=lambda p: (p.get("diameter") or 0, p.get("id") or ""))
++        return families
+diff --git a/backend/presentation/api/routes/catalog.py b/backend/presentation/api/routes/catalog.py
+index 7bc83c2..9b67803 100644
+--- a/backend/presentation/api/routes/catalog.py
++++ b/backend/presentation/api/routes/catalog.py
+@@ -15,6 +15,8 @@ from presentation.api.schemas import (
+     CatalogFacetsOut,
+     ErrorOut,
+     HTTPValidationErrorOut,
++    ProductFamiliesOut,
++    ProductFamilyOut,
+     ProductListPageOut,
+     ProductOut,
+     QPPointOut,
+@@ -25,6 +27,7 @@ from application.use_cases.search_products import SearchProductsUseCase, SearchP
+ from application.use_cases.get_product import GetProductUseCase, ProductNotFoundError
+ from application.use_cases.get_qp_curve import GetQPCurveUseCase, QPCurveQuery, InsufficientQPDataError
+ from application.use_cases.select_by_point import SelectByPointUseCase, SelectByPointQuery
++from application.use_cases.list_product_families import ListProductFamiliesUseCase
+ from infrastructure.db.connection import get_connection, put_connection
+ from infrastructure.db.product_repository import (
+     PgProductRepository,
+@@ -217,6 +220,42 @@ def api_products_select_point(
+     )
+ 
+ 
++@router.get(
++    "/api/products/families",
++    response_model=ProductFamiliesOut,
++    summary="Модельные ряды: группировка вентиляторов по схеме без типоразмера",
++    description=(
++        "Каждая запись — одна аэродинамическая схема (лопасти/угол), выпускаемая "
++        "в нескольких типоразмерах. Варианты внутри ряда отсортированы по диаметру. "
++        "Используется для сравнения типоразмеров одной модели («ВО 13-284-4/15°» "
++        "в разных диаметрах), как выбор iPhone 14 / 14 Pro / 14 Pro Max."
++    ),
++    responses={
++        200: {"description": "Список модельных рядов.", "model": ProductFamiliesOut},
++        **COMMON_ERROR_RESPONSES,
++    },
++)
++def api_products_families():
++    from config import CSV_PATH
++    _ensure_catalog_sync(CSV_PATH)
++
++    with _db_session() as conn:
++        repo = PgProductRepository(conn)
++        uc = ListProductFamiliesUseCase(repo)
++        families = uc.execute()
++
++    return ProductFamiliesOut(
++        families=[
++            ProductFamilyOut(
++                key=fam.key,
++                type=fam.type,
++                variants=[ProductOut.model_validate(v) for v in fam.variants],
++            )
++            for fam in families
++        ]
++    )
++
++
+ @router.get(
+     "/api/products/{id_or_model}",
+     response_model=ProductOut,
+diff --git a/backend/presentation/api/schemas.py b/backend/presentation/api/schemas.py
+index 723fb3e..1c4239c 100644
+--- a/backend/presentation/api/schemas.py
++++ b/backend/presentation/api/schemas.py
+@@ -156,6 +156,18 @@ class SelectPointOut(BaseModel):
+     point: Dict[str, float] = Field(default_factory=dict, description="Эхо рабочей точки {q, p}")
+ 
+ 
++class ProductFamilyOut(BaseModel):
++    """Модельный ряд: одна аэродинамическая схема в разных типоразмерах."""
++
++    key: str = Field(..., description="Модель без типоразмера в хвосте")
++    type: str = ""
++    variants: List[ProductOut] = Field(default_factory=list)
++
++
++class ProductFamiliesOut(BaseModel):
++    families: List[ProductFamilyOut] = Field(default_factory=list)
++
++
+ class HealthOut(BaseModel):
+     model_config = ConfigDict(json_schema_extra={"example": {"ok": True, "products": 120}})
+ 
+diff --git a/backend/tests/test_product_families.py b/backend/tests/test_product_families.py
+new file mode 100644
+index 0000000..ee43e47
+--- /dev/null
++++ b/backend/tests/test_product_families.py
+@@ -0,0 +1,52 @@
++"""Тесты группировки вентиляторов в модельные ряды (families)."""
++from __future__ import annotations
++
++from application.use_cases.list_product_families import family_key
++from infrastructure.db.product_repository import PgProductRepository
++from tests.conftest import make_test_client
++
++
++def _vo(pid: str, model: str, size: str, diameter: float):
++    return {
++        "id": pid, "number": pid, "type": "Осевой", "model": model, "size": size,
++        "diameter": diameter,
++        "airflow": {"min": 900, "max": 3600, "raw": "900 - 3600"},
++        "pressure": {"min": 30, "max": 170, "raw": "30 - 170"},
++        "power": 120, "noise_level": None, "price": 1000,
++        "nominal_rpm": 1370.0,
++        "_raw": {}, "_meta": {},
++    }
++
++
++def test_family_key_strips_trailing_size():
++    assert family_key("ВО 13-284-4/15°-456A4", "456A4") == "ВО 13-284-4/15°"
++    assert family_key("ВО 13-284-4/15°-456A4", "") == "ВО 13-284-4/15°-456A4"
++    assert family_key("", "456A4") == ""
++    assert family_key(None, None) == ""
++
++
++def test_family_key_no_match_returns_full_model():
++    # Типоразмер не совпадает с хвостом модели — ключ не режем
++    assert family_key("ВО 13-284-4/15°-456A4", "999Z9") == "ВО 13-284-4/15°-456A4"
++
++
++def test_api_products_families_groups_by_scheme(monkeypatch):
++    small = _vo("small", "ВО 13-284-4/15°-456A4", "456A4", 405)
++    big = _vo("big", "ВО 13-284-4/15°-880A6", "880A6", 720)
++    other = _vo("other", "ВО 13-284-6/25°-456A4", "456A4", 405)
++
++    monkeypatch.setattr(PgProductRepository, "fetch_all", lambda self: [small, big, other])
++    client = make_test_client(monkeypatch)
++
++    r = client.get("/api/products/families")
++    assert r.status_code == 200
++    data = r.json()
++    families = {f["key"]: f for f in data["families"]}
++    assert set(families.keys()) == {"ВО 13-284-4/15°", "ВО 13-284-6/25°"}
++
++    fam = families["ВО 13-284-4/15°"]
++    assert len(fam["variants"]) == 2
++    # Отсортированы по диаметру
++    assert [v["id"] for v in fam["variants"]] == ["small", "big"]
++
++    assert len(families["ВО 13-284-6/25°"]["variants"]) == 1
+diff --git a/frontend/404.html b/frontend/404.html
+index e2a87ca..9648392 100644
+--- a/frontend/404.html
++++ b/frontend/404.html
+@@ -9,7 +9,7 @@
+       rel="stylesheet"
+       crossorigin="anonymous"
+     />
+-    <link rel="stylesheet" href="style.css?v=20260708-1" />
++    <link rel="stylesheet" href="style.css?v=20260709-1" />
+   </head>
+   <body data-page="error">
+     <nav class="navbar navbar-expand-lg sticky-top">
+@@ -95,7 +95,7 @@
+     <script src="config.js?v=20260424-1"></script>
+     <script src="auth.js?v=20260524-9"></script>
+     <script src="site-auth.js?v=20260524-9"></script>
+-    <script src="script.js?v=20260708-1"></script>
+-    <script src="site-layout.js?v=20260708-1"></script>
++    <script src="script.js?v=20260709-1"></script>
++    <script src="site-layout.js?v=20260709-1"></script>
+   </body>
+ </html>
+diff --git a/frontend/500.html b/frontend/500.html
+index cb27ae4..497578b 100644
+--- a/frontend/500.html
++++ b/frontend/500.html
+@@ -9,7 +9,7 @@
+       rel="stylesheet"
+       crossorigin="anonymous"
+     />
+-    <link rel="stylesheet" href="style.css?v=20260708-1" />
++    <link rel="stylesheet" href="style.css?v=20260709-1" />
+   </head>
+   <body data-page="error">
+     <nav class="navbar navbar-expand-lg sticky-top">
+@@ -95,7 +95,7 @@
+     <script src="config.js?v=20260424-1"></script>
+     <script src="auth.js?v=20260524-9"></script>
+     <script src="site-auth.js?v=20260524-9"></script>
+-    <script src="script.js?v=20260708-1"></script>
+-    <script src="site-layout.js?v=20260708-1"></script>
++    <script src="script.js?v=20260709-1"></script>
++    <script src="site-layout.js?v=20260709-1"></script>
+   </body>
+ </html>
+diff --git a/frontend/admin.html b/frontend/admin.html
+index 231feee..fc3002f 100644
+--- a/frontend/admin.html
++++ b/frontend/admin.html
+@@ -9,7 +9,7 @@
+       rel="stylesheet"
+       crossorigin="anonymous"
+     />
+-    <link rel="stylesheet" href="style.css?v=20260708-1" />
++    <link rel="stylesheet" href="style.css?v=20260709-1" />
+   </head>
+   <body class="admin-page" data-page="admin">
+     <nav class="navbar navbar-expand-lg sticky-top">
+@@ -275,6 +275,6 @@
+     <script src="site-auth.js?v=20260524-10"></script>
+     <script src="admin.js?v=20260524-11"></script>
+     <script src="admin-page.js?v=20260524-10"></script>
+-    <script src="site-layout.js?v=20260708-1"></script>
++    <script src="site-layout.js?v=20260709-1"></script>
+   </body>
+ </html>
+diff --git a/frontend/auth.html b/frontend/auth.html
+index 78003ce..f7bbee7 100644
+--- a/frontend/auth.html
++++ b/frontend/auth.html
+@@ -9,7 +9,7 @@
+       rel="stylesheet"
+       crossorigin="anonymous"
+     />
+-    <link rel="stylesheet" href="style.css?v=20260708-1" />
++    <link rel="stylesheet" href="style.css?v=20260709-1" />
+   </head>
+   <body data-page="auth" class="auth-page">
+     <nav class="navbar navbar-expand-lg sticky-top">
+@@ -119,7 +119,7 @@
+     <script src="config.js?v=20260424-1"></script>
+     <script src="auth.js?v=20260524-4"></script>
+     <script src="auth-page.js?v=20260524-4"></script>
+-    <script src="script.js?v=20260708-1"></script>
+-    <script src="site-layout.js?v=20260708-1"></script>
++    <script src="script.js?v=20260709-1"></script>
++    <script src="site-layout.js?v=20260709-1"></script>
+   </body>
+ </html>
+diff --git a/frontend/compare.html b/frontend/compare.html
+index 4a8b4ac..2a52593 100644
+--- a/frontend/compare.html
++++ b/frontend/compare.html
+@@ -9,7 +9,7 @@
+       rel="stylesheet"
+       crossorigin="anonymous"
+     />
+-    <link rel="stylesheet" href="style.css?v=20260708-1" />
++    <link rel="stylesheet" href="style.css?v=20260709-1" />
+ 
+ <!-- Yandex.Metrika counter -->
+ <script type="text/javascript">
+@@ -102,6 +102,29 @@
+     <main class="container-fluid px-3 px-lg-4 py-4">
+       <div id="alertBox" class="alert alert-danger d-none mb-3" role="alert"></div>
+ 
++      <div class="card shadow-sm border-0 mb-4" style="border-radius: 20px;">
++        <div class="card-body p-4">
++          <h2 class="h6 fw-bold mb-3">Добавить модель для сравнения</h2>
++          <p class="small text-secondary mb-3">
++            Сначала выберите модельный ряд (аэродинамическую схему), затем — конкретный типоразмер внутри него,
++            как размер экрана у одного поколения телефона.
++          </p>
++          <form id="addCompareForm" class="row g-2 align-items-end">
++            <div class="col-12 col-md-5">
++              <label for="familySelect" class="form-label text-secondary small mb-1 fw-medium">Модельный ряд</label>
++              <select id="familySelect" class="form-select"></select>
++            </div>
++            <div class="col-12 col-md-5">
++              <label for="variantSelect" class="form-label text-secondary small mb-1 fw-medium">Типоразмер</label>
++              <select id="variantSelect" class="form-select"></select>
++            </div>
++            <div class="col-12 col-md-2">
++              <button type="submit" class="btn btn-dark w-100">Добавить</button>
++            </div>
++          </form>
++        </div>
++      </div>
++
+       <div class="row g-4 align-items-stretch">
+         <div class="col-12 col-xxl-6">
+           <div class="card shadow-sm border-0 h-100" style="border-radius: 20px; overflow: hidden;">
+@@ -143,8 +166,8 @@
+     <script src="config.js?v=20260424-1"></script>
+     <script src="auth.js?v=20260524-10"></script>
+     <script src="site-auth.js?v=20260524-10"></script>
+-    <script src="script.js?v=20260708-1"></script>
+-    <script src="site-layout.js?v=20260708-1"></script>
++    <script src="script.js?v=20260709-1"></script>
++    <script src="site-layout.js?v=20260709-1"></script>
+   </body>
+ </html>
+ 
+diff --git a/frontend/delivery.html b/frontend/delivery.html
+index b7cd529..28b7575 100644
+--- a/frontend/delivery.html
++++ b/frontend/delivery.html
+@@ -9,7 +9,7 @@
+       rel="stylesheet"
+       crossorigin="anonymous"
+     />
+-    <link rel="stylesheet" href="style.css?v=20260708-1" />
++    <link rel="stylesheet" href="style.css?v=20260709-1" />
+   </head>
+   <body data-page="delivery">
+     <nav class="navbar navbar-expand-lg sticky-top">
+@@ -176,7 +176,7 @@
+     <script src="config.js?v=20260424-1"></script>
+     <script src="auth.js?v=20260524-9"></script>
+     <script src="site-auth.js?v=20260524-9"></script>
+-    <script src="script.js?v=20260708-1"></script>
+-    <script src="site-layout.js?v=20260708-1"></script>
++    <script src="script.js?v=20260709-1"></script>
++    <script src="site-layout.js?v=20260709-1"></script>
+   </body>
+ </html>
+diff --git a/frontend/index.html b/frontend/index.html
+index 545830e..91a4f8c 100644
+--- a/frontend/index.html
++++ b/frontend/index.html
+@@ -10,7 +10,7 @@
+       integrity="sha384-QWTKZyjpPEjISv5WaRU9OFeRpok6YctnYmDr5pNlyT2bRjXh0JMhjY6hW+ALEwIH"
+       crossorigin="anonymous"
+     />
+-    <link rel="stylesheet" href="style.css?v=20260708-1" />
++    <link rel="stylesheet" href="style.css?v=20260709-1" />
+         
+ <!-- Yandex.Metrika counter -->
+ <script type="text/javascript">
+@@ -368,8 +368,8 @@
+     <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
+     <script src="config.js?v=20260424-1"></script>
+     <script src="auth.js?v=20260524-9"></script>
+-    <script src="script.js?v=20260708-1"></script>
++    <script src="script.js?v=20260709-1"></script>
+     <script src="site-auth.js?v=20260524-9"></script>
+-    <script src="site-layout.js?v=20260708-1"></script>
++    <script src="site-layout.js?v=20260709-1"></script>
+   </body>
+ </html>
+diff --git a/frontend/product.html b/frontend/product.html
+index 6608164..4ee63d7 100644
+--- a/frontend/product.html
++++ b/frontend/product.html
+@@ -10,7 +10,7 @@
+       integrity="sha384-QWTKZyjpPEjISv5WaRU9OFeRpok6YctnYmDr5pNlyT2bRjXh0JMhjY6hW+ALEwIH"
+       crossorigin="anonymous"
+     />
+-    <link rel="stylesheet" href="style.css?v=20260708-1" />
++    <link rel="stylesheet" href="style.css?v=20260709-1" />
+     
+     <!-- Yandex.Metrika counter -->
+ <script type="text/javascript">
+@@ -224,7 +224,7 @@
+     <script src="config.js?v=20260424-1"></script>
+     <script src="auth.js?v=20260524-10"></script>
+     <script src="site-auth.js?v=20260524-10"></script>
+-    <script src="script.js?v=20260708-1"></script>
+-    <script src="site-layout.js?v=20260708-1"></script>
++    <script src="script.js?v=20260709-1"></script>
++    <script src="site-layout.js?v=20260709-1"></script>
+   </body>
+ </html>
+diff --git a/frontend/project.html b/frontend/project.html
+index c6d6208..81c24ab 100644
+--- a/frontend/project.html
++++ b/frontend/project.html
+@@ -9,7 +9,7 @@
+       rel="stylesheet"
+       crossorigin="anonymous"
+     />
+-    <link rel="stylesheet" href="style.css?v=20260708-1" />
++    <link rel="stylesheet" href="style.css?v=20260709-1" />
+ 
+ <!-- Yandex.Metrika counter -->
+ <script type="text/javascript">
+@@ -209,7 +209,7 @@
+     <script src="config.js?v=20260424-1"></script>
+     <script src="auth.js?v=20260524-4"></script>
+     <script src="site-auth.js?v=20260524-4"></script>
+-    <script src="script.js?v=20260708-1"></script>
+-    <script src="site-layout.js?v=20260708-1"></script>
++    <script src="script.js?v=20260709-1"></script>
++    <script src="site-layout.js?v=20260709-1"></script>
+   </body>
+ </html>
+diff --git a/frontend/script.js b/frontend/script.js
+index 4481bd3..4937d0d 100644
+--- a/frontend/script.js
++++ b/frontend/script.js
+@@ -200,6 +200,14 @@ function formatNumber(n) {
+   return new Intl.NumberFormat("ru-RU").format(n);
+ }
+ 
++function pluralRu(n, one, few, many) {
++  const mod10 = n % 10;
++  const mod100 = n % 100;
++  if (mod10 === 1 && mod100 !== 11) return one;
++  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 10 || mod100 >= 20)) return few;
++  return many;
++}
++
+ function formatPrice(price) {
+   if (price === null || price === undefined || Number.isNaN(price)) return "по запросу";
+   return `${formatNumber(price)}\u00A0₽`;
+@@ -322,8 +330,29 @@ function isAxialType(t) {
+   return AXIAL_TYPES.has(String(t).trim().toLowerCase());
+ }
+ 
+-function buildQpDatasetsShared(products, targetRpm = null, targetPoint = null) {
++// Служебные серии (зона допуска, курсорные линии к точке) — не попадают
++// в легенду и подсказку графика.
++function isServiceSeriesName(name) {
++  return typeof name === "string" && (name.startsWith("tol-") || name.startsWith("guide-"));
++}
++
++// familyKey: модель без типоразмера в хвосте — «ВО 13-284-4/15°-456A4» → «ВО 13-284-4/15°».
++// Один и тот же расчёт, что и в backend/application/use_cases/list_product_families.py.
++function familyKey(product) {
++  const model = String(product?.model || "").trim();
++  const size = String(product?.size || "").trim();
++  if (model && size && model.toLowerCase().endsWith(`-${size.toLowerCase()}`)) {
++    return model.slice(0, model.length - size.length - 1).trim();
++  }
++  return model;
++}
++
++// opts.primaryId — если задан среди 2+ моделей, остальные рисуются тонкими
++// серыми (контекст модельного ряда), а выбранная модель — толстой цветной.
++function buildQpDatasetsShared(products, targetRpm = null, targetPoint = null, opts = {}) {
++  const { primaryId = null } = opts;
+   const colors = ["#246bb3", "#e74c3c", "#2ecc71", "#9b59b6", "#f39c12", "#16a085"];
++  const familyMode = primaryId != null && products.length > 1;
+   const series = [];
+ 
+   products.forEach((p, idx) => {
+@@ -379,17 +408,24 @@ function buildQpDatasetsShared(products, targetRpm = null, targetPoint = null) {
+       const pScaled = Math.max(pNom * (scaleFactor * scaleFactor), 0);
+       points.push([qScaled, pScaled]);
+     }
+-    
++
++    const isPrimary = familyMode ? String(p.id) === String(primaryId) : true;
++    const color = familyMode ? (isPrimary ? "#0d6efd" : "#c3ccd6") : colors[idx % colors.length];
++
+     series.push({
+-      name: p.model || p.id,
++      // В модельном ряду соседние типоразмеры подписаны коротко (по размеру) —
++      // полное имя модели остаётся только у выделенной кривой
++      name: familyMode && !isPrimary ? (p.size || p.model || p.id) : (p.model || p.id),
+       type: 'line',
+       // Точки уже лежат на квадратичной Безье (200 шт.) — дополнительное
+       // сглаживание ECharts даёт «сплайн сплайна» и артефакты (QP_MODEL, п. 5.2)
+       smooth: false,
+       symbol: 'none',
+       data: points,
+-      lineStyle: { width: 3, color: colors[idx % colors.length] },
+-      itemStyle: { color: colors[idx % colors.length] }
++      lineStyle: { width: familyMode ? (isPrimary ? 4 : 1.25) : 3, color, opacity: familyMode && !isPrimary ? 0.7 : 1 },
++      itemStyle: { color },
++      z: isPrimary ? 5 : 1,
++      __hideLegend: familyMode && !isPrimary,
+     });
+   });
+ 
+@@ -412,12 +448,15 @@ function buildQpDatasetsShared(products, targetRpm = null, targetPoint = null) {
+       data: systemPoints
+     });
+ 
+-    // Одиночная модель (карточка): зона допуска по давлению вокруг участка
+-    // кривой Q ± 15% от точки + процент запаса в подписи точки.
+-    // В сравнении (2+ моделей) зоны не рисуем — превращается в кашу.
++    // Зона допуска по давлению вокруг участка кривой Q ± 15% от точки + процент
++    // запаса в подписи точки — считаем по единственной модели, либо (в
++    // модельном ряду) по выделенной. При явном сравнении 2+ моделей без
++    // primaryId зону не рисуем — непонятно, к какой кривой её привязывать.
+     let pointLabel = 'Рабочая точка';
+-    if (products.length === 1 && series[0] && series[0].data.length >= 2) {
+-      const fanPts = series[0].data;
++    const primaryIdx = familyMode ? products.findIndex((p) => String(p.id) === String(primaryId)) : 0;
++    const primarySeries = products.length === 1 || familyMode ? series[primaryIdx] : null;
++    if (primarySeries && primarySeries.data.length >= 2) {
++      const fanPts = primarySeries.data;
+       const tolPct = Number(targetPoint.tol) > 0 ? Number(targetPoint.tol) : 7.5;
+       const TOL_P = tolPct / 100;
+       const seg = fanPts.filter(([q]) => q >= targetPoint.q * 0.85 && q <= targetPoint.q * 1.15);
+@@ -459,11 +498,32 @@ function buildQpDatasetsShared(products, targetRpm = null, targetPoint = null) {
+       }
+     }
+ 
++    // Курсорные линии к осям — как в паспортных графиках, чтобы точку было
++    // видно без наведения мыши (обычный axisPointer виден только по hover)
++    series.push({
++      name: 'guide-v',
++      type: 'line',
++      silent: true,
++      symbol: 'none',
++      lineStyle: { type: 'dashed', color: '#d62728', width: 1, opacity: 0.5 },
++      data: [[targetPoint.q, 0], [targetPoint.q, targetPoint.p]],
++      z: 2,
++    });
++    series.push({
++      name: 'guide-h',
++      type: 'line',
++      silent: true,
++      symbol: 'none',
++      lineStyle: { type: 'dashed', color: '#d62728', width: 1, opacity: 0.5 },
++      data: [[0, targetPoint.p], [targetPoint.q, targetPoint.p]],
++      z: 2,
++    });
++
+     series.push({
+       name: 'Рабочая точка',
+       type: 'scatter',
+-      symbolSize: 12,
+-      itemStyle: { color: '#d62728' },
++      symbolSize: 13,
++      itemStyle: { color: '#fff', borderColor: '#d62728', borderWidth: 3 },
+       data: [[targetPoint.q, targetPoint.p]],
+       label: { show: true, formatter: pointLabel, position: 'top', color: '#d62728', fontWeight: 'bold' },
+       zlevel: 10
+@@ -473,7 +533,7 @@ function buildQpDatasetsShared(products, targetRpm = null, targetPoint = null) {
+   return series;
+ }
+ 
+-function renderQpChartShared(container, chartRef, products, targetRpm = null, targetPoint = null) {
++function renderQpChartShared(container, chartRef, products, targetRpm = null, targetPoint = null, opts = {}) {
+   if (!container || typeof echarts === "undefined") return chartRef;
+ 
+   let isNewChart = false;
+@@ -486,17 +546,31 @@ function renderQpChartShared(container, chartRef, products, targetRpm = null, ta
+ 
+   const qpChartFontFamily = 'system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", "Helvetica Neue", Arial, sans-serif';
+ 
+-  const series = buildQpDatasetsShared(products, targetRpm, targetPoint);
++  const series = buildQpDatasetsShared(products, targetRpm, targetPoint, opts);
++
++  // Верхнюю границу оси P считаем по самим кривым вентиляторов (без хвоста
++  // «Кривой сети», который на большом Q улетает высоко и сжимает всё
++  // остальное в нижнюю четверть графика) — так провалы/горбы видно отчётливо
++  let maxCurveP = 0;
++  for (const s of series) {
++    if (isServiceSeriesName(s.name) || s.name === 'Кривая сети' || !Array.isArray(s.data)) continue;
++    for (const d of s.data) {
++      const v = Array.isArray(d) ? d[1] : null;
++      if (v != null && v > maxCurveP) maxCurveP = v;
++    }
++  }
++  if (targetPoint?.p > maxCurveP) maxCurveP = targetPoint.p;
++  const yMax = maxCurveP > 0 ? maxCurveP * 1.18 : undefined;
+ 
+   const option = {
+     tooltip: {
+       trigger: 'axis',
+       axisPointer: { type: 'cross', label: { backgroundColor: '#6a7985' } },
+       textStyle: { fontFamily: qpChartFontFamily, fontSize: 12 },
+-      // Служебные серии зоны допуска (tol-*) в подсказку не попадают
++      // Служебные серии (зона допуска, курсорные линии) в подсказку не попадают
+       formatter: (params) => {
+         const list = (Array.isArray(params) ? params : [params])
+-          .filter((pr) => pr && pr.seriesName && !pr.seriesName.startsWith('tol-'));
++          .filter((pr) => pr && pr.seriesName && !isServiceSeriesName(pr.seriesName));
+         if (!list.length) return '';
+         const first = Array.isArray(list[0].value) ? list[0].value[0] : null;
+         const head = first != null ? `Q = ${formatNumber(first)} м³/ч` : '';
+@@ -509,28 +583,42 @@ function renderQpChartShared(container, chartRef, products, targetRpm = null, ta
+     },
+     legend: {
+       bottom: 0,
+-      data: series.map((s) => s.name).filter((n) => n && !String(n).startsWith('tol-')),
++      data: series.filter((s) => s.name && !isServiceSeriesName(s.name) && !s.__hideLegend).map((s) => s.name),
+       textStyle: { fontFamily: qpChartFontFamily, fontSize: 12 }
+     },
+-    // Зум: колесо/пинч по оси Q + ползунок под графиком (filterMode 'none'
+-    // не обрезает линии на краях видимой области)
++    // Зум по X и Y независим: колесо мыши — по Q (основная ось), а по Y —
++    // свой ползунок справа (перетаскивание не задевает масштаб по X)
+     dataZoom: [
+-      { type: 'inside', xAxisIndex: 0, filterMode: 'none' },
+-      { type: 'slider', xAxisIndex: 0, filterMode: 'none', height: 16, bottom: 26, brushSelect: false }
++      { type: 'inside', xAxisIndex: 0, filterMode: 'none', zoomOnMouseWheel: true, moveOnMouseMove: true },
++      { type: 'inside', yAxisIndex: 0, filterMode: 'none', zoomOnMouseWheel: false, moveOnMouseMove: false },
++      { type: 'slider', xAxisIndex: 0, filterMode: 'none', height: 14, bottom: 26, brushSelect: false },
++      { type: 'slider', yAxisIndex: 0, filterMode: 'none', width: 14, right: 8, brushSelect: false, showDataShadow: false }
+     ],
+     toolbox: {
+       feature: {
+         dataZoom: { yAxisIndex: 'none', title: { zoom: 'Лупа', back: 'Сброс лупы' } },
+         saveAsImage: { title: 'Скачать PNG', name: 'ventsearch-chart' }
+       },
+-      right: 20,
++      right: 40,
+       top: 0
+     },
++    graphic: [{
++      type: 'text',
++      left: 4,
++      top: 2,
++      silent: true,
++      style: {
++        text: 'Колесо — зум по Q · ползунок справа — по P',
++        fill: '#9aa5b1',
++        fontSize: 10.5,
++        fontFamily: qpChartFontFamily
++      }
++    }],
+     grid: {
+       left: '3%',
+-      right: '4%',
++      right: 34,
+       bottom: 76,
+-      top: '10%',
++      top: '12%',
+       containLabel: true
+     },
+     xAxis: {
+@@ -547,6 +635,8 @@ function renderQpChartShared(container, chartRef, products, targetRpm = null, ta
+       name: 'Давление (P), Па',
+       nameLocation: 'end',
+       type: 'value',
++      min: 0,
++      max: yMax,
+       splitLine: { show: true, lineStyle: { color: '#e0e0e0' } },
+       minorSplitLine: { show: true, lineStyle: { color: '#f5f5f5' } },
+       axisLabel: { fontFamily: qpChartFontFamily, formatter: (val) => formatNumber(val) },
+@@ -555,7 +645,7 @@ function renderQpChartShared(container, chartRef, products, targetRpm = null, ta
+     series
+   };
+ 
+-  chartRef.setOption(option);
++  chartRef.setOption(option, true);
+ 
+   // Подписываемся один раз при создании графика: повторные перерисовки
+   // (слайдер оборотов, добавление модели в сравнение) не должны копить обработчики
+@@ -1329,8 +1419,69 @@ async function initComparePage() {
+     }
+   }
+ 
++  // Каскадный подбор «модельный ряд → типоразмер» — как выбор поколения,
++  // затем размера экрана у телефона, вместо плоского списка из 300+ моделей.
++  const MAX_COMPARE = 6;
++  async function initFamilyVariantPicker() {
++    const familySelect = $("#familySelect");
++    const variantSelect = $("#variantSelect");
++    const addForm = $("#addCompareForm");
++    if (!familySelect || !variantSelect || !addForm) return;
++
++    let families = [];
++    try {
++      const data = await fetchJson(apiUrl("/api/products/families"));
++      families = Array.isArray(data?.families) ? data.families : [];
++    } catch (err) {
++      console.error("families fetch failed", err);
++      addForm.classList.add("d-none");
++      return;
++    }
++    if (!families.length) {
++      addForm.classList.add("d-none");
++      return;
++    }
++
++    familySelect.innerHTML = "";
++    for (const fam of families) {
++      const opt = document.createElement("option");
++      opt.value = fam.key;
++      const count = (fam.variants || []).length;
++      opt.textContent = `${fam.key} (${count} ${pluralRu(count, "типоразмер", "типоразмера", "типоразмеров")})`;
++      familySelect.appendChild(opt);
++    }
++
++    function fillVariants() {
++      const fam = families.find((f) => f.key === familySelect.value) || families[0];
++      variantSelect.innerHTML = "";
++      for (const v of fam?.variants || []) {
++        const opt = document.createElement("option");
++        opt.value = v.id;
++        opt.textContent = `${v.size || v.model} · ⌀${v.diameter ?? "—"}мм · ${v.airflow?.raw || "—"} м³/ч · ${formatPrice(v.price)}`;
++        variantSelect.appendChild(opt);
++      }
++    }
++    fillVariants();
++    familySelect.addEventListener("change", fillVariants);
++
++    addForm.addEventListener("submit", (e) => {
++      e.preventDefault();
++      const id = variantSelect.value;
++      if (!id) return;
++      const ids = new Set(loadCompareIds());
++      if (ids.size >= MAX_COMPARE && !ids.has(id)) {
++        showError(`Максимум ${MAX_COMPARE} моделей одновременно — уберите одну, чтобы добавить другую.`);
++        return;
++      }
++      ids.add(id);
++      saveCompareIds(ids);
++      window.location.reload();
++    });
++  }
++
+   try {
+     hideError();
++    await initFamilyVariantPicker();
+     const ids = loadCompareIds();
+     updateCompareNavBadge();
+     if (ids.length < 2) {
+@@ -1440,19 +1591,42 @@ async function initProductPage() {
+     container.classList.remove("d-none");
+     alertBox.classList.add("d-none");
+ 
+-    
+-    productChart = renderQpChartShared(chartCanvas, productChart, [data], null, loadWorkingPoint());
+-    productCompareMeta.textContent = `Сейчас показана характеристика модели ${data.model || data.id}.`;
++    // Модельный ряд: та же аэродинамическая схема в разных типоразмерах —
++    // показываем всей линейкой на одном графике (текущая модель выделена),
++    // как варианты размера одного поколения телефона на одном сравнении.
++    let familyVariants = null;
++    try {
++      const familiesData = await fetchJson(apiUrl("/api/products/families"));
++      const families = Array.isArray(familiesData?.families) ? familiesData.families : [];
++      const myFamily = families.find((f) => (f.variants || []).some((v) => String(v.id) === String(data.id)));
++      if (myFamily && myFamily.variants.length > 1) familyVariants = myFamily.variants;
++
++      // Дропдаун ручного сравнения: группируем по модельному ряду —
++      // плоский список из 300+ моделей был бы бесполезен
++      for (const fam of families) {
++        const items = (fam.variants || []).filter((x) => String(x.id) !== String(data.id));
++        if (!items.length) continue;
++        const group = document.createElement("optgroup");
++        group.label = fam.key || "Прочие";
++        for (const item of items) {
++          const opt = document.createElement("option");
++          opt.value = item.id;
++          opt.textContent = `${item.size || item.model} · ${formatPrice(item.price)}`;
++          group.appendChild(opt);
++        }
++        compareWithSelect.appendChild(group);
++      }
++    } catch (err) {
++      console.error("families fetch failed", err);
++    }
+ 
+-    const listData = await fetchJson(
+-      apiUrl(`/api/products?type=${encodeURIComponent(data.type || "")}&limit=100&offset=0&sort=price_asc`),
+-    );
+-    const options = (Array.isArray(listData?.items) ? listData.items : []).filter((x) => x.id !== data.id);
+-    for (const item of options) {
+-      const opt = document.createElement("option");
+-      opt.value = item.id;
+-      opt.textContent = `${item.model || item.id} · ${formatPrice(item.price)}`;
+-      compareWithSelect.appendChild(opt);
++    if (familyVariants) {
++      productChart = renderQpChartShared(chartCanvas, productChart, familyVariants, null, loadWorkingPoint(), { primaryId: data.id });
++      productCompareMeta.textContent =
++        `Модельный ряд ${familyKey(data)}: ${familyVariants.length} ${pluralRu(familyVariants.length, "типоразмер", "типоразмера", "типоразмеров")}, текущая модель выделена цветом.`;
++    } else {
++      productChart = renderQpChartShared(chartCanvas, productChart, [data], null, loadWorkingPoint());
++      productCompareMeta.textContent = `Сейчас показана характеристика модели ${data.model || data.id}.`;
+     }
+ 
+     $("#exportProductPdfBtn")?.addEventListener("click", async () => {
+@@ -1468,8 +1642,14 @@ async function initProductPage() {
+     compareOnProductBtn?.addEventListener("click", async () => {
+       const otherId = compareWithSelect.value;
+       if (!otherId) {
+-        productChart = renderQpChartShared(chartCanvas, productChart, [currentProduct], null, loadWorkingPoint());
+-        productCompareMeta.textContent = "Выберите вторую модель для сравнения.";
++        if (familyVariants) {
++          productChart = renderQpChartShared(chartCanvas, productChart, familyVariants, null, loadWorkingPoint(), { primaryId: currentProduct.id });
++          productCompareMeta.textContent =
++            `Модельный ряд ${familyKey(currentProduct)}: ${familyVariants.length} ${pluralRu(familyVariants.length, "типоразмер", "типоразмера", "типоразмеров")}, текущая модель выделена цветом.`;
++        } else {
++          productChart = renderQpChartShared(chartCanvas, productChart, [currentProduct], null, loadWorkingPoint());
++          productCompareMeta.textContent = "Выберите вторую модель для сравнения.";
++        }
+         return;
+       }
+       const second = await fetchJson(apiUrl(`/api/products/${encodeURIComponent(otherId)}`));
+diff --git a/frontend/style.css b/frontend/style.css
+index 5610916..3020ce8 100644
+--- a/frontend/style.css
++++ b/frontend/style.css
+@@ -554,20 +554,8 @@ h1, h2, h3, h4, h5, h6 {
+   font-size: 1rem;
+ }
+ 
+-#productImage {
+-  border-radius: var(--vs-radius-lg);
+-  overflow: hidden;
+-  background: var(--vs-bg);
+-  border: 1px solid var(--vs-border);
+-  padding: 3rem;
+-  display: flex;
+-  align-items: center;
+-  justify-content: center;
+-}
+-
+ #productImage .fan-photo {
+   object-fit: contain;
+-  max-height: 400px;
+ }
+ 
+ .tabs-card {
+-- 
+2.43.0
+

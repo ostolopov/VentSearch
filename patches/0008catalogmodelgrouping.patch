@@ -1,0 +1,97 @@
+From 9162f3e377f6f8fcff31059d2674864f8bc781e9 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 9 Jul 2026 10:44:16 +0000
+Subject: [PATCH] =?UTF-8?q?=D0=93=D1=80=D1=83=D0=BF=D0=BF=D0=B8=D1=80?=
+ =?UTF-8?q?=D0=BE=D0=B2=D0=BA=D0=B0=20=D1=80=D0=B5=D0=B7=D1=83=D0=BB=D1=8C?=
+ =?UTF-8?q?=D1=82=D0=B0=D1=82=D0=BE=D0=B2=20=D0=BA=D0=B0=D1=82=D0=B0=D0=BB?=
+ =?UTF-8?q?=D0=BE=D0=B3=D0=B0=20=D0=BF=D0=BE=20=D0=BC=D0=BE=D0=B4=D0=B5?=
+ =?UTF-8?q?=D0=BB=D1=8C=D0=BD=D0=BE=D0=BC=D1=83=20=D1=80=D1=8F=D0=B4=D1=83?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+В карточках каталога (обычный просмотр, поиск по ключевым словам, подбор
+по рабочей точке) результаты теперь группируются по той же схеме, что и
+на графике Q-P: сначала все типоразмеры одного ряда подряд под общим
+заголовком («ВО 13-284-10/20° · 12 моделей»), затем следующий ряд —
+вместо того чтобы перемежаться карточками разных схем. Сортировка и сам
+поиск не изменились — группировка только переставляет уже полученные
+результаты, стягивая совпадающие типоразмеры в один блок.
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01Xo2pb2FaYb5UENKMhgVboE
+---
+ frontend/script.js | 33 +++++++++++++++++++++++++++++++--
+ frontend/style.css |  5 +++++
+ 2 files changed, 36 insertions(+), 2 deletions(-)
+
+diff --git a/frontend/script.js b/frontend/script.js
+index 0f6780c..c4048a1 100644
+--- a/frontend/script.js
++++ b/frontend/script.js
+@@ -1006,7 +1006,7 @@ async function initCatalogPage() {
+       return;
+     }
+ 
+-    for (const p of state.currentItems) {
++    function buildProductCard(p) {
+       state.cacheById.set(p.id, p);
+       const col = document.createElement("div");
+       col.className = "col-6 col-md-6 col-xl-4";
+@@ -1066,7 +1066,36 @@ async function initCatalogPage() {
+       card.appendChild(imgWrap);
+       card.appendChild(body);
+       col.appendChild(card);
+-      grid.appendChild(col);
++      return col;
++    }
++
++    // Группировка по модельному ряду (та же схема, что и на графике Q-P):
++    // одинаковые типоразмеры собираются подряд под общим заголовком, вместо
++    // того чтобы перемежаться карточками других рядов. Сама сортировка и
++    // поиск не меняются — группы просто «стягивают» совпадающие карточки
++    // в один блок, сохраняя порядок первого появления ряда в списке.
++    const groups = new Map();
++    for (const p of state.currentItems) {
++      const key = familyKey(p);
++      if (!groups.has(key)) groups.set(key, []);
++      groups.get(key).push(p);
++    }
++
++    for (const [key, items] of groups) {
++      if (groups.size > 1) {
++        const header = document.createElement("div");
++        header.className = "col-12";
++        header.innerHTML = `
++          <div class="d-flex align-items-baseline gap-2 model-group-header ${groups.size > 1 && grid.childElementCount > 0 ? "mt-2" : ""} mb-1">
++            <h3 class="h6 fw-bold mb-0">${escapeHtml(key || "Прочие")}</h3>
++            <span class="text-secondary small">${items.length} ${pluralRu(items.length, "модель", "модели", "моделей")}</span>
++          </div>
++        `;
++        grid.appendChild(header);
++      }
++      for (const p of items) {
++        grid.appendChild(buildProductCard(p));
++      }
+     }
+ 
+     syncSelectionUi();
+diff --git a/frontend/style.css b/frontend/style.css
+index 3020ce8..5d6f3cb 100644
+--- a/frontend/style.css
++++ b/frontend/style.css
+@@ -235,6 +235,11 @@ h1, h2, h3, h4, h5, h6 {
+   box-shadow: 0 0 0 2px var(--vs-text);
+ }
+ 
++.model-group-header {
++  padding-bottom: 0.5rem;
++  border-bottom: 2px solid var(--vs-border);
++}
++
+ .product-card {
+   height: 100%;
+   overflow: hidden;
+-- 
+2.43.0
+

@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 
 @dataclass(frozen=True)
@@ -51,6 +51,7 @@ class Product:
     nominal_rpm: Optional[float] = None
     pressure_coefficients: Optional[List[float]] = None
     efficiency_coefficients: Optional[List[float]] = None
+    dimensions: Optional[Dict[str, str]] = None
     model_slug: str = ""
 
     def has_qp_data(self) -> bool:

@@ -6,11 +6,12 @@
 from __future__ import annotations
 
 import io
+import json
 from pathlib import Path
 
 import pytest
 
-from infrastructure.csv.loader import CsvLoadReport, load_csv_into_db, norm_header
+from infrastructure.csv.loader import CsvLoadReport, DIMENSION_COLUMNS, load_csv_into_db, norm_header
 
 
 class _FakeCursor:
@@ -18,6 +19,7 @@ class _FakeCursor:
         self.fail_on_row_ids = fail_on_row_ids
         self.inserted_ids: list[str] = []
         self.savepoints: list[str] = []
+        self.dimensions_by_id: dict[str, str] = {}
 
     def execute(self, sql: str, params=None):
         sql_stripped = sql.strip()
@@ -35,6 +37,7 @@ class _FakeCursor:
             if row_id in self.fail_on_row_ids:
                 raise RuntimeError(f"simulated DB error for {row_id}")
             self.inserted_ids.append(row_id)
+            self.dimensions_by_id[row_id] = params[-1]
             return
         raise AssertionError(f"unexpected SQL: {sql_stripped[:50]}")
 
@@ -138,3 +141,51 @@ def test_report_caps_listed_rows_but_keeps_counting(tmp_path):
     for i in range(100):
         report.note_skip(i, "test reason", f"num{i}")
     assert len(report.skipped_rows) == CsvLoadReport._MAX_LISTED
+
+
+# --- Габаритные размеры (D/d, L/l, B/b, D1/d1 — регистр смыслоразличающий) ---
+
+def test_dimension_columns_are_not_flagged_as_unrecognized(tmp_path):
+    header = CSV_HEADER + ";" + ";".join(DIMENSION_COLUMNS)
+    dim_values = ";".join(["4", "56 - 100", "405", "440", "10", "8", "285", "425", "225", "30", "260", "15", "475", "495", "255"])
+    body = f"V1;Осевой;ВО 13-284-4/15°-456A4;456A4;405;0.25 - 0.70;52 - 223;120;-;-;1370;-;-;{dim_values}\n"
+    path = _write_csv(tmp_path, body, header=header)
+
+    conn = _FakeConn()
+    report = load_csv_into_db(conn, path)
+
+    assert report.unrecognized_columns == []
+    assert report.inserted == 1
+
+
+def test_dimension_D_and_d_do_not_collide(tmp_path):
+    """
+    Регрессия: norm_header() приводит к нижнему регистру, поэтому 'D' и 'd'
+    (это РАЗНЫЕ размеры на чертеже — диаметр корпуса и диаметр отверстия)
+    раньше схлопывались в один ключ и затирали друг друга.
+    """
+    header = CSV_HEADER + ";D;d;L;l;B;b;D1;d1"
+    body = "V1;Осевой;ВО 13-284-4/15°-456A4;456A4;405;0.25 - 0.70;52 - 223;120;-;-;1370;-;-;900;12;285;30;475;260;440;15\n"
+    path = _write_csv(tmp_path, body, header=header)
+
+    conn = _FakeConn()
+    load_csv_into_db(conn, path)
+
+    dims = json.loads(conn.cur.dimensions_by_id["V1"])
+    assert dims["D"] == "900"
+    assert dims["d"] == "12"
+    assert dims["L"] == "285"
+    assert dims["l"] == "30"
+    assert dims["B"] == "475"
+    assert dims["b"] == "260"
+    assert dims["D1"] == "440"
+    assert dims["d1"] == "15"
+
+
+def test_dimensions_absent_when_no_dimension_columns(tmp_path):
+    body = "V1;Осевой;ВО 13-284-4/15°-456A4;456A4;405;0.25 - 0.70;52 - 223;120;-;-;1370;-;-\n"
+    path = _write_csv(tmp_path, body)
+
+    conn = _FakeConn()
+    load_csv_into_db(conn, path)
+    assert conn.cur.dimensions_by_id["V1"] is None

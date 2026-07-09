@@ -343,12 +343,33 @@ def _build_compare_pdf(products: list[dict[str, Any]], chart_png: Optional[bytes
     draw_row("Шум", noises, min_idx(nvals))
     draw_row("Цена", prices, min_idx(prvals))
 
+    def wrap_to_width(text, font_name, font_size, max_width):
+        """Разбивает текст на строки по ширине (в пунктах reportlab), не обрезая."""
+        words = text.split(" ")
+        lines, cur = [], ""
+        for w in words:
+            candidate = f"{cur} {w}".strip()
+            if pdf.stringWidth(candidate, font_name, font_size) <= max_width or not cur:
+                cur = candidate
+            else:
+                lines.append(cur)
+                cur = w
+        if cur:
+            lines.append(cur)
+        return lines
+
     y -= 4 * mm
     line("Подробно по моделям:", step=7.0 * mm, bold=True)
     for idx, p in enumerate(products, start=1):
-        if y < 36 * mm:
+        dims = p.get("dimensions") or {}
+        dims_size = 7.5
+        dims_lines = []
+        if dims:
+            dims_text = "Размеры (мм): " + "   ·   ".join(f"{k}={v}" for k, v in dims.items())
+            dims_lines = wrap_to_width(dims_text, font_r, dims_size, width - 6 * mm)
+        card_h = (25.5 + len(dims_lines) * 4) * mm if dims_lines else 30 * mm
+        if y - card_h < 6 * mm:
             new_page()
-        card_h = 30 * mm
         pdf.setStrokeColor(c_border)
         pdf.setFillColor(colors.white)
         pdf.roundRect(left, y - card_h, width, card_h, 2 * mm, stroke=1, fill=1)
@@ -364,6 +385,10 @@ def _build_compare_pdf(products: list[dict[str, Any]], chart_png: Optional[bytes
                        f"Расход: {airflows[idx-1]}   |   Давление: {pressures[idx-1]}")
         pdf.drawString(left + 3 * mm, y - 24.5 * mm,
                        f"Мощность: {powers[idx-1]}   |   Шум: {noises[idx-1]}   |   Цена: {prices[idx-1]}")
+        if dims_lines:
+            pdf.setFont(font_r, dims_size)
+            for i, dl in enumerate(dims_lines):
+                pdf.drawString(left + 3 * mm, y - (29.5 + i * 4) * mm, dl)
         y -= card_h + 3.5 * mm
 
     pdf.save()
