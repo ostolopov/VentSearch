@@ -538,6 +538,21 @@ def create_app() -> FastAPI:
             "creators": creators,
         }
 
+    @app.get("/api/photos-version", summary="Версии файлов фото (кэш-бастинг)", tags=["system"])
+    def api_photos_version():
+        """
+        Время изменения каждого файла в photos/ — фронтенд добавляет его как
+        ?v=... к ссылке на картинку, чтобы браузер не показывал старое фото
+        из кэша после замены файла на диске (URL иначе не меняется).
+        """
+        if not PHOTOS_DIR.exists():
+            return {}
+        versions: dict[str, int] = {}
+        for entry in PHOTOS_DIR.iterdir():
+            if entry.is_file():
+                versions[entry.name] = int(entry.stat().st_mtime)
+        return versions
+
     # --- Export ---
 
     @app.post("/api/export/pdf", summary="Экспорт сравнения в PDF", tags=["export"])

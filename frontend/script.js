@@ -338,20 +338,48 @@ function getImageFileName(product) {
   return FAN_IMAGES_BY_TYPE[typeKey] || null;
 }
 
+let _photosVersionCache = null;
+let _photosVersionPromise = null;
+
+// Версии файлов photos/ (мтайм) с бэкенда — используются как ?v=... в ссылке
+// на фото, чтобы браузер сразу подхватывал заменённый файл на диске: URL без
+// этого параметра не меняется при замене файла, и браузер показывает старую
+// картинку из своего кэша даже после Docker reset / перезапуска сервера.
+async function ensurePhotosVersionLoaded() {
+  if (_photosVersionCache) return _photosVersionCache;
+  if (!_photosVersionPromise) {
+    _photosVersionPromise = fetch(apiUrl("/api/photos-version"))
+      .then((res) => (res.ok ? res.json() : {}))
+      .catch(() => ({}))
+      .then((data) => {
+        _photosVersionCache = data && typeof data === "object" ? data : {};
+        return _photosVersionCache;
+      });
+  }
+  return _photosVersionPromise;
+}
+
 function getImageUrlCandidates(product) {
   const fileName = getImageFileName(product);
   if (!fileName) return [];
   const encoded = encodeURIComponent(fileName);
-  const candidates = [apiUrl(`/photos/${encoded}`), `/photos/${encoded}`, `photos/${encoded}`];
+  const version = _photosVersionCache?.[fileName];
+  const suffix = version ? `?v=${version}` : "";
+  const candidates = [
+    `${apiUrl(`/photos/${encoded}`)}${suffix}`,
+    `/photos/${encoded}${suffix}`,
+    `photos/${encoded}${suffix}`,
+  ];
   if (typeof window !== "undefined" && window.location?.origin && window.location.origin !== "null") {
-    candidates.push(`${window.location.origin}/photos/${encoded}`);
+    candidates.push(`${window.location.origin}/photos/${encoded}${suffix}`);
   }
   return [...new Set(candidates.filter(Boolean))];
 }
 
-function renderFanImage(container, product, altText, lazy = true) {
+async function renderFanImage(container, product, altText, lazy = true) {
   if (!container) return;
   container.innerHTML = "";
+  await ensurePhotosVersionLoaded();
   const imageUrls = getImageUrlCandidates(product);
   if (!imageUrls.length) {
     container.innerHTML = '<span class="text-secondary small">Фото скоро появится</span>';
