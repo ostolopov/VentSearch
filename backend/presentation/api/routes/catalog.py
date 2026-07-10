@@ -195,15 +195,36 @@ def api_products_select_point(
     point_p: Annotated[float, Query(description="Требуемое давление, Па.", gt=0)],
     tolerance: Annotated[float, Query(description="Допустимый недобор давления, %.", ge=0, le=50)] = 0.0,
     limit: Annotated[int, Query(description="Максимум результатов.", ge=1, le=100)] = 20,
+    # Фильтры каталога — сужают кандидатов до проверки кривой (совместный
+    # поиск «по точке + по названию/типу/цене», а не взаимоисключающий).
+    # Имена параметров — как у /api/products, чтобы фронт передавал их 1:1.
+    q: Annotated[Optional[str], Query(description="Поиск по названию/типу/размеру.")] = None,
+    fan_type: Annotated[Optional[str], Query(alias="type", description="Тип вентилятора.")] = None,
+    series: Annotated[Optional[str], Query(description="Типоразмер/серия.")] = None,
+    diameter: Annotated[Optional[float], Query(description="Диаметр, мм.")] = None,
+    minPrice: Annotated[Optional[float], Query(ge=0)] = None,
+    maxPrice: Annotated[Optional[float], Query(ge=0)] = None,
+    minPower: Annotated[Optional[float], Query(ge=0)] = None,
+    maxPower: Annotated[Optional[float], Query(ge=0)] = None,
+    minNoise: Annotated[Optional[float], Query(ge=0)] = None,
+    maxNoise: Annotated[Optional[float], Query(ge=0)] = None,
 ):
     from config import CSV_PATH
     _ensure_catalog_sync(CSV_PATH)
+
+    qn = _normalize_whitespace(q).lower() or None
+    tn = _normalize_whitespace(fan_type) or None
+    sn = _normalize_whitespace(series) or None
 
     with _db_session() as conn:
         repo = PgProductRepository(conn)
         uc = SelectByPointUseCase(repo)
         result = uc.execute(SelectByPointQuery(
             point_q=point_q, point_p=point_p, tolerance=tolerance, limit=limit,
+            q=qn, type_=tn, series=sn, diameter=diameter,
+            min_price=minPrice, max_price=maxPrice,
+            min_power=minPower, max_power=maxPower,
+            min_noise=minNoise, max_noise=maxNoise,
         ))
 
     return SelectPointOut(

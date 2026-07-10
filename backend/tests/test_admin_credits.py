@@ -79,3 +79,42 @@ def test_credits_malformed_json_reports_error(monkeypatch, tmp_path):
     data = r.json()
     assert data["found"] is True
     assert "error" in data
+
+
+# ---------------------------------------------------------------------------
+# Публичный /api/contacts — выжимка для контакт-виджета (без авторизации)
+# ---------------------------------------------------------------------------
+
+def test_public_contacts_no_auth_required(monkeypatch, tmp_path):
+    payload = {
+        "project_name": "VENTSEARCH",
+        "creators": [
+            {"name": "Иван", "role": "Backend", "contact": "ivan@example.com",
+             "note": "внутренняя заметка — наружу не отдаём"},
+        ],
+    }
+    p = tmp_path / "credits.json"
+    p.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    import config
+    monkeypatch.setattr(config, "CREDITS_PATH", p)
+    client = make_test_client(monkeypatch)
+
+    r = client.get("/api/contacts")  # без токена
+    assert r.status_code == 200
+    data = r.json()
+    assert data["found"] is True
+    assert data["creators"][0]["name"] == "Иван"
+    assert data["creators"][0]["contact"] == "ivan@example.com"
+    # Приватные поля не утекают в публичный эндпоинт
+    assert "note" not in data["creators"][0]
+    assert "внутренняя" not in r.text
+
+
+def test_public_contacts_missing_file(monkeypatch, tmp_path):
+    import config
+    monkeypatch.setattr(config, "CREDITS_PATH", tmp_path / "nope.json")
+    client = make_test_client(monkeypatch)
+    r = client.get("/api/contacts")
+    assert r.status_code == 200
+    assert r.json() == {"found": False, "creators": []}

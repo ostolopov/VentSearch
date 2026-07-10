@@ -368,8 +368,11 @@ def _bloom_speed_benchmark(bloom, known_values: list[str], haystack: list[str], 
         "linear_total_ms": round(linear_elapsed * 1000, 3),
         "linear_per_op_us": round(linear_elapsed / n_probes * 1e6, 3),
         "speedup_x": round(linear_elapsed / bloom_elapsed, 1) if bloom_elapsed > 0 else None,
-        "note": "Bloom — O(1) (не зависит от размера каталога), линейный перебор — O(n). "
-                "На маленьком каталоге разница в наносекундах, но растёт с ростом n.",
+        "note": "Bloom — O(1) по числу записей, линейный перебор — O(n). На малом каталоге "
+                "линейный может быть БЫСТРЕЕ: перебор списка выполняется на C-уровне "
+                "интерпретатора, а Bloom считает хэш на Python — у O(1) выше константа. "
+                "Смысл Bloom — время НЕ растёт с n: при 100 000+ записей перебор деградирует "
+                "линейно, а Bloom остаётся тем же.",
     }
 
 

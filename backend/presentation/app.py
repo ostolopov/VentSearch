@@ -510,6 +510,34 @@ def create_app() -> FastAPI:
 
         return {"urls": urls, "hint": "Откройте на другом устройстве в той же локальной сети."}
 
+    @app.get("/api/contacts", summary="Контакты команды (для виджета на сайте)", tags=["system"])
+    def api_contacts():
+        """
+        Публичная выжимка из data/credits.json для плавающего контакт-виджета:
+        только имя/роль/контакт, без служебных полей. Файл читается на каждый
+        запрос — правки применяются без перезапуска.
+        """
+        import json as _json
+        from config import CREDITS_PATH
+
+        if not CREDITS_PATH.exists():
+            return {"found": False, "creators": []}
+        try:
+            with CREDITS_PATH.open("r", encoding="utf-8") as f:
+                data = _json.load(f)
+        except (_json.JSONDecodeError, OSError):
+            return {"found": False, "creators": []}
+        creators = [
+            {"name": c.get("name", ""), "role": c.get("role", ""), "contact": c.get("contact", "")}
+            for c in (data.get("creators") or [])
+            if isinstance(c, dict) and (c.get("name") or c.get("contact"))
+        ]
+        return {
+            "found": True,
+            "project_name": data.get("project_name", ""),
+            "creators": creators,
+        }
+
     # --- Export ---
 
     @app.post("/api/export/pdf", summary="Экспорт сравнения в PDF", tags=["export"])

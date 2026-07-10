@@ -19,14 +19,15 @@ class BloomFilter:
         self._bytes = bytearray((self._m + 7) // 8)
 
     def _positions(self, item: str) -> list[int]:
-        b = item.encode("utf-8")
-        out: list[int] = []
-        for i in range(self._k):
-            person = bytearray(16)
-            person[0:2] = i.to_bytes(2, "big")
-            h = hashlib.blake2b(b, digest_size=8, person=bytes(person)).digest()
-            out.append(int.from_bytes(h, "big") % self._m)
-        return out
+        # Двойное хэширование (Кирш-Митценмахер): k позиций из ОДНОГО вызова
+        # blake2b — pos_i = (h1 + i·h2) mod m. Свойства (вероятность ложных
+        # срабатываний) те же, что у k независимых хэшей, но в ~k раз быстрее:
+        # раньше на каждый запрос считалось до 16 отдельных digest'ов.
+        h = hashlib.blake2b(item.encode("utf-8"), digest_size=16).digest()
+        h1 = int.from_bytes(h[:8], "big")
+        h2 = int.from_bytes(h[8:], "big") | 1  # нечётное — обходит весь диапазон mod m
+        m = self._m
+        return [(h1 + i * h2) % m for i in range(self._k)]
 
     def _set_bit(self, pos: int) -> None:
         self._bytes[pos // 8] |= 1 << (pos % 8)

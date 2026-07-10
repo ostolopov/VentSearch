@@ -18,12 +18,28 @@ from domain.services.qp_service import pressure_at_flow
 
 @dataclass
 class SelectByPointQuery:
-    """Рабочая точка, допуск по давлению (%) и ограничение размера выдачи."""
+    """Рабочая точка, допуск по давлению (%) и ограничение размера выдачи.
+
+    Дополнительные фильтры каталога (поиск по названию, тип, типоразмер, цена
+    и т.д.) сужают множество кандидатов ДО проверки кривой — подбор по точке и
+    обычные фильтры работают вместе, а не взаимоисключающе. Диапазоны расхода
+    здесь не принимаются: расход уже задан самой точкой Q.
+    """
 
     point_q: float
     point_p: float
     tolerance: float = 0.0
     limit: int = 20
+    q: str | None = None
+    type_: str | None = None
+    series: str | None = None
+    diameter: float | None = None
+    min_price: float | None = None
+    max_price: float | None = None
+    min_power: float | None = None
+    max_power: float | None = None
+    min_noise: float | None = None
+    max_noise: float | None = None
 
 
 @dataclass
@@ -50,7 +66,18 @@ class SelectByPointUseCase:
     def execute(self, query: SelectByPointQuery) -> SelectByPointResult:
         # Кандидаты: рабочий диапазон расхода накрывает точку Q
         # (min_airflow=Q отсекает airflow_max < Q, max_airflow=Q — airflow_min > Q)
+        # + пользовательские фильтры каталога, если заданы
         candidates = self._repo.list_products(
+            q=query.q,
+            type_=query.type_,
+            series=query.series,
+            diameter=query.diameter,
+            min_price=query.min_price,
+            max_price=query.max_price,
+            min_power=query.min_power,
+            max_power=query.max_power,
+            min_noise=query.min_noise,
+            max_noise=query.max_noise,
             min_airflow=query.point_q,
             max_airflow=query.point_q,
             sort="price_asc",

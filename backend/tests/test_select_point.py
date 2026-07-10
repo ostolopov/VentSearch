@@ -128,3 +128,49 @@ def test_select_point_validation(monkeypatch):
     assert client.get("/api/products/select-point").status_code == 422
     assert client.get("/api/products/select-point?point_q=0&point_p=100").status_code == 422
     assert client.get("/api/products/select-point?point_q=100&point_p=-5").status_code == 422
+
+
+def test_select_point_combines_with_catalog_filters(monkeypatch):
+    """
+    Совместный поиск: фильтры каталога (q, type, цена...) сужают кандидатов
+    подбора по точке — раньше режимы были взаимоисключающими.
+    """
+    captured = {}
+
+    def fake_list_products(self, **kw):
+        captured.update(kw)
+        return [_vo_product("only", 900, 3600, 150, 400)]
+
+    monkeypatch.setattr(PgProductRepository, "list_products", fake_list_products)
+    client = make_test_client(monkeypatch)
+
+    r = client.get(
+        "/api/products/select-point?point_q=2000&point_p=100"
+        "&q=13-284&type=Осевой&minPrice=500&maxPrice=5000&series=456A4"
+    )
+    assert r.status_code == 200
+    assert [it["product"]["id"] for it in r.json()["items"]] == ["only"]
+
+    # Фильтры дошли до репозитория вместе с ограничением по точке
+    assert captured["q"] == "13-284"
+    assert captured["type_"] == "Осевой"
+    assert captured["series"] == "456A4"
+    assert captured["min_price"] == 500
+    assert captured["max_price"] == 5000
+    assert captured["min_airflow"] == 2000
+    assert captured["max_airflow"] == 2000
+
+
+def test_select_point_without_filters_passes_none(monkeypatch):
+    captured = {}
+
+    def fake_list_products(self, **kw):
+        captured.update(kw)
+        return []
+
+    monkeypatch.setattr(PgProductRepository, "list_products", fake_list_products)
+    client = make_test_client(monkeypatch)
+    assert client.get("/api/products/select-point?point_q=2000&point_p=100").status_code == 200
+    assert captured["q"] is None
+    assert captured["type_"] is None
+    assert captured["min_price"] is None

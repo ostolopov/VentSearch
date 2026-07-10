@@ -224,6 +224,28 @@ function bindAdminEvents() {
     loadDebug().catch((err) => showAdminError(err.message));
   });
 
+  // «О команде»: загружаем при первом открытии вкладки
+  document.getElementById("creditsTabBtn")?.addEventListener("shown.bs.tab", () => {
+    if (_creditsLoaded) return;
+    _creditsLoaded = true;
+    loadCredits().catch((err) => showAdminError(err.message));
+  });
+
+  // Активная вкладка переживает перезагрузку страницы (F5 возвращал на первую)
+  const TAB_STORAGE_KEY = "ventsearch.admin.tab";
+  document.querySelectorAll('#adminAppSection [data-bs-toggle="tab"]').forEach((btn) => {
+    btn.addEventListener("shown.bs.tab", () => {
+      try { localStorage.setItem(TAB_STORAGE_KEY, btn.getAttribute("data-bs-target") || ""); } catch { /* приватный режим */ }
+    });
+  });
+  try {
+    const savedTab = localStorage.getItem(TAB_STORAGE_KEY);
+    if (savedTab && savedTab !== "#tabProducts" && typeof bootstrap !== "undefined") {
+      const btn = document.querySelector(`#adminAppSection [data-bs-target="${savedTab}"]`);
+      if (btn) bootstrap.Tab.getOrCreateInstance(btn).show();
+    }
+  } catch { /* приватный режим */ }
+
   root.addEventListener("click", (e) => {
     if (e.target.closest("#debugRefreshBtn")) {
       loadDebug().catch((err) => showAdminError(err.message));
@@ -232,19 +254,6 @@ function bindAdminEvents() {
     if (e.target.closest("#debugClearConsoleBtn")) {
       _consoleBuffer.length = 0;
       renderConsoleLogBuffer();
-      return;
-    }
-    if (e.target.closest("#creditsToggleLink")) {
-      e.preventDefault();
-      const section = $("#creditsSection");
-      const link = $("#creditsToggleLink");
-      const willShow = section.classList.contains("d-none");
-      section.classList.toggle("d-none");
-      if (link) link.textContent = `О команде проекта ${willShow ? "▴" : "▾"}`;
-      if (willShow && !_creditsLoaded) {
-        _creditsLoaded = true;
-        loadCredits().catch((err) => console.error(err));
-      }
       return;
     }
     if (e.target.closest("#debugReloadCsvBtn")) {
@@ -1004,5 +1013,7 @@ document.addEventListener("DOMContentLoaded", () => {
     bindAdminEvents();
     ensureAdminModals();
   }
+
+  // «Поделиться» в шапке админки обрабатывает admin-page.js
 });
 })();

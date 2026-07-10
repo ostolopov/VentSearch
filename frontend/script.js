@@ -204,6 +204,44 @@ function saveTileSize(size) {
   }
 }
 
+// Фильтры каталога переживают переход на карточку товара и возврат назад
+// (sessionStorage — на время вкладки; новая вкладка начинает с чистых фильтров)
+const CATALOG_FILTERS_KEY = "ventsearch.catalog.filters";
+
+function saveCatalogFilters(form, sortSelect) {
+  if (!form) return;
+  try {
+    const data = {};
+    for (const el of form.elements) {
+      if (el.name && String(el.value || "").trim()) data[el.name] = el.value;
+    }
+    if (sortSelect?.value) data.__sort = sortSelect.value;
+    sessionStorage.setItem(CATALOG_FILTERS_KEY, JSON.stringify(data));
+  } catch {
+    // приватный режим — просто не запоминаем
+  }
+}
+
+function restoreCatalogFilters(form, sortSelect) {
+  if (!form) return;
+  try {
+    const raw = sessionStorage.getItem(CATALOG_FILTERS_KEY);
+    if (!raw) return;
+    const data = JSON.parse(raw);
+    for (const [k, v] of Object.entries(data)) {
+      if (k === "__sort") {
+        if (sortSelect && !sortSelect.dataset.userSet) sortSelect.value = String(v);
+        continue;
+      }
+      const el = form.elements[k];
+      // Только пустые поля — явный ?q= из URL и введённое руками не трогаем
+      if (el && !String(el.value || "").trim()) el.value = String(v);
+    }
+  } catch {
+    // повреждённое значение — игнорируем
+  }
+}
+
 function getProjectIdSet() {
   return new Set(loadProjectIds());
 }
@@ -484,6 +522,9 @@ function buildQpDatasetsShared(products, targetRpm = null, targetPoint = null, o
   const colors = ["#246bb3", "#e74c3c", "#2ecc71", "#9b59b6", "#f39c12", "#16a085"];
   const familyMode = primaryId != null && products.length > 1;
   const series = [];
+  // Кривые вентиляторов отдельно от служебных серий (зоны допуска — custom-серии
+  // с data:[0], их нельзя использовать для расчёта maxQ/поиска кривой по индексу)
+  const productCurves = [];
 
   products.forEach((p, idx) => {
     let qMin = toNumber(p.airflow?.min) ?? 0;
@@ -583,11 +624,40 @@ function buildQpDatasetsShared(products, targetRpm = null, targetPoint = null, o
         fontFamily: 'system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", "Helvetica Neue", Arial, sans-serif',
       } : undefined,
     });
+    productCurves.push({ id: String(p.id), points, isPrimary, color });
+
+    // Зона допуска ВДОЛЬ ВСЕЙ кривой: те же точки, сдвинутые на ±tol% по
+    // давлению (параллельные кривые), заливка цветом самой модели. Рисуем у
+    // каждой сравниваемой кривой; у серых контекстных кривых модельного ряда
+    // не рисуем — полосы бы слились в нечитаемую кашу.
+    if ((!familyMode || isPrimary) && points.length >= 2) {
+      const tolPct = targetPoint && Number(targetPoint.tol) > 0 ? Number(targetPoint.tol) : 7.5;
+      const TOL_P = tolPct / 100;
+      const upper = points.map(([q, pv]) => [q, pv * (1 + TOL_P)]);
+      const lower = points.map(([q, pv]) => [q, Math.max(0, pv * (1 - TOL_P))]).reverse();
+      const outline = upper.concat(lower);
+      series.push({
+        name: `tol-band-${idx}`,
+        type: 'custom',
+        silent: true,
+        z: 0,
+        clip: true,
+        renderItem: (params, api) => ({
+          type: 'polygon',
+          shape: { points: outline.map((pt) => api.coord(pt)) },
+          style: { fill: color, opacity: 0.10 }
+        }),
+        data: [0]
+      });
+    }
   });
 
   if (targetPoint && targetPoint.q > 0 && targetPoint.p > 0) {
     const k = targetPoint.p / Math.pow(targetPoint.q, 2);
-    const maxQ = Math.max(...series.map(s => s.data[s.data.length - 1][0]), targetPoint.q * 1.5);
+    const maxQ = Math.max(
+      ...productCurves.map((c) => c.points[c.points.length - 1][0]),
+      targetPoint.q * 1.5,
+    );
     const systemPoints = [];
     for (let i = 0; i <= 100; i++) {
       const q = (maxQ * i) / 100;
@@ -604,39 +674,15 @@ function buildQpDatasetsShared(products, targetRpm = null, targetPoint = null, o
       data: systemPoints
     });
 
-    // Зона допуска по давлению вокруг участка кривой Q ± 15% от точки + процент
-    // запаса в подписи точки — считаем по единственной модели, либо (в
-    // модельном ряду) по выделенной. При явном сравнении 2+ моделей без
-    // primaryId зону не рисуем — непонятно, к какой кривой её привязывать.
+    // Процент запаса в подписи точки — по единственной модели, либо (в
+    // модельном ряду) по выделенной. При сравнении 2+ моделей без primaryId
+    // запас не считаем — непонятно, к какой кривой его привязывать.
     let pointLabel = 'Рабочая точка';
-    const primaryIdx = familyMode ? products.findIndex((p) => String(p.id) === String(primaryId)) : 0;
-    const primarySeries = products.length === 1 || familyMode ? series[primaryIdx] : null;
-    if (primarySeries && primarySeries.data.length >= 2) {
-      const fanPts = primarySeries.data;
-      const tolPct = Number(targetPoint.tol) > 0 ? Number(targetPoint.tol) : 7.5;
-      const TOL_P = tolPct / 100;
-      const seg = fanPts.filter(([q]) => q >= targetPoint.q * 0.85 && q <= targetPoint.q * 1.15);
-      if (seg.length >= 2) {
-        // Полигон через custom-серию: stack у ECharts на двух числовых осях
-        // складывает координаты и уводит полосу в сторону — рисуем контур сами
-        const upper = seg.map(([q, p]) => [q, p * (1 + TOL_P)]);
-        const lower = seg.map(([q, p]) => [q, p * (1 - TOL_P)]);
-        const outline = upper.concat(lower.slice().reverse());
-        series.push({
-          name: 'tol-band',
-          type: 'custom',
-          silent: true,
-          z: 1,
-          clip: true,
-          renderItem: (params, api) => ({
-            type: 'polygon',
-            shape: { points: outline.map((pt) => api.coord(pt)) },
-            style: { fill: 'rgba(2, 123, 243, 0.16)' }
-          }),
-          data: [0]
-        });
-      }
-
+    const primaryCurve = products.length === 1
+      ? productCurves[0]
+      : productCurves.find((c) => c.isPrimary && familyMode) || null;
+    if (primaryCurve && primaryCurve.points.length >= 2) {
+      const fanPts = primaryCurve.points;
       // Давление на кривой при Q точки — для процента запаса
       let pAvail = null;
       for (let i = 1; i < fanPts.length; i++) {
@@ -897,10 +943,14 @@ function captureChartPngForPdf(sourceChart) {
 
 function describeQuery(filters) {
   const parts = [];
+  if (filters.q) parts.push(`поиск: «${filters.q}»`);
   if (filters.type) parts.push(`Тип: ${filters.type}`);
+  if (filters.series) parts.push(`Типоразмер: ${filters.series}`);
+  if (filters.diameter) parts.push(`Диаметр: ${filters.diameter} мм`);
   if (filters.minAirflow || filters.maxAirflow) parts.push(`Расход: ${filters.minAirflow || "—"}–${filters.maxAirflow || "—"} м³/ч`);
   if (filters.minPressure || filters.maxPressure) parts.push(`Давление: ${filters.minPressure || "—"}–${filters.maxPressure || "—"} Па`);
   if (filters.minPower || filters.maxPower) parts.push(`Мощность: ${filters.minPower || "—"}–${filters.maxPower || "—"} Вт`);
+  if (filters.minPrice || filters.maxPrice) parts.push(`Цена: ${filters.minPrice || "—"}–${filters.maxPrice || "—"} ₽`);
   return parts.length ? parts.join(" · ") : "Параметры запроса: не заданы";
 }
 
@@ -979,7 +1029,6 @@ async function initCatalogPage() {
   const emptySection = $("#emptyStateSection");
   const backToFiltersBtn = $("#backToFiltersBtn");
   const analogsList = $("#analogsList");
-  const shareLinkBtn = $("#shareLinkBtn");
   const tileSizeGroup = $("#tileSizeGroup");
 
   const state = {
@@ -1301,6 +1350,7 @@ async function initCatalogPage() {
     setLoading(true);
     state.currentPage = page;
     state.filters = parseFilters(filtersForm);
+    saveCatalogFilters(filtersForm, sortSelect);
     state.querySummaryText = describeQuery(state.filters);
     if (querySummary) querySummary.textContent = state.querySummaryText;
 
@@ -1387,7 +1437,16 @@ async function initCatalogPage() {
   filtersForm?.addEventListener("submit", (e) => {
     e.preventDefault();
     if (!validateRangeFilters()) return;
-    loadPage(1);
+    // Если задана рабочая точка — фильтры не заменяют подбор, а сужают его:
+    // «по точке И по названию/типу/цене» работают вместе
+    const pq = toNumber(pointQInput?.value);
+    const pp = toNumber(pointPInput?.value);
+    if (pq > 0 && pp > 0) {
+      const tol = Math.min(Math.max(toNumber(pointTolInput?.value) || 0, 0), 50);
+      runPointSearch(pq, pp, tol);
+    } else {
+      loadPage(1);
+    }
     closeFiltersOffcanvasIfMobile();
   });
 
@@ -1401,14 +1460,27 @@ async function initCatalogPage() {
   async function runPointSearch(pointQ, pointP, pointTol) {
     hideError();
     setLoading(true);
+    // Обычные фильтры каталога сужают подбор по точке (совместный поиск).
+    // Диапазоны расхода/давления не передаём: расход задан самой точкой Q.
+    const POINT_COMPATIBLE_FILTERS = [
+      "q", "type", "series", "diameter",
+      "minPrice", "maxPrice", "minPower", "maxPower", "minNoise", "maxNoise",
+    ];
+    const extraFilters = parseFilters(filtersForm);
+    saveCatalogFilters(filtersForm, sortSelect);
+    const activeExtra = POINT_COMPATIBLE_FILTERS.filter((k) => extraFilters[k] != null);
     const tolText = pointTol > 0 ? ` · допуск ±${formatNumber(pointTol)}%` : "";
-    state.querySummaryText = `Рабочая точка: Q = ${formatNumber(pointQ)} м³/ч · P = ${formatNumber(pointP)} Па${tolText}`;
+    const extraText = activeExtra.length ? ` · фильтры: ${describeQuery(
+      Object.fromEntries(activeExtra.map((k) => [k, extraFilters[k]])),
+    )}` : "";
+    state.querySummaryText = `Рабочая точка: Q = ${formatNumber(pointQ)} м³/ч · P = ${formatNumber(pointP)} Па${tolText}${extraText}`;
     if (querySummary) querySummary.textContent = state.querySummaryText;
     try {
       const params = new URLSearchParams({
         point_q: String(pointQ), point_p: String(pointP), limit: String(PAGE_SIZE),
       });
       if (pointTol > 0) params.set("tolerance", String(pointTol));
+      for (const k of activeExtra) params.set(k, String(extraFilters[k]));
       const data = await fetchJson(apiUrl(`/api/products/select-point?${params.toString()}`));
       const items = (Array.isArray(data?.items) ? data.items : []).map((it) => ({
         ...it.product,
@@ -1509,26 +1581,8 @@ async function initCatalogPage() {
     }
   });
 
-  shareLinkBtn?.addEventListener("click", async () => {
-    try {
-      const data = await fetchJson(apiUrl("/api/share-links"));
-      const urls = Array.isArray(data?.urls) ? data.urls.filter(Boolean) : [];
-      if (!urls.length) {
-        showError("Не удалось сгенерировать ссылку для локальной сети.");
-        return;
-      }
-      const first = urls[0];
-      const copied = await copyTextToClipboard(first);
-      const status = copied
-        ? "Ссылка скопирована в буфер обмена:"
-        : "Не удалось скопировать автоматически (браузер блокирует буфер обмена вне HTTPS/localhost) — скопируйте вручную:";
-      const text = `${status}\n${first}\n\nДополнительно:\n${urls.join("\n")}`;
-      window.alert(text);
-    } catch (err) {
-      console.error(err);
-      showError("Не удалось сгенерировать ссылку. Проверьте доступность API.");
-    }
-  });
+  // Обработчик «Поделиться» глобальный (initShareLinkButton) — кнопка есть
+  // в шапке каждой страницы, а не только каталога
 
   const urlQ = new URLSearchParams(window.location.search).get("q");
   if (urlQ) {
@@ -1540,6 +1594,13 @@ async function initCatalogPage() {
   try {
     setLoading(true);
     await loadFacets();
+    // Фильтры переживают уход на карточку и возврат: восстанавливаем из
+    // sessionStorage ПОСЛЕ loadFacets (селекты типа/диаметра к этому моменту
+    // уже наполнены опциями), но НЕ перетирая явный ?q= из URL
+    restoreCatalogFilters(filtersForm, sortSelect);
+    if (headerSearchInput && filtersForm?.elements.q?.value && !headerSearchInput.value) {
+      headerSearchInput.value = filtersForm.elements.q.value;
+    }
     await loadPage(1);
     syncSelectionUi();
     updateProjectNavBadge();
@@ -1853,18 +1914,20 @@ async function initProductPage() {
       specBody.appendChild(tr);
     }
 
-    // Габаритно-присоединительные размеры (чертёж завода) — если есть в CSV.
+    // Габаритно-присоединительные размеры (чертёж завода) — широкий блок под
+    // двумя колонками (см. #dimensionsCard в product.html): один размер = одна
+    // колонка, чтобы не растягивать страницу по вертикали.
     const dims = data.dimensions;
     if (dims && typeof dims === "object" && Object.keys(dims).length) {
-      const divider = document.createElement("tr");
-      divider.innerHTML = `<td colspan="2" class="pt-3 pb-1 fw-semibold text-secondary small">Присоединительные размеры (по чертежу завода), мм</td>`;
-      specBody.appendChild(divider);
-      for (const [label, value] of Object.entries(dims)) {
-        const tr = document.createElement("tr");
-        tr.innerHTML = `<th scope="row" class="w-50 text-secondary"><code>${escapeHtml(label)}</code></th><td>${escapeHtml(value)}</td>`;
-        specBody.appendChild(tr);
+      const entries = Object.entries(dims);
+      const head = $("#dimensionsHead");
+      const body = $("#dimensionsBody");
+      if (head && body) {
+        head.innerHTML = `<tr>${entries.map(([label]) => `<th class="text-secondary fw-semibold"><code>${escapeHtml(label)}</code></th>`).join("")}</tr>`;
+        body.innerHTML = `<tr>${entries.map(([, value]) => `<td>${escapeHtml(value)}</td>`).join("")}</tr>`;
+        $("#dimensionsCard")?.classList.remove("d-none");
       }
-      $("#gabaritsCaption")?.replaceChildren(document.createTextNode(`${Object.keys(dims).length} размеров — см. «Характеристики»`));
+      $("#gabaritsCaption")?.replaceChildren(document.createTextNode(`${entries.length} размеров — таблица выше на этой странице`));
     }
 
     container.classList.remove("d-none");
@@ -2257,8 +2320,100 @@ async function applyDemoModeGuardIfNeeded() {
   });
 }
 
+// Плавающий контакт-виджет (правый нижний угол): кому писать по вопросам.
+// Данные — из data/credits.json через публичный /api/contacts; если файла
+// нет или он пуст, показываем общий почтовый контакт проекта.
+function initContactWidget() {
+  if (document.getElementById("vsContactFab")) return;
+  const fab = document.createElement("button");
+  fab.id = "vsContactFab";
+  fab.className = "vs-contact-fab";
+  fab.type = "button";
+  fab.title = "Контакты";
+  fab.setAttribute("aria-label", "Контакты");
+  fab.textContent = "✉";
+  document.body.appendChild(fab);
+
+  let card = null;
+  let loaded = false;
+
+  async function fillCard(el) {
+    let html = "";
+    try {
+      const d = await fetchJson(apiUrl("/api/contacts"));
+      const creators = Array.isArray(d?.creators) ? d.creators : [];
+      if (creators.length) {
+        html = creators.map((c) => `
+          <div class="mb-2">
+            <div class="fw-semibold small">${escapeHtml(c.name || "—")}</div>
+            ${c.role ? `<div class="text-secondary" style="font-size:.78rem;">${escapeHtml(c.role)}</div>` : ""}
+            ${c.contact ? `<div class="small">${escapeHtml(c.contact)}</div>` : ""}
+          </div>`).join("");
+      }
+    } catch (err) {
+      console.warn("Не удалось загрузить контакты", err);
+    }
+    if (!html) {
+      html = `<div class="small">По всем вопросам: <a href="mailto:ventsearch.team@gmail.com">ventsearch.team@gmail.com</a></div>`;
+    }
+    el.innerHTML = `<div class="fw-bold mb-2">Кому писать</div>${html}`;
+  }
+
+  fab.addEventListener("click", () => {
+    if (!card) {
+      card = document.createElement("div");
+      card.className = "vs-contact-card d-none";
+      card.innerHTML = '<div class="text-secondary small">Загрузка…</div>';
+      document.body.appendChild(card);
+    }
+    const willShow = card.classList.contains("d-none");
+    card.classList.toggle("d-none");
+    fab.textContent = willShow ? "✕" : "✉";
+    if (willShow && !loaded) {
+      loaded = true;
+      fillCard(card);
+    }
+  });
+}
+
+// «Поделиться» — в шапке каждой страницы, поэтому обработчик глобальный
+// (раньше вешался только в initCatalogPage и работал лишь на главной)
+function initShareLinkButton() {
+  const btn = document.getElementById("shareLinkBtn");
+  if (!btn) return;
+  btn.addEventListener("click", async () => {
+    try {
+      const data = await fetchJson(apiUrl("/api/share-links"));
+      const urls = Array.isArray(data?.urls) ? data.urls.filter(Boolean) : [];
+      if (!urls.length) {
+        window.alert("Не удалось сгенерировать ссылку для локальной сети.");
+        return;
+      }
+      // Делимся текущей страницей, а не корнем: путь и параметры сохраняем,
+      // подменяем только хост на реально доступный из сети
+      const first = urls[0];
+      let shareUrl = first;
+      try {
+        const base = new URL(first);
+        shareUrl = `${base.origin}${window.location.pathname}${window.location.search}`;
+      } catch { /* оставляем как есть */ }
+      const copied = await copyTextToClipboard(shareUrl);
+      const status = copied
+        ? "Ссылка скопирована в буфер обмена:"
+        : "Не удалось скопировать автоматически (браузер блокирует буфер обмена вне HTTPS/localhost) — скопируйте вручную:";
+      const text = `${status}\n${shareUrl}\n\nДоступные адреса:\n${urls.join("\n")}`;
+      window.alert(text);
+    } catch (err) {
+      console.error(err);
+      window.alert("Не удалось сгенерировать ссылку. Проверьте доступность API.");
+    }
+  });
+}
+
 document.addEventListener("DOMContentLoaded", () => {
   applyDemoModeGuardIfNeeded();
+  initShareLinkButton();
+  initContactWidget();
   updateProjectNavBadge();
   updateCompareNavBadge();
 

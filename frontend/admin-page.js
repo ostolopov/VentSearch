@@ -54,11 +54,23 @@
           window.alert("Не удалось сгенерировать ссылку для локальной сети.");
           return;
         }
-        const first = urls[0];
-        if (navigator.clipboard?.writeText) {
-          await navigator.clipboard.writeText(first);
-        }
-        window.alert(`Ссылка скопирована в буфер обмена:\n${first}\n\nДополнительно:\n${urls.join("\n")}`);
+        // Делимся текущей страницей (не корнем): подменяем хост на сетевой
+        let shareUrl = urls[0];
+        try {
+          const u = new URL(urls[0]);
+          shareUrl = `${u.origin}${window.location.pathname}${window.location.search}`;
+        } catch { /* оставляем как есть */ }
+        let copied = false;
+        try {
+          if (navigator.clipboard?.writeText) {
+            await navigator.clipboard.writeText(shareUrl);
+            copied = true;
+          }
+        } catch { /* вне HTTPS/localhost буфер недоступен */ }
+        const status = copied
+          ? "Ссылка скопирована в буфер обмена:"
+          : "Скопируйте ссылку вручную (буфер обмена недоступен вне HTTPS/localhost):";
+        window.alert(`${status}\n${shareUrl}\n\nДоступные адреса:\n${urls.join("\n")}`);
       } catch (err) {
         console.error(err);
         window.alert("Не удалось сгенерировать ссылку. Проверьте доступность API.");
