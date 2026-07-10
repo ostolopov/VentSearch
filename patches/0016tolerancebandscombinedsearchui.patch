@@ -1,0 +1,1001 @@
+From 111bc9a5a9a9234d796499a100ba6f27c7c0601c Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Fri, 10 Jul 2026 09:30:04 +0000
+Subject: [PATCH] =?UTF-8?q?=D0=97=D0=BE=D0=BD=D1=8B=20=D0=B4=D0=BE=D0=BF?=
+ =?UTF-8?q?=D1=83=D1=81=D0=BA=D0=B0=20=D0=B2=D0=B4=D0=BE=D0=BB=D1=8C=20?=
+ =?UTF-8?q?=D0=B2=D1=81=D0=B5=D0=B9=20=D0=BA=D1=80=D0=B8=D0=B2=D0=BE=D0=B9?=
+ =?UTF-8?q?,=20=D1=81=D0=BE=D0=B2=D0=BC=D0=B5=D1=81=D1=82=D0=BD=D1=8B?=
+ =?UTF-8?q?=D0=B9=20=D0=BF=D0=BE=D0=B8=D1=81=D0=BA,=20=D0=BC=D0=B0=D0=BA?=
+ =?UTF-8?q?=D0=B5=D1=82=20=D0=BA=D0=B0=D1=80=D1=82=D0=BE=D1=87=D0=BA=D0=B8?=
+ =?UTF-8?q?,=20=D0=B2=D0=B8=D0=B4=D0=B6=D0=B5=D1=82=20=D0=BA=D0=BE=D0=BD?=
+ =?UTF-8?q?=D1=82=D0=B0=D0=BA=D1=82=D0=BE=D0=B2?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+- Сравнение: зона допуска — параллельные кривые ±tol% вдоль ВСЕЙ кривой,
+  у каждой сравниваемой модели в её цвете (раньше — кусок Q±15% от точки,
+  а при 2+ моделях не рисовалась вовсе).
+- Подбор по точке и фильтры каталога больше не взаимоисключающие: select-point
+  принимает q/type/series/diameter/цену/мощность/шум и сужает кандидатов;
+  фронт передаёт заполненные фильтры вместе с точкой в обе стороны.
+- Карточка товара: размеры чертежа вынесены в широкий блок под двумя
+  колонками (характеристики слева до цены, график справа ~1.5:1) — страница
+  больше не растягивается. «Паспорт» и «Схема» — плашка «в следующих
+  обновлениях»; «Габариты» ссылаются на реальную таблицу.
+- Bloom-фильтр: двойное хэширование Кирша-Митценмахера — 1 вызов blake2b
+  вместо k=до 16 (~4-8x быстрее); в бенчмарке честное объяснение, почему на
+  малом n линейный C-перебор быстрее Python-хэша, а Bloom выигрывает на росте.
+- «Поделиться» работает на всех страницах (обработчик стал глобальным,
+  раньше вешался только в initCatalogPage) и делится текущей страницей,
+  а не корнем; в админке починен дубль обработчика.
+- «Доставка» закрывается демо-плашкой в инсайдерском режиме.
+- Фильтры каталога и рабочая точка переживают уход на карточку и возврат
+  (sessionStorage), ?q= из URL имеет приоритет.
+- Админка: «О команде» — полноценная вкладка рядом с Диагностикой; активная
+  вкладка переживает F5 (localStorage).
+- Плавающий виджет контактов (правый нижний угол) на всех публичных
+  страницах — читает публичную выжимку из credits.json (/api/contacts:
+  только имя/роль/контакт, приватные поля не отдаются).
+---
+ .../application/use_cases/select_by_point.py  |  29 +-
+ backend/infrastructure/search/bloom_filter.py |  17 +-
+ backend/presentation/api/routes/admin.py      |   7 +-
+ backend/presentation/api/routes/catalog.py    |  21 ++
+ backend/presentation/app.py                   |  28 ++
+ backend/tests/test_admin_credits.py           |  39 +++
+ backend/tests/test_select_point.py            |  46 +++
+ frontend/admin-page.js                        |  22 +-
+ frontend/admin.html                           |  14 +-
+ frontend/admin.js                             |  37 ++-
+ frontend/delivery.html                        |   2 +-
+ frontend/product.html                         |  23 +-
+ frontend/script.js                            | 285 ++++++++++++++----
+ frontend/style.css                            |  60 ++++
+ 14 files changed, 527 insertions(+), 103 deletions(-)
+
+diff --git a/backend/application/use_cases/select_by_point.py b/backend/application/use_cases/select_by_point.py
+index e75cd63..086e3e8 100644
+--- a/backend/application/use_cases/select_by_point.py
++++ b/backend/application/use_cases/select_by_point.py
+@@ -18,12 +18,28 @@ from domain.services.qp_service import pressure_at_flow
+ 
+ @dataclass
+ class SelectByPointQuery:
+-    """Рабочая точка, допуск по давлению (%) и ограничение размера выдачи."""
++    """Рабочая точка, допуск по давлению (%) и ограничение размера выдачи.
++
++    Дополнительные фильтры каталога (поиск по названию, тип, типоразмер, цена
++    и т.д.) сужают множество кандидатов ДО проверки кривой — подбор по точке и
++    обычные фильтры работают вместе, а не взаимоисключающе. Диапазоны расхода
++    здесь не принимаются: расход уже задан самой точкой Q.
++    """
+ 
+     point_q: float
+     point_p: float
+     tolerance: float = 0.0
+     limit: int = 20
++    q: str | None = None
++    type_: str | None = None
++    series: str | None = None
++    diameter: float | None = None
++    min_price: float | None = None
++    max_price: float | None = None
++    min_power: float | None = None
++    max_power: float | None = None
++    min_noise: float | None = None
++    max_noise: float | None = None
+ 
+ 
+ @dataclass
+@@ -50,7 +66,18 @@ class SelectByPointUseCase:
+     def execute(self, query: SelectByPointQuery) -> SelectByPointResult:
+         # Кандидаты: рабочий диапазон расхода накрывает точку Q
+         # (min_airflow=Q отсекает airflow_max < Q, max_airflow=Q — airflow_min > Q)
++        # + пользовательские фильтры каталога, если заданы
+         candidates = self._repo.list_products(
++            q=query.q,
++            type_=query.type_,
++            series=query.series,
++            diameter=query.diameter,
++            min_price=query.min_price,
++            max_price=query.max_price,
++            min_power=query.min_power,
++            max_power=query.max_power,
++            min_noise=query.min_noise,
++            max_noise=query.max_noise,
+             min_airflow=query.point_q,
+             max_airflow=query.point_q,
+             sort="price_asc",
+diff --git a/backend/infrastructure/search/bloom_filter.py b/backend/infrastructure/search/bloom_filter.py
+index 818335e..b074b51 100644
+--- a/backend/infrastructure/search/bloom_filter.py
++++ b/backend/infrastructure/search/bloom_filter.py
+@@ -19,14 +19,15 @@ class BloomFilter:
+         self._bytes = bytearray((self._m + 7) // 8)
+ 
+     def _positions(self, item: str) -> list[int]:
+-        b = item.encode("utf-8")
+-        out: list[int] = []
+-        for i in range(self._k):
+-            person = bytearray(16)
+-            person[0:2] = i.to_bytes(2, "big")
+-            h = hashlib.blake2b(b, digest_size=8, person=bytes(person)).digest()
+-            out.append(int.from_bytes(h, "big") % self._m)
+-        return out
++        # Двойное хэширование (Кирш-Митценмахер): k позиций из ОДНОГО вызова
++        # blake2b — pos_i = (h1 + i·h2) mod m. Свойства (вероятность ложных
++        # срабатываний) те же, что у k независимых хэшей, но в ~k раз быстрее:
++        # раньше на каждый запрос считалось до 16 отдельных digest'ов.
++        h = hashlib.blake2b(item.encode("utf-8"), digest_size=16).digest()
++        h1 = int.from_bytes(h[:8], "big")
++        h2 = int.from_bytes(h[8:], "big") | 1  # нечётное — обходит весь диапазон mod m
++        m = self._m
++        return [(h1 + i * h2) % m for i in range(self._k)]
+ 
+     def _set_bit(self, pos: int) -> None:
+         self._bytes[pos // 8] |= 1 << (pos % 8)
+diff --git a/backend/presentation/api/routes/admin.py b/backend/presentation/api/routes/admin.py
+index 166e348..8a0ee8e 100644
+--- a/backend/presentation/api/routes/admin.py
++++ b/backend/presentation/api/routes/admin.py
+@@ -368,8 +368,11 @@ def _bloom_speed_benchmark(bloom, known_values: list[str], haystack: list[str],
+         "linear_total_ms": round(linear_elapsed * 1000, 3),
+         "linear_per_op_us": round(linear_elapsed / n_probes * 1e6, 3),
+         "speedup_x": round(linear_elapsed / bloom_elapsed, 1) if bloom_elapsed > 0 else None,
+-        "note": "Bloom — O(1) (не зависит от размера каталога), линейный перебор — O(n). "
+-                "На маленьком каталоге разница в наносекундах, но растёт с ростом n.",
++        "note": "Bloom — O(1) по числу записей, линейный перебор — O(n). На малом каталоге "
++                "линейный может быть БЫСТРЕЕ: перебор списка выполняется на C-уровне "
++                "интерпретатора, а Bloom считает хэш на Python — у O(1) выше константа. "
++                "Смысл Bloom — время НЕ растёт с n: при 100 000+ записей перебор деградирует "
++                "линейно, а Bloom остаётся тем же.",
+     }
+ 
+ 
+diff --git a/backend/presentation/api/routes/catalog.py b/backend/presentation/api/routes/catalog.py
+index 9b67803..1cb2b03 100644
+--- a/backend/presentation/api/routes/catalog.py
++++ b/backend/presentation/api/routes/catalog.py
+@@ -195,15 +195,36 @@ def api_products_select_point(
+     point_p: Annotated[float, Query(description="Требуемое давление, Па.", gt=0)],
+     tolerance: Annotated[float, Query(description="Допустимый недобор давления, %.", ge=0, le=50)] = 0.0,
+     limit: Annotated[int, Query(description="Максимум результатов.", ge=1, le=100)] = 20,
++    # Фильтры каталога — сужают кандидатов до проверки кривой (совместный
++    # поиск «по точке + по названию/типу/цене», а не взаимоисключающий).
++    # Имена параметров — как у /api/products, чтобы фронт передавал их 1:1.
++    q: Annotated[Optional[str], Query(description="Поиск по названию/типу/размеру.")] = None,
++    fan_type: Annotated[Optional[str], Query(alias="type", description="Тип вентилятора.")] = None,
++    series: Annotated[Optional[str], Query(description="Типоразмер/серия.")] = None,
++    diameter: Annotated[Optional[float], Query(description="Диаметр, мм.")] = None,
++    minPrice: Annotated[Optional[float], Query(ge=0)] = None,
++    maxPrice: Annotated[Optional[float], Query(ge=0)] = None,
++    minPower: Annotated[Optional[float], Query(ge=0)] = None,
++    maxPower: Annotated[Optional[float], Query(ge=0)] = None,
++    minNoise: Annotated[Optional[float], Query(ge=0)] = None,
++    maxNoise: Annotated[Optional[float], Query(ge=0)] = None,
+ ):
+     from config import CSV_PATH
+     _ensure_catalog_sync(CSV_PATH)
+ 
++    qn = _normalize_whitespace(q).lower() or None
++    tn = _normalize_whitespace(fan_type) or None
++    sn = _normalize_whitespace(series) or None
++
+     with _db_session() as conn:
+         repo = PgProductRepository(conn)
+         uc = SelectByPointUseCase(repo)
+         result = uc.execute(SelectByPointQuery(
+             point_q=point_q, point_p=point_p, tolerance=tolerance, limit=limit,
++            q=qn, type_=tn, series=sn, diameter=diameter,
++            min_price=minPrice, max_price=maxPrice,
++            min_power=minPower, max_power=maxPower,
++            min_noise=minNoise, max_noise=maxNoise,
+         ))
+ 
+     return SelectPointOut(
+diff --git a/backend/presentation/app.py b/backend/presentation/app.py
+index 6ed56c6..c3ab108 100644
+--- a/backend/presentation/app.py
++++ b/backend/presentation/app.py
+@@ -510,6 +510,34 @@ def create_app() -> FastAPI:
+ 
+         return {"urls": urls, "hint": "Откройте на другом устройстве в той же локальной сети."}
+ 
++    @app.get("/api/contacts", summary="Контакты команды (для виджета на сайте)", tags=["system"])
++    def api_contacts():
++        """
++        Публичная выжимка из data/credits.json для плавающего контакт-виджета:
++        только имя/роль/контакт, без служебных полей. Файл читается на каждый
++        запрос — правки применяются без перезапуска.
++        """
++        import json as _json
++        from config import CREDITS_PATH
++
++        if not CREDITS_PATH.exists():
++            return {"found": False, "creators": []}
++        try:
++            with CREDITS_PATH.open("r", encoding="utf-8") as f:
++                data = _json.load(f)
++        except (_json.JSONDecodeError, OSError):
++            return {"found": False, "creators": []}
++        creators = [
++            {"name": c.get("name", ""), "role": c.get("role", ""), "contact": c.get("contact", "")}
++            for c in (data.get("creators") or [])
++            if isinstance(c, dict) and (c.get("name") or c.get("contact"))
++        ]
++        return {
++            "found": True,
++            "project_name": data.get("project_name", ""),
++            "creators": creators,
++        }
++
+     # --- Export ---
+ 
+     @app.post("/api/export/pdf", summary="Экспорт сравнения в PDF", tags=["export"])
+diff --git a/backend/tests/test_admin_credits.py b/backend/tests/test_admin_credits.py
+index ff01187..f3e7b3c 100644
+--- a/backend/tests/test_admin_credits.py
++++ b/backend/tests/test_admin_credits.py
+@@ -79,3 +79,42 @@ def test_credits_malformed_json_reports_error(monkeypatch, tmp_path):
+     data = r.json()
+     assert data["found"] is True
+     assert "error" in data
++
++
++# ---------------------------------------------------------------------------
++# Публичный /api/contacts — выжимка для контакт-виджета (без авторизации)
++# ---------------------------------------------------------------------------
++
++def test_public_contacts_no_auth_required(monkeypatch, tmp_path):
++    payload = {
++        "project_name": "VENTSEARCH",
++        "creators": [
++            {"name": "Иван", "role": "Backend", "contact": "ivan@example.com",
++             "note": "внутренняя заметка — наружу не отдаём"},
++        ],
++    }
++    p = tmp_path / "credits.json"
++    p.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
++
++    import config
++    monkeypatch.setattr(config, "CREDITS_PATH", p)
++    client = make_test_client(monkeypatch)
++
++    r = client.get("/api/contacts")  # без токена
++    assert r.status_code == 200
++    data = r.json()
++    assert data["found"] is True
++    assert data["creators"][0]["name"] == "Иван"
++    assert data["creators"][0]["contact"] == "ivan@example.com"
++    # Приватные поля не утекают в публичный эндпоинт
++    assert "note" not in data["creators"][0]
++    assert "внутренняя" not in r.text
++
++
++def test_public_contacts_missing_file(monkeypatch, tmp_path):
++    import config
++    monkeypatch.setattr(config, "CREDITS_PATH", tmp_path / "nope.json")
++    client = make_test_client(monkeypatch)
++    r = client.get("/api/contacts")
++    assert r.status_code == 200
++    assert r.json() == {"found": False, "creators": []}
+diff --git a/backend/tests/test_select_point.py b/backend/tests/test_select_point.py
+index 2f85a90..d2d5dc4 100644
+--- a/backend/tests/test_select_point.py
++++ b/backend/tests/test_select_point.py
+@@ -128,3 +128,49 @@ def test_select_point_validation(monkeypatch):
+     assert client.get("/api/products/select-point").status_code == 422
+     assert client.get("/api/products/select-point?point_q=0&point_p=100").status_code == 422
+     assert client.get("/api/products/select-point?point_q=100&point_p=-5").status_code == 422
++
++
++def test_select_point_combines_with_catalog_filters(monkeypatch):
++    """
++    Совместный поиск: фильтры каталога (q, type, цена...) сужают кандидатов
++    подбора по точке — раньше режимы были взаимоисключающими.
++    """
++    captured = {}
++
++    def fake_list_products(self, **kw):
++        captured.update(kw)
++        return [_vo_product("only", 900, 3600, 150, 400)]
++
++    monkeypatch.setattr(PgProductRepository, "list_products", fake_list_products)
++    client = make_test_client(monkeypatch)
++
++    r = client.get(
++        "/api/products/select-point?point_q=2000&point_p=100"
++        "&q=13-284&type=Осевой&minPrice=500&maxPrice=5000&series=456A4"
++    )
++    assert r.status_code == 200
++    assert [it["product"]["id"] for it in r.json()["items"]] == ["only"]
++
++    # Фильтры дошли до репозитория вместе с ограничением по точке
++    assert captured["q"] == "13-284"
++    assert captured["type_"] == "Осевой"
++    assert captured["series"] == "456A4"
++    assert captured["min_price"] == 500
++    assert captured["max_price"] == 5000
++    assert captured["min_airflow"] == 2000
++    assert captured["max_airflow"] == 2000
++
++
++def test_select_point_without_filters_passes_none(monkeypatch):
++    captured = {}
++
++    def fake_list_products(self, **kw):
++        captured.update(kw)
++        return []
++
++    monkeypatch.setattr(PgProductRepository, "list_products", fake_list_products)
++    client = make_test_client(monkeypatch)
++    assert client.get("/api/products/select-point?point_q=2000&point_p=100").status_code == 200
++    assert captured["q"] is None
++    assert captured["type_"] is None
++    assert captured["min_price"] is None
+diff --git a/frontend/admin-page.js b/frontend/admin-page.js
+index e30c5d8..fd30b3d 100644
+--- a/frontend/admin-page.js
++++ b/frontend/admin-page.js
+@@ -54,11 +54,23 @@
+           window.alert("Не удалось сгенерировать ссылку для локальной сети.");
+           return;
+         }
+-        const first = urls[0];
+-        if (navigator.clipboard?.writeText) {
+-          await navigator.clipboard.writeText(first);
+-        }
+-        window.alert(`Ссылка скопирована в буфер обмена:\n${first}\n\nДополнительно:\n${urls.join("\n")}`);
++        // Делимся текущей страницей (не корнем): подменяем хост на сетевой
++        let shareUrl = urls[0];
++        try {
++          const u = new URL(urls[0]);
++          shareUrl = `${u.origin}${window.location.pathname}${window.location.search}`;
++        } catch { /* оставляем как есть */ }
++        let copied = false;
++        try {
++          if (navigator.clipboard?.writeText) {
++            await navigator.clipboard.writeText(shareUrl);
++            copied = true;
++          }
++        } catch { /* вне HTTPS/localhost буфер недоступен */ }
++        const status = copied
++          ? "Ссылка скопирована в буфер обмена:"
++          : "Скопируйте ссылку вручную (буфер обмена недоступен вне HTTPS/localhost):";
++        window.alert(`${status}\n${shareUrl}\n\nДоступные адреса:\n${urls.join("\n")}`);
+       } catch (err) {
+         console.error(err);
+         window.alert("Не удалось сгенерировать ссылку. Проверьте доступность API.");
+diff --git a/frontend/admin.html b/frontend/admin.html
+index 4a4d5d6..45d1625 100644
+--- a/frontend/admin.html
++++ b/frontend/admin.html
+@@ -102,6 +102,9 @@
+           <li class="nav-item" role="presentation">
+             <button class="nav-link" id="debugTabBtn" data-bs-toggle="tab" data-bs-target="#tabDebug" type="button">Диагностика</button>
+           </li>
++          <li class="nav-item" role="presentation">
++            <button class="nav-link" id="creditsTabBtn" data-bs-toggle="tab" data-bs-target="#tabCredits" type="button">О команде</button>
++          </li>
+         </ul>
+         <div class="tab-content">
+           <div class="tab-pane fade show active" id="tabProducts" role="tabpanel">
+@@ -206,11 +209,14 @@
+               </div>
+               <div id="debugConsoleLog" class="small font-monospace p-2" style="max-height: 260px; overflow-y: auto; white-space: pre-wrap;"></div>
+             </div>
+-
+-            <div class="mt-4 pt-3 border-top">
+-              <a href="#" id="creditsToggleLink" class="small text-secondary text-decoration-none">О команде проекта ▾</a>
+-              <div id="creditsSection" class="d-none mt-2"></div>
++          </div>
++          <div class="tab-pane fade" id="tabCredits" role="tabpanel">
++            <div id="creditsSection" class="mt-2">
++              <div class="text-secondary small py-4 text-center">Откройте вкладку, чтобы загрузить информацию о команде…</div>
+             </div>
++            <p class="small text-secondary mt-3">
++              Данные берутся из <code>data/credits.json</code> — отредактируйте файл, и раздел обновится при следующем открытии (перезапуск сервера не нужен).
++            </p>
+           </div>
+         </div>
+       </section>
+diff --git a/frontend/admin.js b/frontend/admin.js
+index b4e1f52..3c0df92 100644
+--- a/frontend/admin.js
++++ b/frontend/admin.js
+@@ -224,6 +224,28 @@ function bindAdminEvents() {
+     loadDebug().catch((err) => showAdminError(err.message));
+   });
+ 
++  // «О команде»: загружаем при первом открытии вкладки
++  document.getElementById("creditsTabBtn")?.addEventListener("shown.bs.tab", () => {
++    if (_creditsLoaded) return;
++    _creditsLoaded = true;
++    loadCredits().catch((err) => showAdminError(err.message));
++  });
++
++  // Активная вкладка переживает перезагрузку страницы (F5 возвращал на первую)
++  const TAB_STORAGE_KEY = "ventsearch.admin.tab";
++  document.querySelectorAll('#adminAppSection [data-bs-toggle="tab"]').forEach((btn) => {
++    btn.addEventListener("shown.bs.tab", () => {
++      try { localStorage.setItem(TAB_STORAGE_KEY, btn.getAttribute("data-bs-target") || ""); } catch { /* приватный режим */ }
++    });
++  });
++  try {
++    const savedTab = localStorage.getItem(TAB_STORAGE_KEY);
++    if (savedTab && savedTab !== "#tabProducts" && typeof bootstrap !== "undefined") {
++      const btn = document.querySelector(`#adminAppSection [data-bs-target="${savedTab}"]`);
++      if (btn) bootstrap.Tab.getOrCreateInstance(btn).show();
++    }
++  } catch { /* приватный режим */ }
++
+   root.addEventListener("click", (e) => {
+     if (e.target.closest("#debugRefreshBtn")) {
+       loadDebug().catch((err) => showAdminError(err.message));
+@@ -234,19 +256,6 @@ function bindAdminEvents() {
+       renderConsoleLogBuffer();
+       return;
+     }
+-    if (e.target.closest("#creditsToggleLink")) {
+-      e.preventDefault();
+-      const section = $("#creditsSection");
+-      const link = $("#creditsToggleLink");
+-      const willShow = section.classList.contains("d-none");
+-      section.classList.toggle("d-none");
+-      if (link) link.textContent = `О команде проекта ${willShow ? "▴" : "▾"}`;
+-      if (willShow && !_creditsLoaded) {
+-        _creditsLoaded = true;
+-        loadCredits().catch((err) => console.error(err));
+-      }
+-      return;
+-    }
+     if (e.target.closest("#debugReloadCsvBtn")) {
+       const btn = e.target.closest("#debugReloadCsvBtn");
+       btn.disabled = true;
+@@ -1004,5 +1013,7 @@ document.addEventListener("DOMContentLoaded", () => {
+     bindAdminEvents();
+     ensureAdminModals();
+   }
++
++  // «Поделиться» в шапке админки обрабатывает admin-page.js
+ });
+ })();
+diff --git a/frontend/delivery.html b/frontend/delivery.html
+index a23af12..f7ca00c 100644
+--- a/frontend/delivery.html
++++ b/frontend/delivery.html
+@@ -88,7 +88,7 @@
+     </header>
+ 
+     <main class="container-fluid px-3 px-lg-4 py-4">
+-      <div class="row g-4">
++      <div class="row g-4" data-demo-guard>
+         <div class="col-lg-8">
+           <div class="card p-4 mb-4 shadow-sm">
+             <h2 class="h5 fw-bold mb-3">Способы доставки</h2>
+diff --git a/frontend/product.html b/frontend/product.html
+index a173ad8..dcbce7b 100644
+--- a/frontend/product.html
++++ b/frontend/product.html
+@@ -172,8 +172,8 @@
+                     <button id="exportProductPdfBtn" type="button" class="btn btn-danger btn-sm text-nowrap">Скачать PDF</button>
+                   </div>
+                 </div>
+-                <div class="product-chart-wrap flex-grow-1" style="min-height: 460px;" data-demo-guard>
+-                  <div id="productQpChart" style="height: 100%; width: 100%; min-height: 460px;"></div>
++                <div class="product-chart-wrap flex-grow-1" style="min-height: 420px; max-height: 620px;" data-demo-guard>
++                  <div id="productQpChart" style="height: 100%; width: 100%; min-height: 420px;"></div>
+                 </div>
+                 <div id="productCompareMeta" class="small text-secondary mt-2 text-center"></div>
+               </div>
+@@ -181,12 +181,27 @@
+           </div>
+         </div>
+ 
++        <!-- Присоединительные размеры (чертёж завода): широкий блок под двумя
++             колонками — иначе 15 строк размеров растягивают левую колонку и
++             вместе с ней график (карточка графика тянется по высоте соседа). -->
++        <div id="dimensionsCard" class="card shadow-sm border-0 mb-4 d-none" style="border-radius: 20px;">
++          <div class="card-body p-4">
++            <h2 class="h6 fw-bold mb-2">Присоединительные размеры (по чертежу завода), мм</h2>
++            <div class="table-responsive" data-demo-guard>
++              <table class="table table-sm align-middle mb-0 text-center">
++                <thead id="dimensionsHead"></thead>
++                <tbody id="dimensionsBody"></tbody>
++              </table>
++            </div>
++          </div>
++        </div>
++
+         <div class="card shadow-sm border-0" style="border-radius: 20px;">
+           <div class="card-body p-4">
+             <h2 class="h6 fw-bold mb-3">Документация</h2>
+                 <div class="row g-4">
+                   <div class="col-md-4">
+-                    <div class="card h-100 border bg-light shadow-sm" style="border-radius: 12px;">
++                    <div class="card h-100 border bg-light shadow-sm vs-soon-wrap" style="border-radius: 12px;">
+                       <div class="card-body text-center py-4">
+                         <svg class="mb-3 text-primary" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
+                         <h3 class="h6 fw-bold">Паспорт изделия</h3>
+@@ -195,7 +210,7 @@
+                     </div>
+                   </div>
+                   <div class="col-md-4">
+-                    <div class="card h-100 border bg-light shadow-sm" style="border-radius: 12px;">
++                    <div class="card h-100 border bg-light shadow-sm vs-soon-wrap" style="border-radius: 12px;">
+                       <div class="card-body text-center py-4">
+                         <svg class="mb-3 text-primary" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+                         <h3 class="h6 fw-bold">Схема подключения</h3>
+diff --git a/frontend/script.js b/frontend/script.js
+index 6ea54fe..edfd781 100644
+--- a/frontend/script.js
++++ b/frontend/script.js
+@@ -204,6 +204,44 @@ function saveTileSize(size) {
+   }
+ }
+ 
++// Фильтры каталога переживают переход на карточку товара и возврат назад
++// (sessionStorage — на время вкладки; новая вкладка начинает с чистых фильтров)
++const CATALOG_FILTERS_KEY = "ventsearch.catalog.filters";
++
++function saveCatalogFilters(form, sortSelect) {
++  if (!form) return;
++  try {
++    const data = {};
++    for (const el of form.elements) {
++      if (el.name && String(el.value || "").trim()) data[el.name] = el.value;
++    }
++    if (sortSelect?.value) data.__sort = sortSelect.value;
++    sessionStorage.setItem(CATALOG_FILTERS_KEY, JSON.stringify(data));
++  } catch {
++    // приватный режим — просто не запоминаем
++  }
++}
++
++function restoreCatalogFilters(form, sortSelect) {
++  if (!form) return;
++  try {
++    const raw = sessionStorage.getItem(CATALOG_FILTERS_KEY);
++    if (!raw) return;
++    const data = JSON.parse(raw);
++    for (const [k, v] of Object.entries(data)) {
++      if (k === "__sort") {
++        if (sortSelect && !sortSelect.dataset.userSet) sortSelect.value = String(v);
++        continue;
++      }
++      const el = form.elements[k];
++      // Только пустые поля — явный ?q= из URL и введённое руками не трогаем
++      if (el && !String(el.value || "").trim()) el.value = String(v);
++    }
++  } catch {
++    // повреждённое значение — игнорируем
++  }
++}
++
+ function getProjectIdSet() {
+   return new Set(loadProjectIds());
+ }
+@@ -484,6 +522,9 @@ function buildQpDatasetsShared(products, targetRpm = null, targetPoint = null, o
+   const colors = ["#246bb3", "#e74c3c", "#2ecc71", "#9b59b6", "#f39c12", "#16a085"];
+   const familyMode = primaryId != null && products.length > 1;
+   const series = [];
++  // Кривые вентиляторов отдельно от служебных серий (зоны допуска — custom-серии
++  // с data:[0], их нельзя использовать для расчёта maxQ/поиска кривой по индексу)
++  const productCurves = [];
+ 
+   products.forEach((p, idx) => {
+     let qMin = toNumber(p.airflow?.min) ?? 0;
+@@ -583,11 +624,40 @@ function buildQpDatasetsShared(products, targetRpm = null, targetPoint = null, o
+         fontFamily: 'system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", "Helvetica Neue", Arial, sans-serif',
+       } : undefined,
+     });
++    productCurves.push({ id: String(p.id), points, isPrimary, color });
++
++    // Зона допуска ВДОЛЬ ВСЕЙ кривой: те же точки, сдвинутые на ±tol% по
++    // давлению (параллельные кривые), заливка цветом самой модели. Рисуем у
++    // каждой сравниваемой кривой; у серых контекстных кривых модельного ряда
++    // не рисуем — полосы бы слились в нечитаемую кашу.
++    if ((!familyMode || isPrimary) && points.length >= 2) {
++      const tolPct = targetPoint && Number(targetPoint.tol) > 0 ? Number(targetPoint.tol) : 7.5;
++      const TOL_P = tolPct / 100;
++      const upper = points.map(([q, pv]) => [q, pv * (1 + TOL_P)]);
++      const lower = points.map(([q, pv]) => [q, Math.max(0, pv * (1 - TOL_P))]).reverse();
++      const outline = upper.concat(lower);
++      series.push({
++        name: `tol-band-${idx}`,
++        type: 'custom',
++        silent: true,
++        z: 0,
++        clip: true,
++        renderItem: (params, api) => ({
++          type: 'polygon',
++          shape: { points: outline.map((pt) => api.coord(pt)) },
++          style: { fill: color, opacity: 0.10 }
++        }),
++        data: [0]
++      });
++    }
+   });
+ 
+   if (targetPoint && targetPoint.q > 0 && targetPoint.p > 0) {
+     const k = targetPoint.p / Math.pow(targetPoint.q, 2);
+-    const maxQ = Math.max(...series.map(s => s.data[s.data.length - 1][0]), targetPoint.q * 1.5);
++    const maxQ = Math.max(
++      ...productCurves.map((c) => c.points[c.points.length - 1][0]),
++      targetPoint.q * 1.5,
++    );
+     const systemPoints = [];
+     for (let i = 0; i <= 100; i++) {
+       const q = (maxQ * i) / 100;
+@@ -604,39 +674,15 @@ function buildQpDatasetsShared(products, targetRpm = null, targetPoint = null, o
+       data: systemPoints
+     });
+ 
+-    // Зона допуска по давлению вокруг участка кривой Q ± 15% от точки + процент
+-    // запаса в подписи точки — считаем по единственной модели, либо (в
+-    // модельном ряду) по выделенной. При явном сравнении 2+ моделей без
+-    // primaryId зону не рисуем — непонятно, к какой кривой её привязывать.
++    // Процент запаса в подписи точки — по единственной модели, либо (в
++    // модельном ряду) по выделенной. При сравнении 2+ моделей без primaryId
++    // запас не считаем — непонятно, к какой кривой его привязывать.
+     let pointLabel = 'Рабочая точка';
+-    const primaryIdx = familyMode ? products.findIndex((p) => String(p.id) === String(primaryId)) : 0;
+-    const primarySeries = products.length === 1 || familyMode ? series[primaryIdx] : null;
+-    if (primarySeries && primarySeries.data.length >= 2) {
+-      const fanPts = primarySeries.data;
+-      const tolPct = Number(targetPoint.tol) > 0 ? Number(targetPoint.tol) : 7.5;
+-      const TOL_P = tolPct / 100;
+-      const seg = fanPts.filter(([q]) => q >= targetPoint.q * 0.85 && q <= targetPoint.q * 1.15);
+-      if (seg.length >= 2) {
+-        // Полигон через custom-серию: stack у ECharts на двух числовых осях
+-        // складывает координаты и уводит полосу в сторону — рисуем контур сами
+-        const upper = seg.map(([q, p]) => [q, p * (1 + TOL_P)]);
+-        const lower = seg.map(([q, p]) => [q, p * (1 - TOL_P)]);
+-        const outline = upper.concat(lower.slice().reverse());
+-        series.push({
+-          name: 'tol-band',
+-          type: 'custom',
+-          silent: true,
+-          z: 1,
+-          clip: true,
+-          renderItem: (params, api) => ({
+-            type: 'polygon',
+-            shape: { points: outline.map((pt) => api.coord(pt)) },
+-            style: { fill: 'rgba(2, 123, 243, 0.16)' }
+-          }),
+-          data: [0]
+-        });
+-      }
+-
++    const primaryCurve = products.length === 1
++      ? productCurves[0]
++      : productCurves.find((c) => c.isPrimary && familyMode) || null;
++    if (primaryCurve && primaryCurve.points.length >= 2) {
++      const fanPts = primaryCurve.points;
+       // Давление на кривой при Q точки — для процента запаса
+       let pAvail = null;
+       for (let i = 1; i < fanPts.length; i++) {
+@@ -897,10 +943,14 @@ function captureChartPngForPdf(sourceChart) {
+ 
+ function describeQuery(filters) {
+   const parts = [];
++  if (filters.q) parts.push(`поиск: «${filters.q}»`);
+   if (filters.type) parts.push(`Тип: ${filters.type}`);
++  if (filters.series) parts.push(`Типоразмер: ${filters.series}`);
++  if (filters.diameter) parts.push(`Диаметр: ${filters.diameter} мм`);
+   if (filters.minAirflow || filters.maxAirflow) parts.push(`Расход: ${filters.minAirflow || "—"}–${filters.maxAirflow || "—"} м³/ч`);
+   if (filters.minPressure || filters.maxPressure) parts.push(`Давление: ${filters.minPressure || "—"}–${filters.maxPressure || "—"} Па`);
+   if (filters.minPower || filters.maxPower) parts.push(`Мощность: ${filters.minPower || "—"}–${filters.maxPower || "—"} Вт`);
++  if (filters.minPrice || filters.maxPrice) parts.push(`Цена: ${filters.minPrice || "—"}–${filters.maxPrice || "—"} ₽`);
+   return parts.length ? parts.join(" · ") : "Параметры запроса: не заданы";
+ }
+ 
+@@ -979,7 +1029,6 @@ async function initCatalogPage() {
+   const emptySection = $("#emptyStateSection");
+   const backToFiltersBtn = $("#backToFiltersBtn");
+   const analogsList = $("#analogsList");
+-  const shareLinkBtn = $("#shareLinkBtn");
+   const tileSizeGroup = $("#tileSizeGroup");
+ 
+   const state = {
+@@ -1301,6 +1350,7 @@ async function initCatalogPage() {
+     setLoading(true);
+     state.currentPage = page;
+     state.filters = parseFilters(filtersForm);
++    saveCatalogFilters(filtersForm, sortSelect);
+     state.querySummaryText = describeQuery(state.filters);
+     if (querySummary) querySummary.textContent = state.querySummaryText;
+ 
+@@ -1387,7 +1437,16 @@ async function initCatalogPage() {
+   filtersForm?.addEventListener("submit", (e) => {
+     e.preventDefault();
+     if (!validateRangeFilters()) return;
+-    loadPage(1);
++    // Если задана рабочая точка — фильтры не заменяют подбор, а сужают его:
++    // «по точке И по названию/типу/цене» работают вместе
++    const pq = toNumber(pointQInput?.value);
++    const pp = toNumber(pointPInput?.value);
++    if (pq > 0 && pp > 0) {
++      const tol = Math.min(Math.max(toNumber(pointTolInput?.value) || 0, 0), 50);
++      runPointSearch(pq, pp, tol);
++    } else {
++      loadPage(1);
++    }
+     closeFiltersOffcanvasIfMobile();
+   });
+ 
+@@ -1401,14 +1460,27 @@ async function initCatalogPage() {
+   async function runPointSearch(pointQ, pointP, pointTol) {
+     hideError();
+     setLoading(true);
++    // Обычные фильтры каталога сужают подбор по точке (совместный поиск).
++    // Диапазоны расхода/давления не передаём: расход задан самой точкой Q.
++    const POINT_COMPATIBLE_FILTERS = [
++      "q", "type", "series", "diameter",
++      "minPrice", "maxPrice", "minPower", "maxPower", "minNoise", "maxNoise",
++    ];
++    const extraFilters = parseFilters(filtersForm);
++    saveCatalogFilters(filtersForm, sortSelect);
++    const activeExtra = POINT_COMPATIBLE_FILTERS.filter((k) => extraFilters[k] != null);
+     const tolText = pointTol > 0 ? ` · допуск ±${formatNumber(pointTol)}%` : "";
+-    state.querySummaryText = `Рабочая точка: Q = ${formatNumber(pointQ)} м³/ч · P = ${formatNumber(pointP)} Па${tolText}`;
++    const extraText = activeExtra.length ? ` · фильтры: ${describeQuery(
++      Object.fromEntries(activeExtra.map((k) => [k, extraFilters[k]])),
++    )}` : "";
++    state.querySummaryText = `Рабочая точка: Q = ${formatNumber(pointQ)} м³/ч · P = ${formatNumber(pointP)} Па${tolText}${extraText}`;
+     if (querySummary) querySummary.textContent = state.querySummaryText;
+     try {
+       const params = new URLSearchParams({
+         point_q: String(pointQ), point_p: String(pointP), limit: String(PAGE_SIZE),
+       });
+       if (pointTol > 0) params.set("tolerance", String(pointTol));
++      for (const k of activeExtra) params.set(k, String(extraFilters[k]));
+       const data = await fetchJson(apiUrl(`/api/products/select-point?${params.toString()}`));
+       const items = (Array.isArray(data?.items) ? data.items : []).map((it) => ({
+         ...it.product,
+@@ -1509,26 +1581,8 @@ async function initCatalogPage() {
+     }
+   });
+ 
+-  shareLinkBtn?.addEventListener("click", async () => {
+-    try {
+-      const data = await fetchJson(apiUrl("/api/share-links"));
+-      const urls = Array.isArray(data?.urls) ? data.urls.filter(Boolean) : [];
+-      if (!urls.length) {
+-        showError("Не удалось сгенерировать ссылку для локальной сети.");
+-        return;
+-      }
+-      const first = urls[0];
+-      const copied = await copyTextToClipboard(first);
+-      const status = copied
+-        ? "Ссылка скопирована в буфер обмена:"
+-        : "Не удалось скопировать автоматически (браузер блокирует буфер обмена вне HTTPS/localhost) — скопируйте вручную:";
+-      const text = `${status}\n${first}\n\nДополнительно:\n${urls.join("\n")}`;
+-      window.alert(text);
+-    } catch (err) {
+-      console.error(err);
+-      showError("Не удалось сгенерировать ссылку. Проверьте доступность API.");
+-    }
+-  });
++  // Обработчик «Поделиться» глобальный (initShareLinkButton) — кнопка есть
++  // в шапке каждой страницы, а не только каталога
+ 
+   const urlQ = new URLSearchParams(window.location.search).get("q");
+   if (urlQ) {
+@@ -1540,6 +1594,13 @@ async function initCatalogPage() {
+   try {
+     setLoading(true);
+     await loadFacets();
++    // Фильтры переживают уход на карточку и возврат: восстанавливаем из
++    // sessionStorage ПОСЛЕ loadFacets (селекты типа/диаметра к этому моменту
++    // уже наполнены опциями), но НЕ перетирая явный ?q= из URL
++    restoreCatalogFilters(filtersForm, sortSelect);
++    if (headerSearchInput && filtersForm?.elements.q?.value && !headerSearchInput.value) {
++      headerSearchInput.value = filtersForm.elements.q.value;
++    }
+     await loadPage(1);
+     syncSelectionUi();
+     updateProjectNavBadge();
+@@ -1853,18 +1914,20 @@ async function initProductPage() {
+       specBody.appendChild(tr);
+     }
+ 
+-    // Габаритно-присоединительные размеры (чертёж завода) — если есть в CSV.
++    // Габаритно-присоединительные размеры (чертёж завода) — широкий блок под
++    // двумя колонками (см. #dimensionsCard в product.html): один размер = одна
++    // колонка, чтобы не растягивать страницу по вертикали.
+     const dims = data.dimensions;
+     if (dims && typeof dims === "object" && Object.keys(dims).length) {
+-      const divider = document.createElement("tr");
+-      divider.innerHTML = `<td colspan="2" class="pt-3 pb-1 fw-semibold text-secondary small">Присоединительные размеры (по чертежу завода), мм</td>`;
+-      specBody.appendChild(divider);
+-      for (const [label, value] of Object.entries(dims)) {
+-        const tr = document.createElement("tr");
+-        tr.innerHTML = `<th scope="row" class="w-50 text-secondary"><code>${escapeHtml(label)}</code></th><td>${escapeHtml(value)}</td>`;
+-        specBody.appendChild(tr);
++      const entries = Object.entries(dims);
++      const head = $("#dimensionsHead");
++      const body = $("#dimensionsBody");
++      if (head && body) {
++        head.innerHTML = `<tr>${entries.map(([label]) => `<th class="text-secondary fw-semibold"><code>${escapeHtml(label)}</code></th>`).join("")}</tr>`;
++        body.innerHTML = `<tr>${entries.map(([, value]) => `<td>${escapeHtml(value)}</td>`).join("")}</tr>`;
++        $("#dimensionsCard")?.classList.remove("d-none");
+       }
+-      $("#gabaritsCaption")?.replaceChildren(document.createTextNode(`${Object.keys(dims).length} размеров — см. «Характеристики»`));
++      $("#gabaritsCaption")?.replaceChildren(document.createTextNode(`${entries.length} размеров — таблица выше на этой странице`));
+     }
+ 
+     container.classList.remove("d-none");
+@@ -2257,8 +2320,100 @@ async function applyDemoModeGuardIfNeeded() {
+   });
+ }
+ 
++// Плавающий контакт-виджет (правый нижний угол): кому писать по вопросам.
++// Данные — из data/credits.json через публичный /api/contacts; если файла
++// нет или он пуст, показываем общий почтовый контакт проекта.
++function initContactWidget() {
++  if (document.getElementById("vsContactFab")) return;
++  const fab = document.createElement("button");
++  fab.id = "vsContactFab";
++  fab.className = "vs-contact-fab";
++  fab.type = "button";
++  fab.title = "Контакты";
++  fab.setAttribute("aria-label", "Контакты");
++  fab.textContent = "✉";
++  document.body.appendChild(fab);
++
++  let card = null;
++  let loaded = false;
++
++  async function fillCard(el) {
++    let html = "";
++    try {
++      const d = await fetchJson(apiUrl("/api/contacts"));
++      const creators = Array.isArray(d?.creators) ? d.creators : [];
++      if (creators.length) {
++        html = creators.map((c) => `
++          <div class="mb-2">
++            <div class="fw-semibold small">${escapeHtml(c.name || "—")}</div>
++            ${c.role ? `<div class="text-secondary" style="font-size:.78rem;">${escapeHtml(c.role)}</div>` : ""}
++            ${c.contact ? `<div class="small">${escapeHtml(c.contact)}</div>` : ""}
++          </div>`).join("");
++      }
++    } catch (err) {
++      console.warn("Не удалось загрузить контакты", err);
++    }
++    if (!html) {
++      html = `<div class="small">По всем вопросам: <a href="mailto:ventsearch.team@gmail.com">ventsearch.team@gmail.com</a></div>`;
++    }
++    el.innerHTML = `<div class="fw-bold mb-2">Кому писать</div>${html}`;
++  }
++
++  fab.addEventListener("click", () => {
++    if (!card) {
++      card = document.createElement("div");
++      card.className = "vs-contact-card d-none";
++      card.innerHTML = '<div class="text-secondary small">Загрузка…</div>';
++      document.body.appendChild(card);
++    }
++    const willShow = card.classList.contains("d-none");
++    card.classList.toggle("d-none");
++    fab.textContent = willShow ? "✕" : "✉";
++    if (willShow && !loaded) {
++      loaded = true;
++      fillCard(card);
++    }
++  });
++}
++
++// «Поделиться» — в шапке каждой страницы, поэтому обработчик глобальный
++// (раньше вешался только в initCatalogPage и работал лишь на главной)
++function initShareLinkButton() {
++  const btn = document.getElementById("shareLinkBtn");
++  if (!btn) return;
++  btn.addEventListener("click", async () => {
++    try {
++      const data = await fetchJson(apiUrl("/api/share-links"));
++      const urls = Array.isArray(data?.urls) ? data.urls.filter(Boolean) : [];
++      if (!urls.length) {
++        window.alert("Не удалось сгенерировать ссылку для локальной сети.");
++        return;
++      }
++      // Делимся текущей страницей, а не корнем: путь и параметры сохраняем,
++      // подменяем только хост на реально доступный из сети
++      const first = urls[0];
++      let shareUrl = first;
++      try {
++        const base = new URL(first);
++        shareUrl = `${base.origin}${window.location.pathname}${window.location.search}`;
++      } catch { /* оставляем как есть */ }
++      const copied = await copyTextToClipboard(shareUrl);
++      const status = copied
++        ? "Ссылка скопирована в буфер обмена:"
++        : "Не удалось скопировать автоматически (браузер блокирует буфер обмена вне HTTPS/localhost) — скопируйте вручную:";
++      const text = `${status}\n${shareUrl}\n\nДоступные адреса:\n${urls.join("\n")}`;
++      window.alert(text);
++    } catch (err) {
++      console.error(err);
++      window.alert("Не удалось сгенерировать ссылку. Проверьте доступность API.");
++    }
++  });
++}
++
+ document.addEventListener("DOMContentLoaded", () => {
+   applyDemoModeGuardIfNeeded();
++  initShareLinkButton();
++  initContactWidget();
+   updateProjectNavBadge();
+   updateCompareNavBadge();
+ 
+diff --git a/frontend/style.css b/frontend/style.css
+index f2ed9b5..9232efd 100644
+--- a/frontend/style.css
++++ b/frontend/style.css
+@@ -1055,3 +1055,63 @@ body[data-page="product"] .tabs-card .card-body {
+   pointer-events: none;
+   user-select: none;
+ }
++
++/* Плашка «в следующих обновлениях» — для разделов, которые видны в макете,
++   но ещё не реализованы (паспорт изделия, схема подключения и т.п.). */
++.vs-soon-wrap {
++  position: relative;
++}
++
++.vs-soon-wrap::after {
++  content: "в следующих обновлениях";
++  position: absolute;
++  inset: 0;
++  z-index: 3;
++  display: flex;
++  align-items: center;
++  justify-content: center;
++  text-align: center;
++  padding: 0.5rem;
++  background: rgba(233, 236, 239, 0.72);
++  backdrop-filter: blur(1px);
++  border-radius: 12px;
++  color: #c0392b;
++  font-weight: 600;
++  font-size: 0.9rem;
++}
++
++/* Плавающий виджет контактов (правый нижний угол) */
++.vs-contact-fab {
++  position: fixed;
++  right: 20px;
++  bottom: 20px;
++  z-index: 1040;
++  width: 52px;
++  height: 52px;
++  border-radius: 50%;
++  border: none;
++  background: var(--vs-accent, #0d6efd);
++  color: #fff;
++  font-size: 1.35rem;
++  box-shadow: 0 4px 14px rgba(13, 110, 253, 0.35);
++  cursor: pointer;
++  transition: transform 0.15s;
++}
++
++.vs-contact-fab:hover {
++  transform: scale(1.08);
++}
++
++.vs-contact-card {
++  position: fixed;
++  right: 20px;
++  bottom: 84px;
++  z-index: 1040;
++  width: 300px;
++  max-width: calc(100vw - 40px);
++  background: #fff;
++  border: 1px solid #dee2e6;
++  border-radius: 14px;
++  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.15);
++  padding: 1rem 1.1rem;
++}
+-- 
+2.43.0
+

@@ -1,0 +1,100 @@
+From 8551767cd03c84cfce511be4bf181fca83aff1d4 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Fri, 10 Jul 2026 09:57:48 +0000
+Subject: [PATCH] Fix stale photo cache: cache-bust /photos URLs by file mtime
+
+Replacing a file in photos/ took effect on the backend immediately
+(StaticFiles reads straight from disk, no Docker involved), but the
+image URL never changed, so browsers kept serving the old cached
+copy. Added /api/photos-version (per-file mtime) and append it as
+?v=... to image URLs.
+---
+ backend/presentation/app.py | 15 +++++++++++++++
+ frontend/script.js          | 34 +++++++++++++++++++++++++++++++---
+ 2 files changed, 46 insertions(+), 3 deletions(-)
+
+diff --git a/backend/presentation/app.py b/backend/presentation/app.py
+index c3ab108..543f8aa 100644
+--- a/backend/presentation/app.py
++++ b/backend/presentation/app.py
+@@ -538,6 +538,21 @@ def create_app() -> FastAPI:
+             "creators": creators,
+         }
+ 
++    @app.get("/api/photos-version", summary="Версии файлов фото (кэш-бастинг)", tags=["system"])
++    def api_photos_version():
++        """
++        Время изменения каждого файла в photos/ — фронтенд добавляет его как
++        ?v=... к ссылке на картинку, чтобы браузер не показывал старое фото
++        из кэша после замены файла на диске (URL иначе не меняется).
++        """
++        if not PHOTOS_DIR.exists():
++            return {}
++        versions: dict[str, int] = {}
++        for entry in PHOTOS_DIR.iterdir():
++            if entry.is_file():
++                versions[entry.name] = int(entry.stat().st_mtime)
++        return versions
++
+     # --- Export ---
+ 
+     @app.post("/api/export/pdf", summary="Экспорт сравнения в PDF", tags=["export"])
+diff --git a/frontend/script.js b/frontend/script.js
+index edfd781..4e62419 100644
+--- a/frontend/script.js
++++ b/frontend/script.js
+@@ -338,20 +338,48 @@ function getImageFileName(product) {
+   return FAN_IMAGES_BY_TYPE[typeKey] || null;
+ }
+ 
++let _photosVersionCache = null;
++let _photosVersionPromise = null;
++
++// Версии файлов photos/ (мтайм) с бэкенда — используются как ?v=... в ссылке
++// на фото, чтобы браузер сразу подхватывал заменённый файл на диске: URL без
++// этого параметра не меняется при замене файла, и браузер показывает старую
++// картинку из своего кэша даже после Docker reset / перезапуска сервера.
++async function ensurePhotosVersionLoaded() {
++  if (_photosVersionCache) return _photosVersionCache;
++  if (!_photosVersionPromise) {
++    _photosVersionPromise = fetch(apiUrl("/api/photos-version"))
++      .then((res) => (res.ok ? res.json() : {}))
++      .catch(() => ({}))
++      .then((data) => {
++        _photosVersionCache = data && typeof data === "object" ? data : {};
++        return _photosVersionCache;
++      });
++  }
++  return _photosVersionPromise;
++}
++
+ function getImageUrlCandidates(product) {
+   const fileName = getImageFileName(product);
+   if (!fileName) return [];
+   const encoded = encodeURIComponent(fileName);
+-  const candidates = [apiUrl(`/photos/${encoded}`), `/photos/${encoded}`, `photos/${encoded}`];
++  const version = _photosVersionCache?.[fileName];
++  const suffix = version ? `?v=${version}` : "";
++  const candidates = [
++    `${apiUrl(`/photos/${encoded}`)}${suffix}`,
++    `/photos/${encoded}${suffix}`,
++    `photos/${encoded}${suffix}`,
++  ];
+   if (typeof window !== "undefined" && window.location?.origin && window.location.origin !== "null") {
+-    candidates.push(`${window.location.origin}/photos/${encoded}`);
++    candidates.push(`${window.location.origin}/photos/${encoded}${suffix}`);
+   }
+   return [...new Set(candidates.filter(Boolean))];
+ }
+ 
+-function renderFanImage(container, product, altText, lazy = true) {
++async function renderFanImage(container, product, altText, lazy = true) {
+   if (!container) return;
+   container.innerHTML = "";
++  await ensurePhotosVersionLoaded();
+   const imageUrls = getImageUrlCandidates(product);
+   if (!imageUrls.length) {
+     container.innerHTML = '<span class="text-secondary small">Фото скоро появится</span>';
+-- 
+2.43.0
+
