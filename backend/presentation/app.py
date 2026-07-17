@@ -210,7 +210,15 @@ def _pick_fonts() -> tuple[str, str]:
     return "Helvetica", "Helvetica-Bold"
 
 
-def _build_compare_pdf(products: list[dict[str, Any]], chart_png: Optional[bytes] = None) -> bytes:
+VENTSEARCH_ADDRESS = "Заречная ул., 1, Ивантеевка"
+
+
+def _build_compare_pdf(
+    products: list[dict[str, Any]],
+    chart_png: Optional[bytes] = None,
+    header_text: Optional[str] = None,
+    watermark_path: Optional[Path] = None,
+) -> bytes:
     buf = BytesIO()
     pdf = rl_canvas.Canvas(buf, pagesize=A4)
     page_w, page_h = A4
@@ -226,9 +234,32 @@ def _build_compare_pdf(products: list[dict[str, Any]], chart_png: Optional[bytes
     c_muted = colors.HexColor("#55595d")
     c_best = colors.HexColor("#e8f7e8")
 
+    def draw_watermark():
+        if not watermark_path:
+            return
+        try:
+            wm_image = ImageReader(str(watermark_path))
+            iw, ih = wm_image.getSize()
+            target = 120 * mm
+            scale = target / max(iw, ih)
+            draw_w, draw_h = iw * scale, ih * scale
+            pdf.saveState()
+            pdf.setFillAlpha(0.10)
+            pdf.setStrokeAlpha(0.10)
+            pdf.drawImage(
+                wm_image,
+                (page_w - draw_w) / 2, (page_h - draw_h) / 2,
+                width=draw_w, height=draw_h,
+                preserveAspectRatio=True, mask="auto",
+            )
+            pdf.restoreState()
+        except Exception:
+            pass
+
     def new_page():
         nonlocal y
         pdf.showPage()
+        draw_watermark()
         y = page_h - 14 * mm
 
     def line(text, step=5.6 * mm, bold=False, color=None, size=10):
@@ -281,11 +312,15 @@ def _build_compare_pdf(products: list[dict[str, Any]], chart_png: Optional[bytes
     single = len(products) == 1
     pdf.setAuthor("VENTSEARCH API")
     pdf.setTitle("VENTSEARCH Карточка модели" if single else "VENTSEARCH Сравнение моделей")
+    draw_watermark()
+    default_title = "VENTSEARCH — карточка модели" if single else "VENTSEARCH — отчет по сравнению"
+    title = (header_text or "").strip() or default_title
     card_header(
-        "VENTSEARCH — карточка модели" if single else "VENTSEARCH — отчет по сравнению",
+        title,
         f"Дата: {datetime.now().strftime('%d.%m.%Y %H:%M')}"
         + ("" if single else f"   |   Моделей: {len(products)}"),
     )
+    line(VENTSEARCH_ADDRESS, step=6.0 * mm, color=c_muted, size=8.5)
 
     if chart_png:
         try:
@@ -587,7 +622,21 @@ def create_app() -> FastAPI:
                 detail=ErrorOut(error=f"Product not found: {', '.join(missing)}").model_dump(),
             )
         chart_png = _extract_chart_png(payload.chart_image_data_url)
-        pdf_bytes = _build_compare_pdf(products_list, chart_png=chart_png)
+        watermark_path = None
+        if payload.watermark:
+            candidate = PHOTOS_DIR / payload.watermark
+            if (
+                Path(payload.watermark).name == payload.watermark
+                and candidate.is_file()
+                and candidate.resolve().parent == PHOTOS_DIR.resolve()
+            ):
+                watermark_path = candidate
+        pdf_bytes = _build_compare_pdf(
+            products_list,
+            chart_png=chart_png,
+            header_text=payload.header_text,
+            watermark_path=watermark_path,
+        )
         filename = _safe_pdf_filename(payload.filename)
         headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
         return StreamingResponse(BytesIO(pdf_bytes), media_type="application/pdf", headers=headers)
@@ -606,8 +655,18 @@ def create_app() -> FastAPI:
         "admin-page.js", "auth-page.js", "site-auth.js",
         "admin.js", "auth.js", "style.css", "script.js", "config.js",
         "site-layout.js",
+        # Иконки сайта: без явных маршрутов браузер получал 404 даже при
+        # правильно сгенерированных файлах в frontend/ (список — белый)
+        "favicon.ico", "favicon-16x16.png", "favicon-32x32.png",
+        "apple-touch-icon.png",
     ]:
         _make_static_route(app, name)
+
+    # Служебная графика фронтенда (заглушка чертежа и т.п.) — целой папкой,
+    # как /photos: новые файлы в frontend/img/ не требуют правок белого списка
+    frontend_img_dir = FRONTEND_DIR / "img"
+    if frontend_img_dir.is_dir():
+        app.mount("/img", StaticFiles(directory=str(frontend_img_dir)), name="frontend-img")
 
     return app
 

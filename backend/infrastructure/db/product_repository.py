@@ -25,31 +25,36 @@ class SortStrategy:
         raise NotImplementedError
 
 
-class PriceAscStrategy(SortStrategy):
+class ColumnSortStrategy(SortStrategy):
+    """Сортировка по одной колонке с NULLS LAST и стабильным довеском по model."""
+
+    def __init__(self, column: str, descending: bool = False) -> None:
+        self._column = column
+        self._descending = descending
+
     def order_by_sql(self) -> str:
-        return "price ASC NULLS LAST, model ASC"
+        direction = "DESC" if self._descending else "ASC"
+        if self._column == "model":
+            return f"model {direction}"
+        return f"{self._column} {direction} NULLS LAST, model ASC"
 
 
-class PriceDescStrategy(SortStrategy):
-    def order_by_sql(self) -> str:
-        return "price DESC NULLS LAST, model ASC"
-
-
-class PowerAscStrategy(SortStrategy):
-    def order_by_sql(self) -> str:
-        return "power ASC NULLS LAST, model ASC"
-
-
-class ModelAscStrategy(SortStrategy):
-    def order_by_sql(self) -> str:
-        return "model ASC"
-
+# Ключи сортировки соответствуют колонкам таблицы каталога на фронтенде:
+# клик по заголовку колонки шлёт соответствующий sort=..._asc|_desc.
+_SORTABLE_COLUMNS: Dict[str, str] = {
+    "price": "price",
+    "power": "power",
+    "model": "model",
+    "airflow": "airflow_max",
+    "pressure": "pressure_max",
+    "noise": "noise_level",
+    "diameter": "diameter",
+}
 
 SORT_STRATEGIES: Dict[str, SortStrategy] = {
-    "price_asc": PriceAscStrategy(),
-    "price_desc": PriceDescStrategy(),
-    "power_asc": PowerAscStrategy(),
-    "model_asc": ModelAscStrategy(),
+    f"{key}_{suffix}": ColumnSortStrategy(column, descending=(suffix == "desc"))
+    for key, column in _SORTABLE_COLUMNS.items()
+    for suffix in ("asc", "desc")
 }
 
 DEFAULT_SORT_KEY = "price_asc"

@@ -66,3 +66,37 @@ def test_api_returns_500_on_unhandled_server_error(monkeypatch):
 
     assert response.status_code == 500
     assert response.json().get("error") == "Internal server error"
+
+
+def test_api_products_accepts_table_column_sorts(monkeypatch):
+    """Клик по заголовку колонки каталога шлёт sort=<поле>_asc|_desc —
+    сервер должен принимать все ключи и сортировать соответствующей колонкой."""
+    from infrastructure.db.product_repository import SORT_STRATEGIES
+
+    expected_keys = {
+        f"{field}_{direction}"
+        for field in ("price", "model", "airflow", "pressure", "power", "noise", "diameter")
+        for direction in ("asc", "desc")
+    }
+    assert expected_keys <= set(SORT_STRATEGIES)
+    assert "airflow_max DESC NULLS LAST" in SORT_STRATEGIES["airflow_desc"].order_by_sql()
+    assert "noise_level ASC NULLS LAST" in SORT_STRATEGIES["noise_asc"].order_by_sql()
+    assert SORT_STRATEGIES["model_desc"].order_by_sql() == "model DESC"
+
+    captured = {}
+
+    def _capture(self, **kwargs):
+        captured.update(kwargs)
+        return []
+
+    monkeypatch.setattr(PgProductRepository, "count_products_filtered", lambda self, **kwargs: 0)
+    monkeypatch.setattr(PgProductRepository, "list_products", _capture)
+    client = make_test_client(monkeypatch)
+
+    response = client.get("/api/products?sort=pressure_desc&limit=1&offset=0")
+    assert response.status_code == 200
+    assert captured.get("sort") == "pressure_desc"
+
+    # Неизвестный ключ сортировки отклоняется валидацией параметров
+    response = client.get("/api/products?sort=bogus_desc&limit=1&offset=0")
+    assert response.status_code == 422

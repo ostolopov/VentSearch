@@ -1115,3 +1115,209 @@ body[data-page="product"] .tabs-card .card-body {
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.15);
   padding: 1rem 1.1rem;
 }
+
+/* ============================================================
+   Таблица каталога (вместо высоких карточек): один экран —
+   десятки моделей, сортировка кликом по заголовку колонки
+   ============================================================ */
+
+.catalog-table-wrap {
+  background: var(--vs-surface);
+  border: 1px solid var(--vs-border);
+  border-radius: var(--vs-radius-md);
+  box-shadow: var(--vs-shadow);
+  overflow-x: auto;
+}
+
+.catalog-table {
+  min-width: 900px;
+  font-size: 0.92rem;
+}
+
+.catalog-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--vs-bg);
+  border-bottom: 2px solid var(--vs-border);
+  color: var(--vs-text-muted);
+  font-weight: 600;
+  font-size: 0.82rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  padding: 0.65rem 0.75rem;
+  white-space: nowrap;
+  user-select: none;
+}
+
+.catalog-table th.catalog-sortable {
+  cursor: pointer;
+}
+
+.catalog-table th.catalog-sortable:hover {
+  color: var(--vs-accent);
+}
+
+/* Стрелка направления сортировки: у активной колонки — заметная,
+   у остальных сортируемых — бледная подсказка ↕ */
+.catalog-table th.catalog-sortable::after {
+  content: "↕";
+  margin-left: 0.35em;
+  opacity: 0.35;
+}
+
+.catalog-table th.catalog-sortable[data-sort-dir="asc"] {
+  color: var(--vs-accent);
+}
+
+.catalog-table th.catalog-sortable[data-sort-dir="asc"]::after {
+  content: "▲";
+  opacity: 1;
+}
+
+.catalog-table th.catalog-sortable[data-sort-dir="desc"] {
+  color: var(--vs-accent);
+}
+
+.catalog-table th.catalog-sortable[data-sort-dir="desc"]::after {
+  content: "▼";
+  opacity: 1;
+}
+
+.catalog-table td {
+  padding: 0.55rem 0.75rem;
+  vertical-align: middle;
+}
+
+.catalog-group-row td {
+  background: #eef3fb;
+  border-top: 1px solid var(--vs-border);
+  padding: 0.5rem 0.75rem;
+  font-size: 0.9rem;
+}
+
+.catalog-row {
+  cursor: pointer;
+}
+
+.catalog-cell-model a {
+  color: var(--vs-text);
+  text-decoration: none;
+}
+
+.catalog-cell-model a:hover {
+  color: var(--vs-accent);
+  text-decoration: underline;
+}
+
+.catalog-row-selected td {
+  background: rgba(13, 110, 253, 0.06);
+}
+
+.catalog-row-in-project .catalog-cell-model a::before {
+  content: "✓ ";
+  color: var(--vs-success);
+}
+
+.catalog-table .btn-sm {
+  --bs-btn-padding-y: 0.2rem;
+  --bs-btn-padding-x: 0.55rem;
+  --bs-btn-font-size: 0.78rem;
+  white-space: nowrap;
+}
+
+/* ============================================================
+   Q-P график: контейнер занимает всю ширину блока и растёт
+   по высоте вместе с окном (без «сплющенного прямоугольника»)
+   ============================================================ */
+
+.qp-chart-box {
+  width: 100%;
+  height: clamp(420px, 58vh, 760px);
+}
+
+/* ============================================================
+   Страница товара: чертёж, размеры ячейками, документация
+   ============================================================ */
+
+.blueprint-frame {
+  background: #f4f7fb;
+  border: 1px solid var(--vs-border);
+  border-radius: 14px;
+  padding: 0.75rem;
+  text-align: center;
+}
+
+.blueprint-image {
+  max-width: 100%;
+  max-height: 560px;
+  border-radius: 8px;
+}
+
+/* Присоединительные размеры: сетка ячеек «буква → значение» вместо
+   сплошного ряда цифр */
+.dimensions-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+  gap: 0.5rem;
+}
+
+.dim-cell {
+  background: var(--vs-bg);
+  border: 1px solid var(--vs-border);
+  border-radius: 10px;
+  padding: 0.5rem 0.65rem;
+  text-align: center;
+}
+
+.dim-cell-label {
+  font-family: var(--bs-font-monospace, monospace);
+  font-size: 0.78rem;
+  color: var(--vs-text-muted);
+  margin-bottom: 0.15rem;
+}
+
+.dim-cell-value {
+  font-weight: 700;
+  font-size: 1.02rem;
+}
+
+/* Документация: контрастные плитки с крупной типографикой вместо
+   трёх блёклых серых прямоугольников */
+.doc-tile {
+  display: flex;
+  align-items: center;
+  gap: 0.9rem;
+  height: 100%;
+  background: var(--vs-surface);
+  border: 1px solid var(--vs-border);
+  border-left: 4px solid var(--vs-accent);
+  border-radius: 12px;
+  padding: 1rem 1.1rem;
+  color: var(--vs-text);
+  transition: box-shadow 0.15s, transform 0.15s;
+}
+
+.doc-tile:hover {
+  box-shadow: var(--vs-shadow-hover);
+  transform: translateY(-2px);
+}
+
+.doc-tile-icon {
+  color: var(--vs-accent);
+  flex-shrink: 0;
+}
+
+.doc-tile-text {
+  font-size: 0.85rem;
+  color: var(--vs-text-muted);
+}
+
+.doc-tile-link {
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.doc-tile-link:hover {
+  color: var(--vs-text);
+}

@@ -129,8 +129,16 @@ def api_products(
     minPressure: Annotated[Optional[float], Query(description="Минимальное давление.")] = None,
     maxPressure: Annotated[Optional[float], Query(description="Максимальное давление.")] = None,
     sort: Annotated[
-        Literal["price_asc", "price_desc"],
-        Query(description="Сортировка: price_asc / price_desc."),
+        Literal[
+            "price_asc", "price_desc",
+            "model_asc", "model_desc",
+            "airflow_asc", "airflow_desc",
+            "pressure_asc", "pressure_desc",
+            "power_asc", "power_desc",
+            "noise_asc", "noise_desc",
+            "diameter_asc", "diameter_desc",
+        ],
+        Query(description="Сортировка по колонке каталога: <поле>_asc / <поле>_desc."),
     ] = "price_asc",
     limit: Annotated[int, Query(description="Размер страницы (1–100).", ge=1, le=100)] = 48,
     offset: Annotated[int, Query(description="Смещение.", ge=0)] = 0,

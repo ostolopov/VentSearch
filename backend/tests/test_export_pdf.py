@@ -47,3 +47,54 @@ def test_export_pdf_returns_404_when_not_found(monkeypatch):
 
     assert response.status_code == 404
     assert "Product not found" in str(response.json())
+
+
+# ---------------------------------------------------------------------------
+# Кастомизация PDF: свой заголовок, фиксированный адрес, водяной знак
+# ---------------------------------------------------------------------------
+
+def _sample_product():
+    return {
+        "id": "3037", "number": "3037", "type": "ВЦ", "model": "ВЦ 30-160-016-5",
+        "size": "ВЦ 30-160-016", "diameter": 160.0,
+        "airflow": {"min": 130.0, "max": 4140.0, "raw": "130 - 4140"},
+        "pressure": {"min": 144.0, "max": 821.0, "raw": "144 - 821"},
+        "power": 180.0, "noise_level": 74.0, "price": 28900.0,
+        "_raw": {}, "_meta": {"model_slug": "вц-30-160-016-5"},
+    }
+
+
+def test_export_pdf_accepts_custom_header_and_watermark(monkeypatch):
+    monkeypatch.setattr(PgProductRepository, "get_by_id", lambda self, id_value: _sample_product())
+    monkeypatch.setattr(PgProductRepository, "get_by_model_or_slug", lambda self, m, s: None)
+
+    client = make_test_client(monkeypatch)
+    response = client.post(
+        "/api/export/pdf",
+        json={"ids": ["3037"], "header_text": "Коммерческое предложение", "watermark": "vo.jpeg"},
+    )
+    assert response.status_code == 200
+    assert response.content.startswith(b"%PDF")
+
+
+def test_export_pdf_ignores_path_traversal_in_watermark(monkeypatch):
+    monkeypatch.setattr(PgProductRepository, "get_by_id", lambda self, id_value: _sample_product())
+    monkeypatch.setattr(PgProductRepository, "get_by_model_or_slug", lambda self, m, s: None)
+
+    client = make_test_client(monkeypatch)
+    response = client.post(
+        "/api/export/pdf",
+        json={"ids": ["3037"], "watermark": "../../secrets/.env.local"},
+    )
+    # Не должно 500 или иным образом ронять экспорт — просто без водяного знака
+    assert response.status_code == 200
+    assert response.content.startswith(b"%PDF")
+
+
+def test_build_compare_pdf_uses_default_header_when_blank():
+    from presentation.app import _build_compare_pdf
+
+    data_default = _build_compare_pdf([_sample_product()])
+    data_blank = _build_compare_pdf([_sample_product()], header_text="   ")
+    assert data_default.startswith(b"%PDF")
+    assert data_blank.startswith(b"%PDF")

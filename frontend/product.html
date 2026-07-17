@@ -14,7 +14,7 @@
       integrity="sha384-QWTKZyjpPEjISv5WaRU9OFeRpok6YctnYmDr5pNlyT2bRjXh0JMhjY6hW+ALEwIH"
       crossorigin="anonymous"
     />
-    <link rel="stylesheet" href="style.css?v=20260709-1" />
+    <link rel="stylesheet" href="style.css?v=20260717-1" />
     
     <!-- Yandex.Metrika counter -->
 <script type="text/javascript">
@@ -118,14 +118,14 @@
 
       <div id="productContainer" class="d-none">
         <div class="row g-4 mb-4">
-          <div class="col-lg-5 col-xl-4">
+          <div class="col-lg-5">
             <div class="card shadow-sm border-0" style="border-radius: 20px;">
               <div class="card-body p-4">
                 <div class="d-flex gap-3 align-items-start mb-3">
                   <div
                     id="productImage"
                     class="rounded-3 border bg-white d-flex align-items-center justify-content-center overflow-hidden flex-shrink-0"
-                    style="width: 110px; height: 110px;"
+                    style="width: 168px; height: 168px;"
                   >
                     <span class="text-secondary small">Фото</span>
                   </div>
@@ -159,7 +159,7 @@
             </div>
           </div>
 
-          <div class="col-lg-7 col-xl-8">
+          <div class="col-lg-7">
             <div class="card shadow-sm border-0 h-100" style="border-radius: 20px;">
               <div class="card-body p-4 d-flex flex-column">
                 <div class="d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-2 mb-3">
@@ -169,11 +169,11 @@
                       <option value="">Сравнить с другой моделью...</option>
                     </select>
                     <button id="compareOnProductBtn" type="button" class="btn btn-dark btn-sm">Сравнить</button>
-                    <button id="exportProductPdfBtn" type="button" class="btn btn-danger btn-sm text-nowrap">Скачать PDF</button>
+                    <button id="exportProductPdfBtn" type="button" class="btn btn-danger btn-sm text-nowrap">PDF для клиента</button>
                   </div>
                 </div>
-                <div class="product-chart-wrap flex-grow-1" style="min-height: 420px; max-height: 620px;" data-demo-guard>
-                  <div id="productQpChart" style="height: 100%; width: 100%; min-height: 420px;"></div>
+                <div class="product-chart-wrap flex-grow-1" data-demo-guard>
+                  <div id="productQpChart" class="qp-chart-box"></div>
                 </div>
                 <div id="productCompareMeta" class="small text-secondary mt-2 text-center"></div>
               </div>
@@ -181,53 +181,61 @@
           </div>
         </div>
 
-        <!-- Присоединительные размеры (чертёж завода): широкий блок под двумя
-             колонками — иначе 15 строк размеров растягивают левую колонку и
-             вместе с ней график (карточка графика тянется по высоте соседа). -->
+        <!-- Чертёж из бумажного каталога: реальный скан кладётся в photos/
+             как blueprint_<слаг-модели>.png (см. подсказку под блоком),
+             пока файла нет — крупная шаблонная «синька»-заглушка. -->
+        <div id="blueprintCard" class="card shadow-sm border-0 mb-4 d-none" style="border-radius: 20px;">
+          <div class="card-body p-4">
+            <h2 class="h6 fw-bold mb-3">Чертёж из каталога</h2>
+            <div class="blueprint-frame" data-demo-guard>
+              <img id="blueprintImage" class="blueprint-image" src="" alt="Чертёж" loading="lazy" decoding="async" />
+            </div>
+            <div id="blueprintHint" class="small text-secondary mt-2"></div>
+          </div>
+        </div>
+
+        <!-- Присоединительные размеры (чертёж завода): ячейка на размер
+             вместо сплошного ряда цифр — каждую пару «буква-значение»
+             видно сразу. -->
         <div id="dimensionsCard" class="card shadow-sm border-0 mb-4 d-none" style="border-radius: 20px;">
           <div class="card-body p-4">
-            <h2 class="h6 fw-bold mb-2">Присоединительные размеры (по чертежу завода), мм</h2>
-            <div class="table-responsive" data-demo-guard>
-              <table class="table table-sm align-middle mb-0 text-center">
-                <thead id="dimensionsHead"></thead>
-                <tbody id="dimensionsBody"></tbody>
-              </table>
-            </div>
+            <h2 class="h6 fw-bold mb-3">Присоединительные размеры (по чертежу завода), мм</h2>
+            <div id="dimensionsGrid" class="dimensions-grid" data-demo-guard></div>
           </div>
         </div>
 
         <div class="card shadow-sm border-0" style="border-radius: 20px;">
           <div class="card-body p-4">
-            <h2 class="h6 fw-bold mb-3">Документация</h2>
-                <div class="row g-4">
-                  <div class="col-md-4">
-                    <div class="card h-100 border bg-light shadow-sm vs-soon-wrap" style="border-radius: 12px;">
-                      <div class="card-body text-center py-4">
-                        <svg class="mb-3 text-primary" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
-                        <h3 class="h6 fw-bold">Паспорт изделия</h3>
-                        <p class="small text-secondary mb-0">PDF-файл по запросу у менеджера</p>
-                      </div>
-                    </div>
-                  </div>
-                  <div class="col-md-4">
-                    <div class="card h-100 border bg-light shadow-sm vs-soon-wrap" style="border-radius: 12px;">
-                      <div class="card-body text-center py-4">
-                        <svg class="mb-3 text-primary" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
-                        <h3 class="h6 fw-bold">Схема подключения</h3>
-                        <p class="small text-secondary mb-0">Параметры двигателя и схемы</p>
-                      </div>
-                    </div>
-                  </div>
-                  <div class="col-md-4">
-                    <div class="card h-100 border bg-light shadow-sm" style="border-radius: 12px;">
-                      <div class="card-body text-center py-4">
-                        <svg class="mb-3 text-primary" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path><polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline><line x1="12" y1="22.08" x2="12" y2="12"></line></svg>
-                        <h3 class="h6 fw-bold">Габариты</h3>
-                        <p id="gabaritsCaption" class="small text-secondary mb-0">Таблица монтажных размеров</p>
-                      </div>
-                    </div>
+            <h2 class="h5 fw-bold mb-3">Документация</h2>
+            <div class="row g-3">
+              <div class="col-md-4">
+                <div class="doc-tile vs-soon-wrap">
+                  <svg class="doc-tile-icon" width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
+                  <div>
+                    <h3 class="h6 fw-bold mb-1">Паспорт изделия</h3>
+                    <p class="doc-tile-text mb-0">PDF-файл по запросу у менеджера</p>
                   </div>
                 </div>
+              </div>
+              <div class="col-md-4">
+                <div class="doc-tile vs-soon-wrap">
+                  <svg class="doc-tile-icon" width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+                  <div>
+                    <h3 class="h6 fw-bold mb-1">Схема подключения</h3>
+                    <p class="doc-tile-text mb-0">Параметры двигателя и схемы</p>
+                  </div>
+                </div>
+              </div>
+              <div class="col-md-4">
+                <a class="doc-tile doc-tile-link" href="#dimensionsCard">
+                  <svg class="doc-tile-icon" width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path><polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline><line x1="12" y1="22.08" x2="12" y2="12"></line></svg>
+                  <div>
+                    <h3 class="h6 fw-bold mb-1">Габариты</h3>
+                    <p id="gabaritsCaption" class="doc-tile-text mb-0">Таблица монтажных размеров</p>
+                  </div>
+                </a>
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -243,7 +251,7 @@
     <script src="config.js?v=20260424-1"></script>
     <script src="auth.js?v=20260524-10"></script>
     <script src="site-auth.js?v=20260524-10"></script>
-    <script src="script.js?v=20260709-1"></script>
+    <script src="script.js?v=20260717-1"></script>
     <script src="site-layout.js?v=20260709-1"></script>
   </body>
 </html>

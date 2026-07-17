@@ -361,3 +361,12 @@ class PdfExportRequest(BaseModel):
         default=None,
         description="PNG-график из canvas в формате data URL (опционально).",
     )
+    header_text: Optional[str] = Field(
+        default=None,
+        max_length=120,
+        description="Свой текст в шапке PDF. Пусто — остаётся текст по умолчанию.",
+    )
+    watermark: Optional[str] = Field(
+        default=None,
+        description="Имя файла водяного знака из папки photos/ (опционально, без пути).",
+    )

@@ -1,0 +1,2139 @@
+diff --git a/TROUBLESHOOTING.md b/TROUBLESHOOTING.md
+index 6956157..9a8c0c9 100644
+--- a/TROUBLESHOOTING.md
++++ b/TROUBLESHOOTING.md
+@@ -107,7 +107,11 @@ wsl --shutdown
+   `?v=<время изменения файла>`) — если после правки фото всё равно старое,
+   проверьте вкладку Network в DevTools: грузится ли новый `?v=...`;
+ - у favicon.ico браузеры кэшируют иконку особенно агрессивно и надолго —
+-  иногда помогает только очистка данных сайта в настройках браузера.
++  иногда помогает только очистка данных сайта в настройках браузера;
++- важно: раньше сервер вообще не отдавал favicon-файлы (белый список
++  статики их не включал, всегда был 404) — если иконки нет, убедитесь,
++  что backend обновлён, и проверьте `curl http://localhost:8000/favicon.ico`
++  (должен быть ответ 200, а не 404).
+ 
+ ### 6. Не появляется серая плашка «Недоступно в инсайдерской версии»
+ 
+@@ -131,10 +135,28 @@ python scripts/generate_favicons.py
+ `favicon.ico`, `favicon-16x16.png`, `favicon-32x32.png`,
+ `apple-touch-icon.png` в `frontend/`.
+ 
+-## Водяной знак и заголовок в PDF
++## Водяной знак и заголовок в PDF («Документ для клиента»)
+ 
+-На странице «Мой проект» есть блок «Документ для клиента»: своё название
+-шапки документа (если оставить пустым — остаётся текст по умолчанию) и
+-водяной знак — любой файл-картинка из папки `photos/`. Чтобы добавить свой
+-вариант водяного знака, просто положите файл (`.png`/`.jpg`/`.webp`/`.gif`)
+-в `photos/` — он сам появится в выпадающем списке.
++Кнопки «Документ для клиента (PDF)» / «PDF для клиента» есть на странице
++сравнения, на карточке модели и в «Моём проекте» — все они открывают одно
++и то же окно: своё название шапки документа (если оставить пустым —
++остаётся текст по умолчанию), водяной знак, предпросмотр и скачивание.
++Водяной знак — любой файл-картинка из папки `photos/`. Чтобы добавить свой
++вариант, просто положите файл (`.png`/`.jpg`/`.webp`/`.gif`) в `photos/` —
++он сам появится в выпадающем списке.
++
++## Чертежи из каталога на карточке модели
++
++Блок «Чертёж из каталога» на странице модели показывает файл
++`photos/blueprint_<слаг-модели>.png` (также подойдут `.jpg`/`.jpeg`/`.webp`).
++Точное ожидаемое имя файла для конкретной модели написано в подсказке прямо
++под блоком — скопируйте его, положите скан из бумажного каталога с этим
++именем в `photos/`, и он появится сам (без перезапуска). Пока файла нет,
++показывается шаблон-заглушка `frontend/img/blueprint-placeholder.svg`.
++
++## Сортировка каталога
++
++Каталог — таблица: клик по заголовку колонки (Расход, Давление, Мощность,
++Шум, Цена, Диаметр, Модель) сортирует весь каталог по этой колонке,
++повторный клик — в обратную сторону. Сортируется на сервере, поэтому
++порядок честный по всем страницам, а не только по видимой.
+diff --git a/backend/application/use_cases/list_product_families.py b/backend/application/use_cases/list_product_families.py
+index 350f499..2d798bf 100644
+--- a/backend/application/use_cases/list_product_families.py
++++ b/backend/application/use_cases/list_product_families.py
+@@ -9,18 +9,27 @@
+ """
+ from __future__ import annotations
+ 
++import re
+ from dataclasses import dataclass, field
+ from typing import Any, Dict, List
+ 
+ from domain.interfaces.product_repository import AbstractProductRepository
+ 
++# Хвост «-<число>» (номер вентилятора / количество двигателей) сразу после
++# угла лопастей: в новом формате имён «ВО 13-284-4/15°-4-56A4» типоразмер —
++# только маркировка двигателя (56A4), а число между углом и двигателем не
++# должно дробить модельный ряд на подгруппы. Срезаем его только когда перед
++# ним стоит «°» — старый формат («...15°-456A4», размер 456A4) не задет.
++_TRAILING_COUNT_AFTER_DEGREE_RE = re.compile(r"°-\d+(?:[.,]\d+)?$")
++
+ 
+ def family_key(model: str | None, size: str | None) -> str:
+     """Ключ модельного ряда: модель без суффикса-типоразмера."""
+     model = (model or "").strip()
+     size = (size or "").strip()
+     if model and size and model.lower().endswith(f"-{size.lower()}"):
+-        return model[: -(len(size) + 1)].strip()
++        head = model[: -(len(size) + 1)].strip()
++        return _TRAILING_COUNT_AFTER_DEGREE_RE.sub("°", head).strip()
+     return model
+ 
+ 
+diff --git a/backend/infrastructure/db/product_repository.py b/backend/infrastructure/db/product_repository.py
+index 7ac6387..4539de5 100644
+--- a/backend/infrastructure/db/product_repository.py
++++ b/backend/infrastructure/db/product_repository.py
+@@ -25,31 +25,36 @@ class SortStrategy:
+         raise NotImplementedError
+ 
+ 
+-class PriceAscStrategy(SortStrategy):
+-    def order_by_sql(self) -> str:
+-        return "price ASC NULLS LAST, model ASC"
++class ColumnSortStrategy(SortStrategy):
++    """Сортировка по одной колонке с NULLS LAST и стабильным довеском по model."""
+ 
++    def __init__(self, column: str, descending: bool = False) -> None:
++        self._column = column
++        self._descending = descending
+ 
+-class PriceDescStrategy(SortStrategy):
+     def order_by_sql(self) -> str:
+-        return "price DESC NULLS LAST, model ASC"
+-
+-
+-class PowerAscStrategy(SortStrategy):
+-    def order_by_sql(self) -> str:
+-        return "power ASC NULLS LAST, model ASC"
+-
+-
+-class ModelAscStrategy(SortStrategy):
+-    def order_by_sql(self) -> str:
+-        return "model ASC"
+-
++        direction = "DESC" if self._descending else "ASC"
++        if self._column == "model":
++            return f"model {direction}"
++        return f"{self._column} {direction} NULLS LAST, model ASC"
++
++
++# Ключи сортировки соответствуют колонкам таблицы каталога на фронтенде:
++# клик по заголовку колонки шлёт соответствующий sort=..._asc|_desc.
++_SORTABLE_COLUMNS: Dict[str, str] = {
++    "price": "price",
++    "power": "power",
++    "model": "model",
++    "airflow": "airflow_max",
++    "pressure": "pressure_max",
++    "noise": "noise_level",
++    "diameter": "diameter",
++}
+ 
+ SORT_STRATEGIES: Dict[str, SortStrategy] = {
+-    "price_asc": PriceAscStrategy(),
+-    "price_desc": PriceDescStrategy(),
+-    "power_asc": PowerAscStrategy(),
+-    "model_asc": ModelAscStrategy(),
++    f"{key}_{suffix}": ColumnSortStrategy(column, descending=(suffix == "desc"))
++    for key, column in _SORTABLE_COLUMNS.items()
++    for suffix in ("asc", "desc")
+ }
+ 
+ DEFAULT_SORT_KEY = "price_asc"
+diff --git a/backend/presentation/api/routes/catalog.py b/backend/presentation/api/routes/catalog.py
+index 1cb2b03..9011076 100644
+--- a/backend/presentation/api/routes/catalog.py
++++ b/backend/presentation/api/routes/catalog.py
+@@ -129,8 +129,16 @@ def api_products(
+     minPressure: Annotated[Optional[float], Query(description="Минимальное давление.")] = None,
+     maxPressure: Annotated[Optional[float], Query(description="Максимальное давление.")] = None,
+     sort: Annotated[
+-        Literal["price_asc", "price_desc"],
+-        Query(description="Сортировка: price_asc / price_desc."),
++        Literal[
++            "price_asc", "price_desc",
++            "model_asc", "model_desc",
++            "airflow_asc", "airflow_desc",
++            "pressure_asc", "pressure_desc",
++            "power_asc", "power_desc",
++            "noise_asc", "noise_desc",
++            "diameter_asc", "diameter_desc",
++        ],
++        Query(description="Сортировка по колонке каталога: <поле>_asc / <поле>_desc."),
+     ] = "price_asc",
+     limit: Annotated[int, Query(description="Размер страницы (1–100).", ge=1, le=100)] = 48,
+     offset: Annotated[int, Query(description="Смещение.", ge=0)] = 0,
+diff --git a/backend/presentation/app.py b/backend/presentation/app.py
+index 8a466ba..551c52a 100644
+--- a/backend/presentation/app.py
++++ b/backend/presentation/app.py
+@@ -655,9 +655,19 @@ def create_app() -> FastAPI:
+         "admin-page.js", "auth-page.js", "site-auth.js",
+         "admin.js", "auth.js", "style.css", "script.js", "config.js",
+         "site-layout.js",
++        # Иконки сайта: без явных маршрутов браузер получал 404 даже при
++        # правильно сгенерированных файлах в frontend/ (список — белый)
++        "favicon.ico", "favicon-16x16.png", "favicon-32x32.png",
++        "apple-touch-icon.png",
+     ]:
+         _make_static_route(app, name)
+ 
++    # Служебная графика фронтенда (заглушка чертежа и т.п.) — целой папкой,
++    # как /photos: новые файлы в frontend/img/ не требуют правок белого списка
++    frontend_img_dir = FRONTEND_DIR / "img"
++    if frontend_img_dir.is_dir():
++        app.mount("/img", StaticFiles(directory=str(frontend_img_dir)), name="frontend-img")
++
+     return app
+ 
+ 
+diff --git a/backend/tests/test_api_status_codes.py b/backend/tests/test_api_status_codes.py
+index 81cf8b5..bcb8427 100644
+--- a/backend/tests/test_api_status_codes.py
++++ b/backend/tests/test_api_status_codes.py
+@@ -66,3 +66,37 @@ def test_api_returns_500_on_unhandled_server_error(monkeypatch):
+ 
+     assert response.status_code == 500
+     assert response.json().get("error") == "Internal server error"
++
++
++def test_api_products_accepts_table_column_sorts(monkeypatch):
++    """Клик по заголовку колонки каталога шлёт sort=<поле>_asc|_desc —
++    сервер должен принимать все ключи и сортировать соответствующей колонкой."""
++    from infrastructure.db.product_repository import SORT_STRATEGIES
++
++    expected_keys = {
++        f"{field}_{direction}"
++        for field in ("price", "model", "airflow", "pressure", "power", "noise", "diameter")
++        for direction in ("asc", "desc")
++    }
++    assert expected_keys <= set(SORT_STRATEGIES)
++    assert "airflow_max DESC NULLS LAST" in SORT_STRATEGIES["airflow_desc"].order_by_sql()
++    assert "noise_level ASC NULLS LAST" in SORT_STRATEGIES["noise_asc"].order_by_sql()
++    assert SORT_STRATEGIES["model_desc"].order_by_sql() == "model DESC"
++
++    captured = {}
++
++    def _capture(self, **kwargs):
++        captured.update(kwargs)
++        return []
++
++    monkeypatch.setattr(PgProductRepository, "count_products_filtered", lambda self, **kwargs: 0)
++    monkeypatch.setattr(PgProductRepository, "list_products", _capture)
++    client = make_test_client(monkeypatch)
++
++    response = client.get("/api/products?sort=pressure_desc&limit=1&offset=0")
++    assert response.status_code == 200
++    assert captured.get("sort") == "pressure_desc"
++
++    # Неизвестный ключ сортировки отклоняется валидацией параметров
++    response = client.get("/api/products?sort=bogus_desc&limit=1&offset=0")
++    assert response.status_code == 422
+diff --git a/backend/tests/test_product_families.py b/backend/tests/test_product_families.py
+index ee43e47..ac5fbd4 100644
+--- a/backend/tests/test_product_families.py
++++ b/backend/tests/test_product_families.py
+@@ -30,6 +30,21 @@ def test_family_key_no_match_returns_full_model():
+     assert family_key("ВО 13-284-4/15°-456A4", "999Z9") == "ВО 13-284-4/15°-456A4"
+ 
+ 
++def test_family_key_new_naming_with_engine_size():
++    """Новый формат: «ВО 13-284-4/15°-4-56A4», типоразмер — двигатель 56A4.
++
++    Число между углом и двигателем (номер вентилятора / количество двигателей)
++    не должно дробить модельный ряд: и старое, и новое имя дают один ключ.
++    """
++    assert family_key("ВО 13-284-4/15°-4-56A4", "56A4") == "ВО 13-284-4/15°"
++    # Дробные номера вентилятора (11,2 / 6,3) тоже срезаются
++    assert family_key("ВО 13-284-10/20°-11,2-112MB8", "112MB8") == "ВО 13-284-10/20°"
++    # Старый и новый формат одной модели попадают в один ряд
++    assert family_key("ВО 13-284-4/15°-456A4", "456A4") == family_key("ВО 13-284-4/15°-4-56A4", "56A4")
++    # Число после хвоста без «°» перед ним не трогаем (например, ВЦ-серии)
++    assert family_key("ВЦ 30-160-016-5", "5") == "ВЦ 30-160-016"
++
++
+ def test_api_products_families_groups_by_scheme(monkeypatch):
+     small = _vo("small", "ВО 13-284-4/15°-456A4", "456A4", 405)
+     big = _vo("big", "ВО 13-284-4/15°-880A6", "880A6", 720)
+diff --git a/frontend/404.html b/frontend/404.html
+index a4c73e8..4658ef6 100644
+--- a/frontend/404.html
++++ b/frontend/404.html
+@@ -13,7 +13,7 @@
+       rel="stylesheet"
+       crossorigin="anonymous"
+     />
+-    <link rel="stylesheet" href="style.css?v=20260709-1" />
++    <link rel="stylesheet" href="style.css?v=20260717-1" />
+   </head>
+   <body data-page="error">
+     <nav class="navbar navbar-expand-lg sticky-top">
+@@ -99,7 +99,7 @@
+     <script src="config.js?v=20260424-1"></script>
+     <script src="auth.js?v=20260524-9"></script>
+     <script src="site-auth.js?v=20260524-9"></script>
+-    <script src="script.js?v=20260710-1"></script>
++    <script src="script.js?v=20260717-1"></script>
+     <script src="site-layout.js?v=20260709-1"></script>
+   </body>
+ </html>
+diff --git a/frontend/500.html b/frontend/500.html
+index 7941faf..8f46516 100644
+--- a/frontend/500.html
++++ b/frontend/500.html
+@@ -13,7 +13,7 @@
+       rel="stylesheet"
+       crossorigin="anonymous"
+     />
+-    <link rel="stylesheet" href="style.css?v=20260709-1" />
++    <link rel="stylesheet" href="style.css?v=20260717-1" />
+   </head>
+   <body data-page="error">
+     <nav class="navbar navbar-expand-lg sticky-top">
+@@ -99,7 +99,7 @@
+     <script src="config.js?v=20260424-1"></script>
+     <script src="auth.js?v=20260524-9"></script>
+     <script src="site-auth.js?v=20260524-9"></script>
+-    <script src="script.js?v=20260710-1"></script>
++    <script src="script.js?v=20260717-1"></script>
+     <script src="site-layout.js?v=20260709-1"></script>
+   </body>
+ </html>
+diff --git a/frontend/admin.html b/frontend/admin.html
+index 45d1625..73428f2 100644
+--- a/frontend/admin.html
++++ b/frontend/admin.html
+@@ -13,7 +13,7 @@
+       rel="stylesheet"
+       crossorigin="anonymous"
+     />
+-    <link rel="stylesheet" href="style.css?v=20260709-1" />
++    <link rel="stylesheet" href="style.css?v=20260717-1" />
+   </head>
+   <body class="admin-page" data-page="admin">
+     <nav class="navbar navbar-expand-lg sticky-top">
+diff --git a/frontend/auth.html b/frontend/auth.html
+index 418f0b0..daebf3b 100644
+--- a/frontend/auth.html
++++ b/frontend/auth.html
+@@ -13,7 +13,7 @@
+       rel="stylesheet"
+       crossorigin="anonymous"
+     />
+-    <link rel="stylesheet" href="style.css?v=20260709-1" />
++    <link rel="stylesheet" href="style.css?v=20260717-1" />
+   </head>
+   <body data-page="auth" class="auth-page">
+     <nav class="navbar navbar-expand-lg sticky-top">
+@@ -123,7 +123,7 @@
+     <script src="config.js?v=20260424-1"></script>
+     <script src="auth.js?v=20260524-4"></script>
+     <script src="auth-page.js?v=20260524-4"></script>
+-    <script src="script.js?v=20260710-1"></script>
++    <script src="script.js?v=20260717-1"></script>
+     <script src="site-layout.js?v=20260709-1"></script>
+   </body>
+ </html>
+diff --git a/frontend/compare.html b/frontend/compare.html
+index fc24052..18e2f77 100644
+--- a/frontend/compare.html
++++ b/frontend/compare.html
+@@ -13,7 +13,7 @@
+       rel="stylesheet"
+       crossorigin="anonymous"
+     />
+-    <link rel="stylesheet" href="style.css?v=20260709-1" />
++    <link rel="stylesheet" href="style.css?v=20260717-1" />
+ 
+ <!-- Yandex.Metrika counter -->
+ <script type="text/javascript">
+@@ -98,7 +98,7 @@
+         </div>
+         <div class="d-flex gap-2">
+           <button id="clearCompareBtn" class="btn btn-outline-light btn-sm" type="button">Очистить</button>
+-          <button id="exportPdfBtn" class="btn btn-danger btn-sm fw-semibold px-3" type="button">Скачать PDF</button>
++          <button id="exportPdfBtn" class="btn btn-danger btn-sm fw-semibold px-3" type="button">Документ для клиента (PDF)</button>
+         </div>
+       </div>
+     </header>
+@@ -136,8 +136,8 @@
+               <h2 class="h5 fw-bold mb-0">Аэродинамика (Q–P)</h2>
+             </div>
+             <div class="card-body p-4" data-demo-guard>
+-              <div class="chart-canvas-wrap bg-light rounded-4 p-3 border h-100" style="min-height: 480px;">
+-                <div id="qpChart" style="height: 100%; width: 100%; min-height: 450px;"></div>
++              <div class="chart-canvas-wrap bg-light rounded-4 p-3 border h-100">
++                <div id="qpChart" class="qp-chart-box"></div>
+               </div>
+             </div>
+           </div>
+@@ -170,7 +170,7 @@
+     <script src="config.js?v=20260424-1"></script>
+     <script src="auth.js?v=20260524-10"></script>
+     <script src="site-auth.js?v=20260524-10"></script>
+-    <script src="script.js?v=20260710-1"></script>
++    <script src="script.js?v=20260717-1"></script>
+     <script src="site-layout.js?v=20260709-1"></script>
+   </body>
+ </html>
+diff --git a/frontend/delivery.html b/frontend/delivery.html
+index 8273b76..9854dd9 100644
+--- a/frontend/delivery.html
++++ b/frontend/delivery.html
+@@ -13,7 +13,7 @@
+       rel="stylesheet"
+       crossorigin="anonymous"
+     />
+-    <link rel="stylesheet" href="style.css?v=20260709-1" />
++    <link rel="stylesheet" href="style.css?v=20260717-1" />
+   </head>
+   <body data-page="delivery">
+     <nav class="navbar navbar-expand-lg sticky-top">
+@@ -180,7 +180,7 @@
+     <script src="config.js?v=20260424-1"></script>
+     <script src="auth.js?v=20260524-9"></script>
+     <script src="site-auth.js?v=20260524-9"></script>
+-    <script src="script.js?v=20260710-1"></script>
++    <script src="script.js?v=20260717-1"></script>
+     <script src="site-layout.js?v=20260709-1"></script>
+   </body>
+ </html>
+diff --git a/frontend/img/blueprint-placeholder.svg b/frontend/img/blueprint-placeholder.svg
+new file mode 100644
+index 0000000..a5a8ab7
+--- /dev/null
++++ b/frontend/img/blueprint-placeholder.svg
+@@ -0,0 +1,118 @@
++<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 800" role="img" aria-label="Шаблон чертежа из каталога">
++  <!-- Классическая «синька»: тёмно-синий фон, белая графика -->
++  <defs>
++    <pattern id="gridSmall" width="20" height="20" patternUnits="userSpaceOnUse">
++      <path d="M 20 0 L 0 0 0 20" fill="none" stroke="#ffffff" stroke-opacity="0.06" stroke-width="1"/>
++    </pattern>
++    <pattern id="gridLarge" width="100" height="100" patternUnits="userSpaceOnUse">
++      <rect width="100" height="100" fill="url(#gridSmall)"/>
++      <path d="M 100 0 L 0 0 0 100" fill="none" stroke="#ffffff" stroke-opacity="0.12" stroke-width="1"/>
++    </pattern>
++  </defs>
++
++  <rect width="1200" height="800" fill="#16437e"/>
++  <rect width="1200" height="800" fill="url(#gridLarge)"/>
++
++  <!-- Рамка листа -->
++  <rect x="28" y="28" width="1144" height="744" fill="none" stroke="#ffffff" stroke-opacity="0.85" stroke-width="2.5"/>
++  <rect x="40" y="40" width="1120" height="720" fill="none" stroke="#ffffff" stroke-opacity="0.35" stroke-width="1"/>
++
++  <g stroke="#ffffff" fill="none" stroke-width="2">
++    <!-- Вид спереди: рабочее колесо осевого вентилятора -->
++    <g transform="translate(340,370)">
++      <circle r="230" stroke-opacity="0.9"/>
++      <circle r="218" stroke-opacity="0.35" stroke-dasharray="10 6"/>
++      <circle r="56" stroke-opacity="0.9"/>
++      <circle r="16" stroke-opacity="0.9"/>
++      <!-- Лопасти -->
++      <g stroke-opacity="0.85">
++        <path d="M 0 -56 C 60 -120 60 -190 20 -216 C -10 -170 -30 -110 0 -56 Z" transform="rotate(0)"/>
++        <path d="M 0 -56 C 60 -120 60 -190 20 -216 C -10 -170 -30 -110 0 -56 Z" transform="rotate(60)"/>
++        <path d="M 0 -56 C 60 -120 60 -190 20 -216 C -10 -170 -30 -110 0 -56 Z" transform="rotate(120)"/>
++        <path d="M 0 -56 C 60 -120 60 -190 20 -216 C -10 -170 -30 -110 0 -56 Z" transform="rotate(180)"/>
++        <path d="M 0 -56 C 60 -120 60 -190 20 -216 C -10 -170 -30 -110 0 -56 Z" transform="rotate(240)"/>
++        <path d="M 0 -56 C 60 -120 60 -190 20 -216 C -10 -170 -30 -110 0 -56 Z" transform="rotate(300)"/>
++      </g>
++      <!-- Осевые линии -->
++      <g stroke-opacity="0.5" stroke-width="1" stroke-dasharray="18 6 4 6">
++        <line x1="-260" y1="0" x2="260" y2="0"/>
++        <line x1="0" y1="-260" x2="0" y2="260"/>
++      </g>
++      <!-- Отверстия фланца -->
++      <g stroke-opacity="0.7" stroke-width="1.5">
++        <circle cx="0" cy="-243" r="7"/>
++        <circle cx="172" cy="-172" r="7"/>
++        <circle cx="243" cy="0" r="7"/>
++        <circle cx="172" cy="172" r="7"/>
++        <circle cx="0" cy="243" r="7"/>
++        <circle cx="-172" cy="172" r="7"/>
++        <circle cx="-243" cy="0" r="7"/>
++        <circle cx="-172" cy="-172" r="7"/>
++      </g>
++    </g>
++
++    <!-- Вид сбоку: обечайка с фланцами и двигателем -->
++    <g transform="translate(790,370)">
++      <rect x="0" y="-230" width="230" height="460" stroke-opacity="0.9"/>
++      <line x1="0" y1="-230" x2="-18" y2="-230" stroke-opacity="0.9"/>
++      <line x1="0" y1="230" x2="-18" y2="230" stroke-opacity="0.9"/>
++      <rect x="-18" y="-244" width="18" height="14" stroke-opacity="0.9"/>
++      <rect x="-18" y="230" width="18" height="14" stroke-opacity="0.9"/>
++      <rect x="230" y="-244" width="18" height="14" stroke-opacity="0.9"/>
++      <rect x="230" y="230" width="18" height="14" stroke-opacity="0.9"/>
++      <!-- Двигатель -->
++      <rect x="62" y="-64" width="128" height="128" rx="10" stroke-opacity="0.85"/>
++      <line x1="30" y1="0" x2="62" y2="0" stroke-opacity="0.85"/>
++      <g stroke-opacity="0.5" stroke-width="1" stroke-dasharray="18 6 4 6">
++        <line x1="-50" y1="0" x2="290" y2="0"/>
++      </g>
++      <!-- Стойки -->
++      <line x1="126" y1="64" x2="126" y2="226" stroke-opacity="0.6"/>
++      <line x1="126" y1="-64" x2="126" y2="-226" stroke-opacity="0.6"/>
++    </g>
++
++    <!-- Размерные линии -->
++    <g stroke-opacity="0.7" stroke-width="1.2">
++      <line x1="340" y1="660" x2="340" y2="690"/>
++      <line x1="110" y1="660" x2="110" y2="690"/>
++      <line x1="110" y1="678" x2="340" y2="678"/>
++      <path d="M 118 674 L 110 678 L 118 682" fill="none"/>
++      <path d="M 332 674 L 340 678 L 332 682" fill="none"/>
++
++      <line x1="772" y1="140" x2="742" y2="140"/>
++      <line x1="772" y1="600" x2="742" y2="600"/>
++      <line x1="754" y1="140" x2="754" y2="600"/>
++      <path d="M 750 148 L 754 140 L 758 148" fill="none"/>
++      <path d="M 750 592 L 754 600 L 758 592" fill="none"/>
++    </g>
++  </g>
++
++  <g fill="#ffffff" font-family="Arial, Helvetica, sans-serif">
++    <text x="225" y="700" font-size="20" fill-opacity="0.85" text-anchor="middle">⌀D</text>
++    <text x="738" y="376" font-size="20" fill-opacity="0.85" text-anchor="end">H</text>
++    <text x="340" y="96" font-size="22" fill-opacity="0.9" text-anchor="middle" letter-spacing="2">ВИД СПЕРЕДИ</text>
++    <text x="905" y="96" font-size="22" fill-opacity="0.9" text-anchor="middle" letter-spacing="2">ВИД СБОКУ</text>
++  </g>
++
++  <!-- Угловой штамп -->
++  <g>
++    <rect x="716" y="668" width="456" height="104" fill="#16437e" stroke="#ffffff" stroke-opacity="0.85" stroke-width="2"/>
++    <line x1="716" y1="704" x2="1172" y2="704" stroke="#ffffff" stroke-opacity="0.5" stroke-width="1"/>
++    <line x1="716" y1="738" x2="1172" y2="738" stroke="#ffffff" stroke-opacity="0.5" stroke-width="1"/>
++    <line x1="960" y1="668" x2="960" y2="772" stroke="#ffffff" stroke-opacity="0.5" stroke-width="1"/>
++    <g fill="#ffffff" font-family="Arial, Helvetica, sans-serif" font-size="15">
++      <text x="728" y="692" fill-opacity="0.9">VENTSEARCH</text>
++      <text x="972" y="692" fill-opacity="0.7">Лист 1</text>
++      <text x="728" y="726" fill-opacity="0.7">Чертёж из каталога</text>
++      <text x="972" y="726" fill-opacity="0.7">Масштаб —</text>
++      <text x="728" y="762" fill-opacity="0.7">Заглушка (шаблон)</text>
++      <text x="972" y="762" fill-opacity="0.7">photos/blueprint_*.png</text>
++    </g>
++  </g>
++
++  <!-- Водяная надпись-заглушка (слева от штампа, чтобы не пересекаться) -->
++  <g fill="#ffffff" font-family="Arial, Helvetica, sans-serif" text-anchor="middle">
++    <text x="372" y="742" font-size="15" fill-opacity="0.6" letter-spacing="1">МЕСТО ДЛЯ ЧЕРТЕЖА ИЗ КАТАЛОГА</text>
++    <text x="372" y="764" font-size="14" fill-opacity="0.5">замените файлом photos/blueprint_&lt;модель&gt;.png</text>
++  </g>
++</svg>
+diff --git a/frontend/index.html b/frontend/index.html
+index e146a46..23d568b 100644
+--- a/frontend/index.html
++++ b/frontend/index.html
+@@ -14,7 +14,7 @@
+       integrity="sha384-QWTKZyjpPEjISv5WaRU9OFeRpok6YctnYmDr5pNlyT2bRjXh0JMhjY6hW+ALEwIH"
+       crossorigin="anonymous"
+     />
+-    <link rel="stylesheet" href="style.css?v=20260709-1" />
++    <link rel="stylesheet" href="style.css?v=20260717-1" />
+         
+ <!-- Yandex.Metrika counter -->
+ <script type="text/javascript">
+@@ -258,27 +258,23 @@
+               </div>
+             </div>
+             <div class="d-flex align-items-center gap-3 flex-wrap">
+-              <div class="d-flex align-items-center gap-2">
+-                <span class="form-label mb-0 fw-medium text-secondary d-none d-md-block">Плитки:</span>
+-                <div class="btn-group btn-group-sm tile-size-group" role="group" aria-label="Размер плиток" id="tileSizeGroup">
+-                  <button type="button" class="btn btn-outline-dark" data-tile-size="lg" title="Крупные плитки">
+-                    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="1" y="2" width="6.5" height="12" rx="1"/><rect x="8.5" y="2" width="6.5" height="12" rx="1"/></svg>
+-                  </button>
+-                  <button type="button" class="btn btn-outline-dark" data-tile-size="md" title="Обычные плитки">
+-                    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="1" y="2" width="4" height="12" rx="1"/><rect x="6" y="2" width="4" height="12" rx="1"/><rect x="11" y="2" width="4" height="12" rx="1"/></svg>
+-                  </button>
+-                  <button type="button" class="btn btn-outline-dark" data-tile-size="sm" title="Мелкие плитки">
+-                    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="1" y="2" width="2.8" height="12" rx="0.8"/><rect x="4.6" y="2" width="2.8" height="12" rx="0.8"/><rect x="8.2" y="2" width="2.8" height="12" rx="0.8"/><rect x="11.8" y="2" width="2.8" height="12" rx="0.8"/></svg>
+-                  </button>
+-                </div>
+-              </div>
+               <div class="d-flex align-items-center gap-2">
+                 <label for="sort" class="form-label mb-0 me-2 fw-medium text-secondary d-none d-md-block">Сортировка:</label>
+-                <select id="sort" name="sort" class="form-select form-select-sm">
++                <select id="sort" name="sort" class="form-select form-select-sm" title="Либо кликните по заголовку колонки в таблице">
+                   <option value="price_asc">Цена: по возрастанию</option>
+                   <option value="price_desc">Цена: по убыванию</option>
++                  <option value="model_asc">Модель: А→Я</option>
++                  <option value="model_desc">Модель: Я→А</option>
++                  <option value="airflow_asc">Расход: меньше сначала</option>
+                   <option value="airflow_desc">Расход: больше сначала</option>
++                  <option value="pressure_asc">Давление: меньше сначала</option>
+                   <option value="pressure_desc">Давление: больше сначала</option>
++                  <option value="power_asc">Мощность: меньше сначала</option>
++                  <option value="power_desc">Мощность: больше сначала</option>
++                  <option value="noise_asc">Шум: тише сначала</option>
++                  <option value="noise_desc">Шум: громче сначала</option>
++                  <option value="diameter_asc">Диаметр: меньше сначала</option>
++                  <option value="diameter_desc">Диаметр: больше сначала</option>
+                 </select>
+               </div>
+             </div>
+@@ -286,7 +282,7 @@
+ 
+           <div id="loading" class="py-4 text-center text-secondary">Загрузка каталога...</div>
+           <div data-demo-guard style="min-height: 200px;">
+-            <div id="productsGrid" class="row g-3"></div>
++            <div id="productsGrid"></div>
+           </div>
+ 
+           <nav
+@@ -390,7 +386,7 @@
+     <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
+     <script src="config.js?v=20260424-1"></script>
+     <script src="auth.js?v=20260524-9"></script>
+-    <script src="script.js?v=20260710-1"></script>
++    <script src="script.js?v=20260717-1"></script>
+     <script src="site-auth.js?v=20260524-9"></script>
+     <script src="site-layout.js?v=20260709-1"></script>
+   </body>
+diff --git a/frontend/product.html b/frontend/product.html
+index 2bf162f..119c05b 100644
+--- a/frontend/product.html
++++ b/frontend/product.html
+@@ -14,7 +14,7 @@
+       integrity="sha384-QWTKZyjpPEjISv5WaRU9OFeRpok6YctnYmDr5pNlyT2bRjXh0JMhjY6hW+ALEwIH"
+       crossorigin="anonymous"
+     />
+-    <link rel="stylesheet" href="style.css?v=20260709-1" />
++    <link rel="stylesheet" href="style.css?v=20260717-1" />
+     
+     <!-- Yandex.Metrika counter -->
+ <script type="text/javascript">
+@@ -118,14 +118,14 @@
+ 
+       <div id="productContainer" class="d-none">
+         <div class="row g-4 mb-4">
+-          <div class="col-lg-5 col-xl-4">
++          <div class="col-lg-5">
+             <div class="card shadow-sm border-0" style="border-radius: 20px;">
+               <div class="card-body p-4">
+                 <div class="d-flex gap-3 align-items-start mb-3">
+                   <div
+                     id="productImage"
+                     class="rounded-3 border bg-white d-flex align-items-center justify-content-center overflow-hidden flex-shrink-0"
+-                    style="width: 110px; height: 110px;"
++                    style="width: 168px; height: 168px;"
+                   >
+                     <span class="text-secondary small">Фото</span>
+                   </div>
+@@ -159,7 +159,7 @@
+             </div>
+           </div>
+ 
+-          <div class="col-lg-7 col-xl-8">
++          <div class="col-lg-7">
+             <div class="card shadow-sm border-0 h-100" style="border-radius: 20px;">
+               <div class="card-body p-4 d-flex flex-column">
+                 <div class="d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-2 mb-3">
+@@ -169,11 +169,11 @@
+                       <option value="">Сравнить с другой моделью...</option>
+                     </select>
+                     <button id="compareOnProductBtn" type="button" class="btn btn-dark btn-sm">Сравнить</button>
+-                    <button id="exportProductPdfBtn" type="button" class="btn btn-danger btn-sm text-nowrap">Скачать PDF</button>
++                    <button id="exportProductPdfBtn" type="button" class="btn btn-danger btn-sm text-nowrap">PDF для клиента</button>
+                   </div>
+                 </div>
+-                <div class="product-chart-wrap flex-grow-1" style="min-height: 420px; max-height: 620px;" data-demo-guard>
+-                  <div id="productQpChart" style="height: 100%; width: 100%; min-height: 420px;"></div>
++                <div class="product-chart-wrap flex-grow-1" data-demo-guard>
++                  <div id="productQpChart" class="qp-chart-box"></div>
+                 </div>
+                 <div id="productCompareMeta" class="small text-secondary mt-2 text-center"></div>
+               </div>
+@@ -181,53 +181,61 @@
+           </div>
+         </div>
+ 
+-        <!-- Присоединительные размеры (чертёж завода): широкий блок под двумя
+-             колонками — иначе 15 строк размеров растягивают левую колонку и
+-             вместе с ней график (карточка графика тянется по высоте соседа). -->
+-        <div id="dimensionsCard" class="card shadow-sm border-0 mb-4 d-none" style="border-radius: 20px;">
++        <!-- Чертёж из бумажного каталога: реальный скан кладётся в photos/
++             как blueprint_<слаг-модели>.png (см. подсказку под блоком),
++             пока файла нет — крупная шаблонная «синька»-заглушка. -->
++        <div id="blueprintCard" class="card shadow-sm border-0 mb-4 d-none" style="border-radius: 20px;">
+           <div class="card-body p-4">
+-            <h2 class="h6 fw-bold mb-2">Присоединительные размеры (по чертежу завода), мм</h2>
+-            <div class="table-responsive" data-demo-guard>
+-              <table class="table table-sm align-middle mb-0 text-center">
+-                <thead id="dimensionsHead"></thead>
+-                <tbody id="dimensionsBody"></tbody>
+-              </table>
++            <h2 class="h6 fw-bold mb-3">Чертёж из каталога</h2>
++            <div class="blueprint-frame" data-demo-guard>
++              <img id="blueprintImage" class="blueprint-image" src="" alt="Чертёж" loading="lazy" decoding="async" />
+             </div>
++            <div id="blueprintHint" class="small text-secondary mt-2"></div>
++          </div>
++        </div>
++
++        <!-- Присоединительные размеры (чертёж завода): ячейка на размер
++             вместо сплошного ряда цифр — каждую пару «буква-значение»
++             видно сразу. -->
++        <div id="dimensionsCard" class="card shadow-sm border-0 mb-4 d-none" style="border-radius: 20px;">
++          <div class="card-body p-4">
++            <h2 class="h6 fw-bold mb-3">Присоединительные размеры (по чертежу завода), мм</h2>
++            <div id="dimensionsGrid" class="dimensions-grid" data-demo-guard></div>
+           </div>
+         </div>
+ 
+         <div class="card shadow-sm border-0" style="border-radius: 20px;">
+           <div class="card-body p-4">
+-            <h2 class="h6 fw-bold mb-3">Документация</h2>
+-                <div class="row g-4">
+-                  <div class="col-md-4">
+-                    <div class="card h-100 border bg-light shadow-sm vs-soon-wrap" style="border-radius: 12px;">
+-                      <div class="card-body text-center py-4">
+-                        <svg class="mb-3 text-primary" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
+-                        <h3 class="h6 fw-bold">Паспорт изделия</h3>
+-                        <p class="small text-secondary mb-0">PDF-файл по запросу у менеджера</p>
+-                      </div>
+-                    </div>
+-                  </div>
+-                  <div class="col-md-4">
+-                    <div class="card h-100 border bg-light shadow-sm vs-soon-wrap" style="border-radius: 12px;">
+-                      <div class="card-body text-center py-4">
+-                        <svg class="mb-3 text-primary" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+-                        <h3 class="h6 fw-bold">Схема подключения</h3>
+-                        <p class="small text-secondary mb-0">Параметры двигателя и схемы</p>
+-                      </div>
+-                    </div>
++            <h2 class="h5 fw-bold mb-3">Документация</h2>
++            <div class="row g-3">
++              <div class="col-md-4">
++                <div class="doc-tile vs-soon-wrap">
++                  <svg class="doc-tile-icon" width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
++                  <div>
++                    <h3 class="h6 fw-bold mb-1">Паспорт изделия</h3>
++                    <p class="doc-tile-text mb-0">PDF-файл по запросу у менеджера</p>
+                   </div>
+-                  <div class="col-md-4">
+-                    <div class="card h-100 border bg-light shadow-sm" style="border-radius: 12px;">
+-                      <div class="card-body text-center py-4">
+-                        <svg class="mb-3 text-primary" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path><polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline><line x1="12" y1="22.08" x2="12" y2="12"></line></svg>
+-                        <h3 class="h6 fw-bold">Габариты</h3>
+-                        <p id="gabaritsCaption" class="small text-secondary mb-0">Таблица монтажных размеров</p>
+-                      </div>
+-                    </div>
++                </div>
++              </div>
++              <div class="col-md-4">
++                <div class="doc-tile vs-soon-wrap">
++                  <svg class="doc-tile-icon" width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
++                  <div>
++                    <h3 class="h6 fw-bold mb-1">Схема подключения</h3>
++                    <p class="doc-tile-text mb-0">Параметры двигателя и схемы</p>
+                   </div>
+                 </div>
++              </div>
++              <div class="col-md-4">
++                <a class="doc-tile doc-tile-link" href="#dimensionsCard">
++                  <svg class="doc-tile-icon" width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path><polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline><line x1="12" y1="22.08" x2="12" y2="12"></line></svg>
++                  <div>
++                    <h3 class="h6 fw-bold mb-1">Габариты</h3>
++                    <p id="gabaritsCaption" class="doc-tile-text mb-0">Таблица монтажных размеров</p>
++                  </div>
++                </a>
++              </div>
++            </div>
+           </div>
+         </div>
+       </div>
+@@ -243,7 +251,7 @@
+     <script src="config.js?v=20260424-1"></script>
+     <script src="auth.js?v=20260524-10"></script>
+     <script src="site-auth.js?v=20260524-10"></script>
+-    <script src="script.js?v=20260710-1"></script>
++    <script src="script.js?v=20260717-1"></script>
+     <script src="site-layout.js?v=20260709-1"></script>
+   </body>
+ </html>
+diff --git a/frontend/project.html b/frontend/project.html
+index 2918538..31ad5be 100644
+--- a/frontend/project.html
++++ b/frontend/project.html
+@@ -13,7 +13,7 @@
+       rel="stylesheet"
+       crossorigin="anonymous"
+     />
+-    <link rel="stylesheet" href="style.css?v=20260709-1" />
++    <link rel="stylesheet" href="style.css?v=20260717-1" />
+ 
+ <!-- Yandex.Metrika counter -->
+ <script type="text/javascript">
+@@ -87,14 +87,9 @@
+       </div>
+     </nav>
+ 
+-    <header class="mb-4" style="background: var(--vs-accent); color: #FFFFFF; padding: 2.5rem 0; border-radius: 0 0 24px 24px;">
++    <header class="mb-4" style="background: var(--vs-accent); color: #FFFFFF; padding: 1.75rem 0; border-radius: 0 0 24px 24px;">
+       <div class="container-fluid px-3 px-lg-4">
+-        <div style="max-width: 800px;">
+-          <h1 class="h3 mb-2 fw-bold">Личный кабинет</h1>
+-          <div style="font-size: 1.05rem; opacity: 0.9;">
+-            Сохраняйте подобранные модели в проект, указывайте контакты и отправляйте запрос менеджеру или экспортируйте спецификацию в PDF.
+-          </div>
+-        </div>
++        <h1 class="h4 mb-0 fw-bold">Проект для клиента</h1>
+       </div>
+     </header>
+ 
+@@ -134,9 +129,10 @@
+                 <tr>
+                   <th class="ps-4 py-3 text-secondary fw-semibold">Модель</th>
+                   <th class="py-3 text-secondary fw-semibold">Тип</th>
+-                  <th class="py-3 text-secondary fw-semibold">Характеристики</th>
++                  <th class="py-3 text-secondary fw-semibold">Расход, м³/ч</th>
++                  <th class="py-3 text-secondary fw-semibold">Давление, Па</th>
+                   <th class="py-3 text-secondary fw-semibold">Цена</th>
+-                  <th class="pe-4 py-3 text-end text-secondary fw-semibold">Действия</th>
++                  <th class="pe-4 py-3 text-end text-secondary fw-semibold"></th>
+                 </tr>
+               </thead>
+               <tbody id="projectTableBody"></tbody>
+@@ -164,38 +160,24 @@
+             </div>
+           </div>
+ 
+-          <div class="card shadow-sm border-0 mb-4" style="border-radius: 16px;">
+-            <div class="card-body p-4">
+-              <h3 class="h6 fw-bold mb-1">Документ для клиента</h3>
+-              <p class="text-secondary small mb-3">
+-                Это PDF-спецификация, которую вы отправляете клиенту. Можно задать свой заголовок
+-                и водяной знак компании, затем посмотреть предпросмотр перед отправкой.
+-              </p>
+-              <div class="row g-3">
+-                <div class="col-md-12">
+-                  <label for="pdfHeaderText" class="form-label text-secondary small mb-1">
+-                    Заголовок документа (необязательно)
+-                  </label>
+-                  <input
+-                    id="pdfHeaderText"
+-                    class="form-control"
+-                    maxlength="120"
+-                    placeholder="По умолчанию: «VENTSEARCH — карточка модели / отчёт по сравнению»"
+-                  />
+-                </div>
+-                <div class="col-md-12">
+-                  <label for="pdfWatermarkSelect" class="form-label text-secondary small mb-1">
+-                    Водяной знак (из папки photos/)
+-                  </label>
+-                  <select id="pdfWatermarkSelect" class="form-select">
+-                    <option value="">Без водяного знака</option>
+-                  </select>
+-                </div>
+-              </div>
+-              <div class="d-flex gap-2 mt-3">
+-                <button id="previewProjectPdfBtn" class="btn btn-outline-primary btn-sm" type="button">
+-                  Предпросмотр PDF
++          <!-- Справка свёрнута в аккордеон, чтобы рабочее пространство
++               оставалось свободным для таблицы оборудования -->
++          <div class="accordion mb-4" id="projectHelpAccordion">
++            <div class="accordion-item" style="border-radius: 16px; overflow: hidden;">
++              <h3 class="accordion-header">
++                <button class="accordion-button collapsed py-3" type="button" data-bs-toggle="collapse" data-bs-target="#projectHelpBody" aria-expanded="false" aria-controls="projectHelpBody">
++                  Как это работает
+                 </button>
++              </h3>
++              <div id="projectHelpBody" class="accordion-collapse collapse" data-bs-parent="#projectHelpAccordion">
++                <div class="accordion-body small text-secondary">
++                  <ol class="mb-2 ps-3">
++                    <li class="mb-1">Соберите оборудование: кнопка «В проект» в каталоге или на карточке модели.</li>
++                    <li class="mb-1">Заполните название объекта и комментарий — они попадут в запрос менеджеру.</li>
++                    <li class="mb-1">«Документ для клиента (PDF)» — спецификация для отправки заказчику: можно задать свой заголовок документа и водяной знак компании (любой файл-картинка из папки <code>photos/</code>), посмотреть предпросмотр и скачать.</li>
++                    <li class="mb-0">«Отправить запрос» откроет письмо менеджеру с составом проекта и вашими контактами.</li>
++                  </ol>
++                </div>
+               </div>
+             </div>
+           </div>
+@@ -235,7 +217,7 @@
+ 
+               <div class="d-flex flex-column gap-2 mt-4">
+                 <button id="requestQuoteBtn" class="btn btn-primary w-100 py-3" style="border-radius: 10px; font-weight: 600;" type="button">Отправить запрос</button>
+-                <button id="exportProjectPdfBtn" class="btn btn-outline-dark w-100 py-2" style="border-radius: 10px; font-weight: 500;" type="button">Скачать спецификацию (PDF)</button>
++                <button id="exportProjectPdfBtn" class="btn btn-outline-dark w-100 py-2" style="border-radius: 10px; font-weight: 500;" type="button">Документ для клиента (PDF)</button>
+               </div>
+             </div>
+           </div>
+@@ -245,29 +227,11 @@
+       <div id="siteFooterMount" class="container-fluid px-0 mt-5"></div>
+     </main>
+ 
+-    <div class="modal fade" id="pdfPreviewModal" tabindex="-1" aria-hidden="true">
+-      <div class="modal-dialog modal-dialog-centered modal-xl">
+-        <div class="modal-content" style="height: 90vh;">
+-          <div class="modal-header">
+-            <h2 class="modal-title h6">Предпросмотр документа для клиента</h2>
+-            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Закрыть"></button>
+-          </div>
+-          <div class="modal-body p-0">
+-            <iframe id="pdfPreviewFrame" style="width: 100%; height: 100%; border: 0;" title="Предпросмотр PDF"></iframe>
+-          </div>
+-          <div class="modal-footer">
+-            <button id="pdfPreviewDownloadBtn" class="btn btn-dark btn-sm" type="button">Скачать этот PDF</button>
+-            <button class="btn btn-outline-secondary btn-sm" type="button" data-bs-dismiss="modal">Закрыть</button>
+-          </div>
+-        </div>
+-      </div>
+-    </div>
+-
+     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js" crossorigin="anonymous"></script>
+     <script src="config.js?v=20260424-1"></script>
+     <script src="auth.js?v=20260524-4"></script>
+     <script src="site-auth.js?v=20260524-4"></script>
+-    <script src="script.js?v=20260710-1"></script>
++    <script src="script.js?v=20260717-1"></script>
+     <script src="site-layout.js?v=20260709-1"></script>
+   </body>
+ </html>
+diff --git a/frontend/script.js b/frontend/script.js
+index 9b5d683..6855ed3 100644
+--- a/frontend/script.js
++++ b/frontend/script.js
+@@ -180,28 +180,32 @@ function saveWorkingPoint(point) {
+   }
+ }
+ 
+-const TILE_SIZE_KEY = "ventsearch.tileSize";
+-const TILE_SIZE_COLS = {
+-  lg: "col-12 col-md-6 col-xl-6",
+-  md: "col-6 col-md-6 col-xl-4",
+-  sm: "col-6 col-md-4 col-xl-3",
++// Значения ячеек таблицы каталога для клиентской сортировки (подбор по точке
++// не перезапрашивает сервер, поэтому сортируем прямо в браузере).
++const CATALOG_SORT_GETTERS = {
++  model: (p) => String(p.model || ""),
++  airflow: (p) => getRangePeak(p.airflow),
++  pressure: (p) => getRangePeak(p.pressure),
++  power: (p) => toNumber(p.power),
++  noise: (p) => toNumber(p.noise_level),
++  price: (p) => toNumber(p.price),
++  diameter: (p) => toNumber(p.diameter),
+ };
+ 
+-function loadTileSize() {
+-  try {
+-    const v = localStorage.getItem(TILE_SIZE_KEY);
+-    return v && TILE_SIZE_COLS[v] ? v : "md";
+-  } catch {
+-    return "md";
+-  }
+-}
+-
+-function saveTileSize(size) {
+-  try {
+-    localStorage.setItem(TILE_SIZE_KEY, size);
+-  } catch {
+-    // ignore
+-  }
++function sortItemsClient(items, sortKey) {
++  const m = /^([a-z]+)_(asc|desc)$/.exec(String(sortKey || ""));
++  const getter = m ? CATALOG_SORT_GETTERS[m[1]] : null;
++  if (!getter) return [...items];
++  const dir = m[2] === "desc" ? -1 : 1;
++  return [...items].sort((a, b) => {
++    const va = getter(a);
++    const vb = getter(b);
++    if (va == null && vb == null) return 0;
++    if (va == null) return 1;
++    if (vb == null) return -1;
++    if (typeof va === "string") return dir * va.localeCompare(String(vb), "ru");
++    return dir * (va - vb);
++  });
+ }
+ 
+ // Фильтры каталога переживают переход на карточку товара и возврат назад
+@@ -284,6 +288,9 @@ async function fetchProductsByIds(ids) {
+ }
+ 
+ function toNumber(value) {
++  // Number(null) и Number("") дают 0 — из-за этого отсутствующая цена
++  // («по запросу») считалась нулём и попадала в «Итого по проекту» как 0 ₽
++  if (value === null || value === undefined || value === "") return null;
+   const n = Number(value);
+   return Number.isFinite(n) ? n : null;
+ }
+@@ -412,6 +419,46 @@ async function fetchJson(url) {
+   return res.json();
+ }
+ 
++// Чертёж модели из бумажного каталога. Скрин кладётся в photos/ с именем
++// blueprint_<слаг-модели>.png (точное ожидаемое имя показываем в подсказке
++// под блоком) — появится на карточке сам, без правок кода. Пока файла нет,
++// показываем шаблон-заглушку «синьки» (frontend/img/blueprint-placeholder.svg).
++const BLUEPRINT_EXTENSIONS = ["png", "jpg", "jpeg", "webp"];
++
++async function renderProductBlueprint(product) {
++  const card = document.getElementById("blueprintCard");
++  const img = document.getElementById("blueprintImage");
++  const hint = document.getElementById("blueprintHint");
++  if (!card || !img) return;
++
++  const slug = String(
++    product?._meta?.model_slug || product?.meta?.model_slug || slugify(product?.model) || product?.id || "",
++  ).trim().toLowerCase();
++  const expectedName = `blueprint_${slug}.png`;
++
++  const versions = await ensurePhotosVersionLoaded();
++  let found = null;
++  for (const ext of BLUEPRINT_EXTENSIONS) {
++    const name = `blueprint_${slug}.${ext}`;
++    if (versions && Object.prototype.hasOwnProperty.call(versions, name)) {
++      found = name;
++      break;
++    }
++  }
++
++  if (found) {
++    const version = versions[found];
++    img.src = `${apiUrl(`/photos/${encodeURIComponent(found)}`)}${version ? `?v=${version}` : ""}`;
++    img.alt = `Чертёж ${product?.model || ""}`.trim();
++    if (hint) hint.textContent = `Файл: photos/${found}`;
++  } else {
++    img.src = "img/blueprint-placeholder.svg";
++    img.alt = "Чертёж появится позже";
++    if (hint) hint.textContent = `Чтобы заменить заглушку реальным чертежом, положите скан в photos/${expectedName}`;
++  }
++  card.classList.remove("d-none");
++}
++
+ function getRangePeak(range) {
+   if (!range || typeof range !== "object") return null;
+   const max = toNumber(range.max);
+@@ -503,12 +550,16 @@ function isServiceSeriesName(name) {
+ }
+ 
+ // familyKey: модель без типоразмера в хвосте — «ВО 13-284-4/15°-456A4» → «ВО 13-284-4/15°».
++// Новый формат имён «ВО 13-284-4/15°-4-56A4» (типоразмер 56A4) даёт после
++// среза суффикса «ВО 13-284-4/15°-4» — число после угла (номер вентилятора /
++// количество двигателей) тоже срезаем, чтобы ряд не дробился на подгруппы.
+ // Один и тот же расчёт, что и в backend/application/use_cases/list_product_families.py.
+ function familyKey(product) {
+   const model = String(product?.model || "").trim();
+   const size = String(product?.size || "").trim();
+   if (model && size && model.toLowerCase().endsWith(`-${size.toLowerCase()}`)) {
+-    return model.slice(0, model.length - size.length - 1).trim();
++    const head = model.slice(0, model.length - size.length - 1).trim();
++    return head.replace(/°-\d+(?:[.,]\d+)?$/, "°").trim();
+   }
+   return model;
+ }
+@@ -642,6 +693,10 @@ function buildQpDatasetsShared(products, targetRpm = null, targetPoint = null, o
+       z: isPrimary ? 5 : 1,
+       __hideLegend: familyMode && !isPrimary,
+       __familyProductId: familyMode && !isPrimary ? String(p.id) : null,
++      // Метки для расчёта фокуса осей: значимые кривые (выделенная модель или
++      // все сравниваемые) задают стартовое окно зума, серые контекстные — нет
++      __isProductCurve: true,
++      __isPrimary: isPrimary,
+       // Подпись прямо у конца кривой — иначе непонятно, какой типоразмер
+       // за какой серой линией, без наведения курсора на тонкую линию
+       endLabel: familyMode && !isPrimary ? {
+@@ -778,19 +833,40 @@ function renderQpChartShared(container, chartRef, products, targetRpm = null, ta
+ 
+   const series = buildQpDatasetsShared(products, targetRpm, targetPoint, opts);
+ 
+-  // Верхнюю границу оси P считаем по самим кривым вентиляторов (без хвоста
+-  // «Кривой сети», который на большом Q улетает высоко и сжимает всё
+-  // остальное в нижнюю четверть графика) — так провалы/горбы видно отчётливо
+-  let maxCurveP = 0;
++  // Пределы осей считаем по самим кривым вентиляторов (без хвоста «Кривой
++  // сети», который на большом Q улетает высоко и сжимает всё остальное).
++  // Отдельно считаем «фокус» — пределы по значимым кривым: выделенной модели
++  // в модельном ряду или всем сравниваемым. Ось Q заканчивается на максимуме
++  // выбранных кривых +15% (а не на всём ряду), чтобы маленький вентилятор не
++  // терялся в пустом поле; гигантские соседи ряда доступны ползунком зума.
++  let dataMaxQ = 0;
++  let dataMaxP = 0;
++  let focusMaxQ = 0;
++  let focusMaxP = 0;
+   for (const s of series) {
+-    if (isServiceSeriesName(s.name) || s.name === 'Кривая сети' || !Array.isArray(s.data)) continue;
++    if (!s.__isProductCurve || !Array.isArray(s.data)) continue;
+     for (const d of s.data) {
+-      const v = Array.isArray(d) ? d[1] : null;
+-      if (v != null && v > maxCurveP) maxCurveP = v;
++      if (!Array.isArray(d)) continue;
++      const q = d[0];
++      const pv = d[1];
++      if (q != null && q > dataMaxQ) dataMaxQ = q;
++      if (pv != null && pv > dataMaxP) dataMaxP = pv;
++      if (s.__isPrimary) {
++        if (q != null && q > focusMaxQ) focusMaxQ = q;
++        if (pv != null && pv > focusMaxP) focusMaxP = pv;
++      }
+     }
+   }
+-  if (targetPoint?.p > maxCurveP) maxCurveP = targetPoint.p;
+-  const yMax = maxCurveP > 0 ? maxCurveP * 1.18 : undefined;
++  if (!focusMaxQ) focusMaxQ = dataMaxQ;
++  if (!focusMaxP) focusMaxP = dataMaxP;
++  if (targetPoint?.q > focusMaxQ) focusMaxQ = targetPoint.q;
++  if (targetPoint?.p > focusMaxP) focusMaxP = targetPoint.p;
++  if (targetPoint?.q > dataMaxQ) dataMaxQ = targetPoint.q;
++  if (targetPoint?.p > dataMaxP) dataMaxP = targetPoint.p;
++  const xMax = dataMaxQ > 0 ? Math.ceil(dataMaxQ * 1.15) : undefined;
++  const yMax = dataMaxP > 0 ? Math.ceil(dataMaxP * 1.18) : undefined;
++  const xFocusEnd = focusMaxQ > 0 ? Math.ceil(focusMaxQ * 1.15) : undefined;
++  const yFocusEnd = focusMaxP > 0 ? Math.ceil(focusMaxP * 1.18) : undefined;
+ 
+   const option = {
+     tooltip: {
+@@ -818,11 +894,13 @@ function renderQpChartShared(container, chartRef, products, targetRpm = null, ta
+     },
+     // Зум по X и Y независим: колесо мыши — по Q (основная ось), а по Y —
+     // свой ползунок справа (перетаскивание не задевает масштаб по X)
++    // Стартовое окно зума — «фокус» по значимым кривым (см. расчёт выше):
++    // выбранная модель занимает весь график, а не зажата в углу полной шкалы
+     dataZoom: [
+-      { type: 'inside', xAxisIndex: 0, filterMode: 'none', zoomOnMouseWheel: true, moveOnMouseMove: true },
+-      { type: 'inside', yAxisIndex: 0, filterMode: 'none', zoomOnMouseWheel: false, moveOnMouseMove: false },
+-      { type: 'slider', xAxisIndex: 0, filterMode: 'none', height: 14, bottom: 26, brushSelect: false },
+-      { type: 'slider', yAxisIndex: 0, filterMode: 'none', width: 14, right: 8, brushSelect: false, showDataShadow: false }
++      { type: 'inside', xAxisIndex: 0, filterMode: 'none', zoomOnMouseWheel: true, moveOnMouseMove: true, startValue: 0, endValue: xFocusEnd },
++      { type: 'inside', yAxisIndex: 0, filterMode: 'none', zoomOnMouseWheel: false, moveOnMouseMove: false, startValue: 0, endValue: yFocusEnd },
++      { type: 'slider', xAxisIndex: 0, filterMode: 'none', height: 14, bottom: 26, brushSelect: false, startValue: 0, endValue: xFocusEnd },
++      { type: 'slider', yAxisIndex: 0, filterMode: 'none', width: 14, right: 8, brushSelect: false, showDataShadow: false, startValue: 0, endValue: yFocusEnd }
+     ],
+     toolbox: {
+       feature: {
+@@ -856,6 +934,8 @@ function renderQpChartShared(container, chartRef, products, targetRpm = null, ta
+       nameLocation: 'middle',
+       nameGap: 30,
+       type: 'value',
++      min: 0,
++      max: xMax,
+       splitLine: { show: true, lineStyle: { type: 'dashed', color: '#eee' } },
+       minorSplitLine: { show: true, lineStyle: { color: '#f5f5f5' } },
+       axisLabel: { fontFamily: qpChartFontFamily, formatter: (val) => formatNumber(val) },
+@@ -920,19 +1000,29 @@ function renderQpChartShared(container, chartRef, products, targetRpm = null, ta
+   return chartRef;
+ }
+ 
+-// Запросить у бэкенда PDF по списку моделей и скачать файл.
+-// Используется и в сравнении (2+ моделей), и на карточке одиночной модели.
+-async function requestPdfExport(ids, filename, chart) {
+-  const chartImageDataUrl = chart ? captureChartPngForPdf(chart) : null;
++// Запросить у бэкенда PDF по списку моделей: с графиком (если передан),
++// своим заголовком шапки и водяным знаком. Единая точка для сравнения,
++// карточки товара и страницы проекта (см. openPdfMaker ниже).
++async function fetchClientPdfBlob(ids, options = {}) {
++  const chartImageDataUrl = options.chart ? captureChartPngForPdf(options.chart) : null;
+   const response = await fetch(apiUrl("/api/export/pdf"), {
+     method: "POST",
+     headers: { "Content-Type": "application/json" },
+-    body: JSON.stringify({ ids, filename, chart_image_data_url: chartImageDataUrl }),
++    body: JSON.stringify({
++      ids,
++      filename: options.filename || "ventsearch.pdf",
++      chart_image_data_url: chartImageDataUrl,
++      header_text: options.headerText || undefined,
++      watermark: options.watermark || undefined,
++    }),
+   });
+   if (!response.ok) {
+     throw new Error(`PDF export failed: ${response.status}`);
+   }
+-  const blob = await response.blob();
++  return response.blob();
++}
++
++function downloadBlob(blob, filename) {
+   const url = URL.createObjectURL(blob);
+   const a = document.createElement("a");
+   a.href = url;
+@@ -969,6 +1059,156 @@ function captureChartPngForPdf(sourceChart) {
+   }
+ }
+ 
++// ============================================================
++// «Документ для клиента» — общее модальное окно PDF-мейкера.
++// Открывается с любой страницы (сравнение, карточка товара, проект):
++// свой заголовок шапки, водяной знак из photos/, предпросмотр и скачивание.
++// ============================================================
++
++let _pdfMakerContext = null;
++let _pdfMakerBlobUrl = null;
++
++function ensurePdfMakerModal() {
++  let modalEl = document.getElementById("pdfMakerModal");
++  if (modalEl) return modalEl;
++
++  modalEl = document.createElement("div");
++  modalEl.className = "modal fade";
++  modalEl.id = "pdfMakerModal";
++  modalEl.tabIndex = -1;
++  modalEl.setAttribute("aria-hidden", "true");
++  modalEl.innerHTML = `
++    <div class="modal-dialog modal-dialog-centered modal-xl">
++      <div class="modal-content">
++        <div class="modal-header">
++          <h2 class="modal-title h6">Документ для клиента (PDF)</h2>
++          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Закрыть"></button>
++        </div>
++        <div class="modal-body">
++          <div id="pdfMakerAlert" class="alert alert-danger d-none" role="alert"></div>
++          <div class="row g-3 align-items-end">
++            <div class="col-md-6">
++              <label for="pdfMakerHeaderText" class="form-label text-secondary small mb-1">
++                Заголовок документа (пусто — текст по умолчанию)
++              </label>
++              <input id="pdfMakerHeaderText" class="form-control" maxlength="120"
++                placeholder="Например: Коммерческое предложение" />
++            </div>
++            <div class="col-md-6">
++              <label for="pdfMakerWatermark" class="form-label text-secondary small mb-1">
++                Водяной знак компании (файл из папки photos/)
++              </label>
++              <select id="pdfMakerWatermark" class="form-select">
++                <option value="">Без водяного знака</option>
++              </select>
++            </div>
++          </div>
++          <div class="d-flex gap-2 mt-3">
++            <button id="pdfMakerPreviewBtn" class="btn btn-outline-primary btn-sm" type="button">Предпросмотр</button>
++            <button id="pdfMakerDownloadBtn" class="btn btn-dark btn-sm" type="button">Скачать PDF</button>
++            <span id="pdfMakerStatus" class="text-secondary small align-self-center"></span>
++          </div>
++          <div id="pdfMakerPreviewWrap" class="mt-3 d-none">
++            <iframe id="pdfMakerFrame" style="width: 100%; height: 60vh; border: 1px solid var(--vs-border, #e8e8e8); border-radius: 8px;"
++              title="Предпросмотр PDF"></iframe>
++          </div>
++        </div>
++      </div>
++    </div>
++  `;
++  document.body.appendChild(modalEl);
++
++  const alertBox = modalEl.querySelector("#pdfMakerAlert");
++  const statusEl = modalEl.querySelector("#pdfMakerStatus");
++  const previewBtn = modalEl.querySelector("#pdfMakerPreviewBtn");
++  const downloadBtn = modalEl.querySelector("#pdfMakerDownloadBtn");
++  const previewWrap = modalEl.querySelector("#pdfMakerPreviewWrap");
++  const frame = modalEl.querySelector("#pdfMakerFrame");
++
++  function showModalError(message) {
++    alertBox.textContent = message;
++    alertBox.classList.remove("d-none");
++  }
++
++  function readOptions() {
++    const ctx = _pdfMakerContext || {};
++    return {
++      filename: ctx.filename || "ventsearch.pdf",
++      chart: typeof ctx.getChart === "function" ? ctx.getChart() : null,
++      headerText: String(modalEl.querySelector("#pdfMakerHeaderText")?.value || "").trim(),
++      watermark: String(modalEl.querySelector("#pdfMakerWatermark")?.value || "").trim(),
++    };
++  }
++
++  async function buildBlob() {
++    alertBox.classList.add("d-none");
++    const ctx = _pdfMakerContext || {};
++    const ids = (typeof ctx.getIds === "function" ? ctx.getIds() : []).map(String).filter(Boolean);
++    if (!ids.length) {
++      showModalError("Нет выбранных моделей для документа.");
++      return null;
++    }
++    statusEl.textContent = "Формируем PDF…";
++    try {
++      return await fetchClientPdfBlob(ids, readOptions());
++    } catch (err) {
++      console.error(err);
++      showModalError("Не удалось сформировать PDF. Проверьте доступность API.");
++      return null;
++    } finally {
++      statusEl.textContent = "";
++    }
++  }
++
++  previewBtn.addEventListener("click", async () => {
++    previewBtn.disabled = true;
++    try {
++      const blob = await buildBlob();
++      if (!blob) return;
++      if (_pdfMakerBlobUrl) URL.revokeObjectURL(_pdfMakerBlobUrl);
++      _pdfMakerBlobUrl = URL.createObjectURL(blob);
++      frame.src = _pdfMakerBlobUrl;
++      previewWrap.classList.remove("d-none");
++    } finally {
++      previewBtn.disabled = false;
++    }
++  });
++
++  downloadBtn.addEventListener("click", async () => {
++    downloadBtn.disabled = true;
++    try {
++      const blob = await buildBlob();
++      if (blob) downloadBlob(blob, readOptions().filename);
++    } finally {
++      downloadBtn.disabled = false;
++    }
++  });
++
++  modalEl.addEventListener("hidden.bs.modal", () => {
++    // Освобождаем blob-URL предпросмотра; настройки (заголовок, водяной
++    // знак) намеренно сохраняются до перезагрузки страницы
++    if (_pdfMakerBlobUrl) {
++      URL.revokeObjectURL(_pdfMakerBlobUrl);
++      _pdfMakerBlobUrl = null;
++    }
++    frame.src = "about:blank";
++    previewWrap.classList.add("d-none");
++  });
++
++  void populateWatermarkOptions(modalEl.querySelector("#pdfMakerWatermark"));
++  return modalEl;
++}
++
++// context: { getIds: () => string[], getChart?: () => EChartsInstance|null, filename?: string }
++function openPdfMaker(context) {
++  const modalEl = ensurePdfMakerModal();
++  _pdfMakerContext = context || {};
++  modalEl.querySelector("#pdfMakerAlert")?.classList.add("d-none");
++  if (typeof bootstrap !== "undefined" && bootstrap.Modal) {
++    bootstrap.Modal.getOrCreateInstance(modalEl).show();
++  }
++}
++
+ function describeQuery(filters) {
+   const parts = [];
+   if (filters.q) parts.push(`поиск: «${filters.q}»`);
+@@ -993,16 +1233,6 @@ function parseFilters(form) {
+   return filters;
+ }
+ 
+-function applyClientSort(items, sort) {
+-  const copy = [...items];
+-  if (sort === "airflow_desc") {
+-    copy.sort((a, b) => (getRangePeak(b.airflow) || 0) - (getRangePeak(a.airflow) || 0));
+-  } else if (sort === "pressure_desc") {
+-    copy.sort((a, b) => (getRangePeak(b.pressure) || 0) - (getRangePeak(a.pressure) || 0));
+-  }
+-  return copy;
+-}
+-
+ function scoreAnalog(product, targets) {
+   const values = {
+     airflow: getRangeNominal(product.airflow),
+@@ -1057,7 +1287,6 @@ async function initCatalogPage() {
+   const emptySection = $("#emptyStateSection");
+   const backToFiltersBtn = $("#backToFiltersBtn");
+   const analogsList = $("#analogsList");
+-  const tileSizeGroup = $("#tileSizeGroup");
+ 
+   const state = {
+     currentPage: 1,
+@@ -1070,29 +1299,12 @@ async function initCatalogPage() {
+     selectedIds: new Set(loadCompareIds()),
+     projectIds: new Set(loadProjectIds()),
+     analogs: [],
+-    tileSize: loadTileSize(),
++    // 'catalog' — обычный список (сортировка на сервере, есть пагинация);
++    // 'point' — подбор по рабочей точке (все результаты уже в браузере,
++    // клик по заголовку колонки сортирует их без запроса к серверу)
++    mode: "catalog",
+   };
+ 
+-  function syncTileSizeUi() {
+-    if (!tileSizeGroup) return;
+-    for (const btn of tileSizeGroup.querySelectorAll("[data-tile-size]")) {
+-      const active = btn.dataset.tileSize === state.tileSize;
+-      btn.classList.toggle("btn-dark", active);
+-      btn.classList.toggle("btn-outline-dark", !active);
+-      btn.setAttribute("aria-pressed", active ? "true" : "false");
+-    }
+-  }
+-  syncTileSizeUi();
+-
+-  tileSizeGroup?.addEventListener("click", (event) => {
+-    const btn = event.target.closest("[data-tile-size]");
+-    if (!btn || btn.dataset.tileSize === state.tileSize) return;
+-    state.tileSize = btn.dataset.tileSize;
+-    saveTileSize(state.tileSize);
+-    syncTileSizeUi();
+-    renderProducts(state.currentItems, { total: state.lastTotal, page: state.currentPage, limit: state.lastLimit });
+-  });
+-
+   function showError(message) {
+     showErrorSafe(message);
+   }
+@@ -1131,8 +1343,8 @@ async function initCatalogPage() {
+       button.classList.toggle("btn-outline-dark", !selected);
+       button.textContent = selected ? "В сравнении" : "Сравнить";
+       button.title = selected ? "Уже добавлен в сравнение" : "Добавить в сравнение";
+-      const card = button.closest(".product-card");
+-      if (card) card.classList.toggle("selected", selected);
++      const row = button.closest("tr");
++      if (row) row.classList.toggle("catalog-row-selected", selected);
+     }
+     const projectButtons = grid.querySelectorAll(".btn-project-toggle");
+     for (const button of projectButtons) {
+@@ -1140,10 +1352,10 @@ async function initCatalogPage() {
+       const inProject = state.projectIds.has(id);
+       button.classList.toggle("btn-dark", inProject);
+       button.classList.toggle("btn-outline-dark", !inProject);
+-      button.textContent = inProject ? "В проекте" : "Добавить в проект";
++      button.textContent = inProject ? "В проекте" : "В проект";
+       button.title = inProject ? "Убрать из проекта" : "Добавить в проект";
+-      const card = button.closest(".product-card");
+-      if (card) card.classList.toggle("in-project", inProject);
++      const row = button.closest("tr");
++      if (row) row.classList.toggle("catalog-row-in-project", inProject);
+     }
+   }
+ 
+@@ -1215,75 +1427,123 @@ async function initCatalogPage() {
+       return;
+     }
+ 
+-    function buildProductCard(p) {
+-      state.cacheById.set(p.id, p);
+-      const col = document.createElement("div");
+-      col.className = TILE_SIZE_COLS[state.tileSize] || TILE_SIZE_COLS.md;
++    // Таблица каталога: клик по заголовку колонки сортирует по этому
++    // параметру (повторный клик — в обратную сторону), строки сгруппированы
++    // по модельному ряду. Один экран вмещает десятки моделей вместо 1-2
++    // высоких карточек.
++    const currentSort = String(sortSelect?.value || "");
++    const COLUMNS = [
++      { key: "model", label: "Модель", sortable: true },
++      { key: "size", label: "Типоразмер", sortable: false },
++      { key: "diameter", label: "⌀, мм", sortable: true, numeric: true },
++      { key: "airflow", label: "Расход Q, м³/ч", sortable: true, numeric: true },
++      { key: "pressure", label: "Давление P, Па", sortable: true, numeric: true },
++      { key: "power", label: "Мощность, Вт", sortable: true, numeric: true },
++      { key: "noise", label: "Шум, дБ", sortable: true, numeric: true },
++      { key: "price", label: "Цена", sortable: true, numeric: true },
++      { key: "_actions", label: "", sortable: false },
++    ];
+ 
+-      const card = document.createElement("article");
++    const wrap = document.createElement("div");
++    wrap.className = "table-responsive catalog-table-wrap";
++    const table = document.createElement("table");
++    table.className = "table table-hover align-middle catalog-table mb-0";
++
++    const thead = document.createElement("thead");
++    const headRow = document.createElement("tr");
++    for (const col of COLUMNS) {
++      const th = document.createElement("th");
++      th.textContent = col.label;
++      if (col.numeric) th.classList.add("text-end");
++      if (col.sortable) {
++        th.classList.add("catalog-sortable");
++        th.tabIndex = 0;
++        th.setAttribute("role", "button");
++        const active = currentSort === `${col.key}_asc` ? "asc" : currentSort === `${col.key}_desc` ? "desc" : "";
++        if (active) th.dataset.sortDir = active;
++        th.title = "Сортировать по этой колонке";
++        const applySort = () => {
++          const next = active === "asc" ? `${col.key}_desc` : `${col.key}_asc`;
++          if (sortSelect) sortSelect.value = next;
++          saveCatalogFilters(filtersForm, sortSelect);
++          if (state.mode === "point") {
++            renderProducts(sortItemsClient(state.currentItems, next), {
++              total: state.lastTotal, page: 1, limit: state.lastLimit,
++            });
++          } else {
++            loadPage(1);
++          }
++        };
++        th.addEventListener("click", applySort);
++        th.addEventListener("keydown", (event) => {
++          if (event.key === "Enter" || event.key === " ") {
++            event.preventDefault();
++            applySort();
++          }
++        });
++      }
++      headRow.appendChild(th);
++    }
++    thead.appendChild(headRow);
++    table.appendChild(thead);
++
++    const tbody = document.createElement("tbody");
++
++    function buildProductRow(p) {
++      state.cacheById.set(p.id, p);
+       const selected = state.selectedIds.has(p.id);
+       const inProject = state.projectIds.has(p.id);
+-      const sizeClass = state.tileSize === "sm" ? " tile-sm" : state.tileSize === "lg" ? " tile-lg" : "";
+-      card.className = `card h-100 shadow-sm product-card${sizeClass}${selected ? " selected" : ""}`;
+-
+-      const imgWrap = document.createElement("div");
+-      imgWrap.className = "ratio ratio-4x3 bg-light d-flex align-items-center justify-content-center";
+-      renderFanImage(imgWrap, p, p.model || "Вентилятор");
+-
+-      const body = document.createElement("div");
+-      body.className = "card-body d-flex flex-column";
+-      body.innerHTML = `
+-        <h2 class="h6 card-title mb-1">${escapeHtml(p.model || "Без названия")}</h2>
+-        <div class="text-secondary small mb-2">${escapeHtml([p.type, p.size].filter(Boolean).join(" • ") || "—")}</div>
+-        <dl class="row small mb-2">
+-          <dt class="col-6 text-secondary">Расход</dt><dd class="col-6 mb-1">${escapeHtml(p.airflow?.raw || "—")}</dd>
+-          <dt class="col-6 text-secondary">Давление</dt><dd class="col-6 mb-1">${escapeHtml(p.pressure?.raw || "—")}</dd>
+-          <dt class="col-6 text-secondary">Мощн.</dt><dd class="col-6 mb-1">${p.power != null ? `${escapeHtml(p.power)} Вт` : "—"}</dd>
+-          <dt class="col-6 text-secondary">Шум</dt><dd class="col-6 mb-1">${p.noise_level != null ? `${escapeHtml(p.noise_level)} дБ` : "—"}</dd>
+-        </dl>
+-        ${p._point ? `<div class="mb-2"><span class="badge ${p._point.reserve_percent < 0 ? "text-bg-warning" : (p._point.reserve_percent <= 15 ? "text-bg-success" : "text-bg-secondary")}">В точке: ${escapeHtml(formatNumber(p._point.p_available))} Па · ${p._point.reserve_percent < 0 ? "дефицит " + escapeHtml(Math.abs(p._point.reserve_percent)) : "запас " + escapeHtml(p._point.reserve_percent)}%</span></div>` : ""}
+-        <div class="mt-auto">
+-          <div class="product-price">${escapeHtml(formatPrice(p.price))}</div>
+-          <a class="btn btn-sm btn-dark product-open-btn mt-2" href="product.html?id=${encodeURIComponent(p.id)}">Открыть</a>
+-        </div>
+-        <div class="product-card-actions mt-2 d-flex gap-2">
+-          <button type="button" class="btn btn-sm flex-grow-1 btn-project-toggle ${inProject ? "btn-dark" : "btn-outline-dark"}" data-id="${escapeHtml(
+-        p.id
+-      )}" title="${inProject ? "Убрать из проекта" : "Добавить в проект"}">
+-            ${inProject ? "В проекте" : "Добавить в проект"}
+-          </button>
+-          <button type="button" class="btn btn-sm btn-compare-toggle flex-grow-1 ${selected ? "btn-dark" : "btn-outline-dark"}" data-id="${escapeHtml(p.id)}">
+-            ${selected ? "В сравнении" : "Сравнить"}
+-          </button>
+-        </div>
++      const tr = document.createElement("tr");
++      tr.className = `catalog-row${selected ? " catalog-row-selected" : ""}${inProject ? " catalog-row-in-project" : ""}`;
++
++      const pointBadge = p._point
++        ? `<div class="mt-1"><span class="badge ${p._point.reserve_percent < 0 ? "text-bg-warning" : (p._point.reserve_percent <= 15 ? "text-bg-success" : "text-bg-secondary")}">В точке: ${escapeHtml(formatNumber(p._point.p_available))} Па · ${p._point.reserve_percent < 0 ? "дефицит " + escapeHtml(Math.abs(p._point.reserve_percent)) : "запас " + escapeHtml(p._point.reserve_percent)}%</span></div>`
++        : "";
++
++      tr.innerHTML = `
++        <td class="catalog-cell-model">
++          <a href="product.html?id=${encodeURIComponent(p.id)}" class="fw-semibold">${escapeHtml(p.model || "Без названия")}</a>
++          ${pointBadge}
++        </td>
++        <td class="text-secondary">${escapeHtml(p.size || "—")}</td>
++        <td class="text-end">${p.diameter != null ? escapeHtml(formatNumber(p.diameter)) : "—"}</td>
++        <td class="text-end text-nowrap">${escapeHtml(p.airflow?.raw || "—")}</td>
++        <td class="text-end text-nowrap">${escapeHtml(p.pressure?.raw || "—")}</td>
++        <td class="text-end">${p.power != null ? escapeHtml(formatNumber(p.power)) : "—"}</td>
++        <td class="text-end">${p.noise_level != null ? escapeHtml(p.noise_level) : "—"}</td>
++        <td class="text-end text-nowrap fw-semibold">${escapeHtml(formatPrice(p.price))}</td>
++        <td class="text-end">
++          <div class="d-flex gap-1 justify-content-end">
++            <button type="button" class="btn btn-sm btn-project-toggle ${inProject ? "btn-dark" : "btn-outline-dark"}" data-id="${escapeHtml(p.id)}" title="${inProject ? "Убрать из проекта" : "Добавить в проект"}">
++              ${inProject ? "В проекте" : "В проект"}
++            </button>
++            <button type="button" class="btn btn-sm btn-compare-toggle ${selected ? "btn-dark" : "btn-outline-dark"}" data-id="${escapeHtml(p.id)}">
++              ${selected ? "В сравнении" : "Сравнить"}
++            </button>
++          </div>
++        </td>
+       `;
+ 
+-      const detailsLink = body.querySelector("a");
+-      const projectToggleBtn = body.querySelector(".btn-project-toggle");
+-      const compareToggleBtn = body.querySelector(".btn-compare-toggle");
+-      detailsLink?.addEventListener("click", (event) => event.stopPropagation());
+-      projectToggleBtn?.addEventListener("click", (event) => {
++      tr.querySelector(".btn-project-toggle")?.addEventListener("click", (event) => {
+         event.preventDefault();
+         event.stopPropagation();
+         toggleProjectSelection(p.id);
+       });
+-      compareToggleBtn?.addEventListener("click", (event) => {
++      tr.querySelector(".btn-compare-toggle")?.addEventListener("click", (event) => {
+         event.preventDefault();
+         event.stopPropagation();
+         toggleSelection(p.id);
+       });
+-
+-      card.appendChild(imgWrap);
+-      card.appendChild(body);
+-      col.appendChild(card);
+-      return col;
++      // Вся строка кликабельна (кроме кнопок) — открывает карточку модели
++      tr.addEventListener("click", (event) => {
++        if (event.target.closest("button, a, select, input")) return;
++        window.location.href = `product.html?id=${encodeURIComponent(p.id)}`;
++      });
++      return tr;
+     }
+ 
+-    // Группировка по модельному ряду (та же схема, что и на графике Q-P):
+-    // одинаковые типоразмеры собираются подряд под общим заголовком, вместо
+-    // того чтобы перемежаться карточками других рядов. Сама сортировка и
+-    // поиск не меняются — группы просто «стягивают» совпадающие карточки
+-    // в один блок, сохраняя порядок первого появления ряда в списке.
++    // Группировка по модельному ряду: строки одного ряда собираются подряд
++    // под общей строкой-заголовком, сохраняя порядок первого появления ряда.
+     const groups = new Map();
+     for (const p of state.currentItems) {
+       const key = familyKey(p);
+@@ -1293,21 +1553,25 @@ async function initCatalogPage() {
+ 
+     for (const [key, items] of groups) {
+       if (groups.size > 1) {
+-        const header = document.createElement("div");
+-        header.className = "col-12";
+-        header.innerHTML = `
+-          <div class="d-flex align-items-baseline gap-2 model-group-header ${groups.size > 1 && grid.childElementCount > 0 ? "mt-2" : ""} mb-1">
+-            <h3 class="h6 fw-bold mb-0">${escapeHtml(key || "Прочие")}</h3>
+-            <span class="text-secondary small">${items.length} ${pluralRu(items.length, "модель", "модели", "моделей")}</span>
+-          </div>
++        const groupRow = document.createElement("tr");
++        groupRow.className = "catalog-group-row";
++        groupRow.innerHTML = `
++          <td colspan="${COLUMNS.length}">
++            <span class="fw-bold">${escapeHtml(key || "Прочие")}</span>
++            <span class="text-secondary small ms-2">${items.length} ${pluralRu(items.length, "модель", "модели", "моделей")}</span>
++          </td>
+         `;
+-        grid.appendChild(header);
++        tbody.appendChild(groupRow);
+       }
+       for (const p of items) {
+-        grid.appendChild(buildProductCard(p));
++        tbody.appendChild(buildProductRow(p));
+       }
+     }
+ 
++    table.appendChild(tbody);
++    wrap.appendChild(table);
++    grid.appendChild(wrap);
++
+     syncSelectionUi();
+ 
+     if (paginationNav) {
+@@ -1376,6 +1640,7 @@ async function initCatalogPage() {
+   async function loadPage(page) {
+     hideError();
+     setLoading(true);
++    state.mode = "catalog";
+     state.currentPage = page;
+     state.filters = parseFilters(filtersForm);
+     saveCatalogFilters(filtersForm, sortSelect);
+@@ -1383,18 +1648,21 @@ async function initCatalogPage() {
+     if (querySummary) querySummary.textContent = state.querySummaryText;
+ 
+     try {
+-      const requestedSort = sortSelect?.value || "price_asc";
++      // Все ключи сортировки таблицы понимает сервер (см. SORT_STRATEGIES
++      // в product_repository.py) — сортируется весь каталог, а не страница
++      const requestedSort = /^[a-z]+_(asc|desc)$/.test(String(sortSelect?.value || ""))
++        ? sortSelect.value
++        : "price_asc";
+       const params = new URLSearchParams();
+       for (const [k, v] of Object.entries(state.filters)) {
+         if (k !== "sort") params.set(k, String(v));
+       }
+-      params.set("sort", requestedSort.startsWith("price_") ? requestedSort : "price_asc");
++      params.set("sort", requestedSort);
+       params.set("limit", String(PAGE_SIZE));
+       params.set("offset", String((page - 1) * PAGE_SIZE));
+ 
+       const data = await fetchJson(apiUrl(`/api/products?${params.toString()}`));
+-      const serverItems = Array.isArray(data?.items) ? data.items : [];
+-      const items = applyClientSort(serverItems, requestedSort);
++      const items = Array.isArray(data?.items) ? data.items : [];
+       const total = Number.isFinite(Number(data?.total)) ? Number(data.total) : items.length;
+       const limit = Number.isFinite(Number(data?.limit)) ? Number(data.limit) : PAGE_SIZE;
+ 
+@@ -1524,7 +1792,10 @@ async function initCatalogPage() {
+         );
+       } else {
+         showCatalogResults();
+-        renderProducts(items, { total: items.length, page: 1, limit: Math.max(items.length, 1) });
++        state.mode = "point";
++        renderProducts(sortItemsClient(items, sortSelect?.value), {
++          total: items.length, page: 1, limit: Math.max(items.length, 1),
++        });
+       }
+     } catch (err) {
+       console.error(err);
+@@ -1751,21 +2022,6 @@ async function initComparePage() {
+     compareChart = renderQpChartShared(qpChartCanvas, compareChart, products, null, loadWorkingPoint());
+   }
+ 
+-  async function exportCompareToPdf(products) {
+-    if (products.length < 1) {
+-      showError("Для экспорта выберите хотя бы одну модель.");
+-      return;
+-    }
+-    hideError();
+-    try {
+-      const ids = products.map((p) => String(p.id)).filter(Boolean);
+-      await requestPdfExport(ids, "ventsearch-compare.pdf", compareChart);
+-    } catch (err) {
+-      console.error(err);
+-      showError("Не удалось экспортировать PDF. Проверьте доступность API.");
+-    }
+-  }
+-
+   // Модельные ряды грузим один раз и переиспользуем и в форме добавления,
+   // и в свопе типоразмера прямо в шапке таблицы сравнения
+   async function loadFamilies() {
+@@ -1858,8 +2114,19 @@ async function initComparePage() {
+       window.location.reload();
+     });
+ 
++    // Кастомный PDF-мейкер («Документ для клиента») доступен прямо со
++    // страницы сравнения — не нужно идти в «Мой проект»
+     exportPdfBtn?.addEventListener("click", () => {
+-      exportCompareToPdf(products);
++      if (!products.length) {
++        showError("Для экспорта выберите хотя бы одну модель.");
++        return;
++      }
++      hideError();
++      openPdfMaker({
++        getIds: () => products.map((p) => String(p.id)).filter(Boolean),
++        getChart: () => compareChart,
++        filename: "ventsearch-compare.pdf",
++      });
+     });
+   } catch (err) {
+     console.error(err);
+@@ -1921,14 +2188,14 @@ async function initProductPage() {
+     $("#productPrice").textContent = formatPrice(data.price);
+     renderFanImage($("#productImage"), data, data.model || "Вентилятор", false);
+ 
++    // Служебные идентификаторы (ID, номер строки CSV) конечному клиенту не
++    // показываем — это внутренние маркеры базы, они есть в админке
+     const specBody = $("#specTableBody");
+     specBody.innerHTML = "";
+     const specs = [
+-      ["ID", data.id],
+-      ["Номер в CSV", data.number],
+       ["Тип", data.type],
+       ["Модель", data.model],
+-      ["Типоразмер", data.size],
++      ["Типоразмер (двигатель)", data.size],
+       ["Диаметр", data.diameter != null ? `${data.diameter} мм` : "—"],
+       ["Расход воздуха", data.airflow?.raw || "—"],
+       ["Давление", data.pressure?.raw || "—"],
+@@ -1942,22 +2209,30 @@ async function initProductPage() {
+       specBody.appendChild(tr);
+     }
+ 
+-    // Габаритно-присоединительные размеры (чертёж завода) — широкий блок под
+-    // двумя колонками (см. #dimensionsCard в product.html): один размер = одна
+-    // колонка, чтобы не растягивать страницу по вертикали.
++    // Габаритно-присоединительные размеры (чертёж завода): ячейка на размер
++    // вместо одной длинной строки цифр — так каждую пару «буква-значение»
++    // видно сразу, без сопоставления по вертикали через всю таблицу.
+     const dims = data.dimensions;
+     if (dims && typeof dims === "object" && Object.keys(dims).length) {
+       const entries = Object.entries(dims);
+-      const head = $("#dimensionsHead");
+-      const body = $("#dimensionsBody");
+-      if (head && body) {
+-        head.innerHTML = `<tr>${entries.map(([label]) => `<th class="text-secondary fw-semibold"><code>${escapeHtml(label)}</code></th>`).join("")}</tr>`;
+-        body.innerHTML = `<tr>${entries.map(([, value]) => `<td>${escapeHtml(value)}</td>`).join("")}</tr>`;
++      const grid = $("#dimensionsGrid");
++      if (grid) {
++        grid.innerHTML = entries
++          .map(([label, value]) => `
++            <div class="dim-cell">
++              <div class="dim-cell-label">${escapeHtml(label)}</div>
++              <div class="dim-cell-value">${escapeHtml(value)}</div>
++            </div>`)
++          .join("");
+         $("#dimensionsCard")?.classList.remove("d-none");
+       }
+-      $("#gabaritsCaption")?.replaceChildren(document.createTextNode(`${entries.length} размеров — таблица выше на этой странице`));
++      $("#gabaritsCaption")?.replaceChildren(document.createTextNode(`${entries.length} размеров — блок выше на этой странице`));
+     }
+ 
++    // Чертёж из каталога: если в photos/ лежит blueprint_<слаг-модели>.png
++    // (или .jpg/.jpeg/.webp) — показываем его; иначе шаблон-заглушку «синьки».
++    await renderProductBlueprint(data);
++
+     container.classList.remove("d-none");
+     alertBox.classList.add("d-none");
+ 
+@@ -2011,14 +2286,13 @@ async function initProductPage() {
+       productCompareMeta.textContent = `Сейчас показана характеристика модели ${data.model || data.id}.`;
+     }
+ 
+-    $("#exportProductPdfBtn")?.addEventListener("click", async () => {
+-      try {
+-        const slug = currentProduct?._meta?.model_slug || currentProduct?.meta?.model_slug || currentProduct.id;
+-        await requestPdfExport([String(currentProduct.id)], `ventsearch-${slug}.pdf`, productChart);
+-      } catch (err) {
+-        console.error(err);
+-        window.alert("Не удалось экспортировать PDF. Проверьте доступность API.");
+-      }
++    $("#exportProductPdfBtn")?.addEventListener("click", () => {
++      const slug = currentProduct?._meta?.model_slug || currentProduct?.meta?.model_slug || currentProduct.id;
++      openPdfMaker({
++        getIds: () => [String(currentProduct.id)],
++        getChart: () => productChart,
++        filename: `ventsearch-${slug}.pdf`,
++      });
+     });
+ 
+     compareOnProductBtn?.addEventListener("click", async () => {
+@@ -2086,39 +2360,6 @@ function buildProjectQuoteBody(products, profile, meta) {
+   return lines.join("\n");
+ }
+ 
+-async function fetchProjectPdfBlob(products, options = {}) {
+-  if (!products.length) {
+-    throw new Error("empty");
+-  }
+-  const ids = products.map((p) => String(p.id)).filter(Boolean);
+-  const response = await fetch(apiUrl("/api/export/pdf"), {
+-    method: "POST",
+-    headers: { "Content-Type": "application/json" },
+-    body: JSON.stringify({
+-      ids,
+-      filename: "ventsearch-project.pdf",
+-      header_text: options.headerText || undefined,
+-      watermark: options.watermark || undefined,
+-    }),
+-  });
+-  if (!response.ok) {
+-    throw new Error(`PDF export failed: ${response.status}`);
+-  }
+-  return response.blob();
+-}
+-
+-async function exportProjectPdf(products, options = {}) {
+-  const blob = await fetchProjectPdfBlob(products, options);
+-  const url = URL.createObjectURL(blob);
+-  const a = document.createElement("a");
+-  a.href = url;
+-  a.download = "ventsearch-project.pdf";
+-  document.body.appendChild(a);
+-  a.click();
+-  a.remove();
+-  URL.revokeObjectURL(url);
+-}
+-
+ // Список файлов photos/ (те же версии, что и для фото вентиляторов) — из них
+ // пользователь выбирает водяной знак для PDF-документа клиенту.
+ const WATERMARK_EXT_RE = /\.(png|jpe?g|webp|gif)$/i;
+@@ -2155,25 +2396,10 @@ async function initProjectPage() {
+   const projectTitle = $("#projectTitle");
+   const projectNotes = $("#projectNotes");
+   const exportProjectPdfBtn = $("#exportProjectPdfBtn");
+-  const previewProjectPdfBtn = $("#previewProjectPdfBtn");
+   const requestQuoteBtn = $("#requestQuoteBtn");
+   const clearProjectBtn = $("#clearProjectBtn");
+-  const pdfHeaderText = $("#pdfHeaderText");
+-  const pdfWatermarkSelect = $("#pdfWatermarkSelect");
+-  const pdfPreviewFrame = $("#pdfPreviewFrame");
+-  const pdfPreviewDownloadBtn = $("#pdfPreviewDownloadBtn");
+ 
+   let currentProducts = [];
+-  let lastPreviewBlobUrl = null;
+-
+-  function readPdfOptions() {
+-    return {
+-      headerText: String(pdfHeaderText?.value || "").trim(),
+-      watermark: String(pdfWatermarkSelect?.value || "").trim(),
+-    };
+-  }
+-
+-  void populateWatermarkOptions(pdfWatermarkSelect);
+ 
+   function showError(message) {
+     if (!alertBox) return;
+@@ -2278,7 +2504,6 @@ async function initProjectPage() {
+       projectEmpty.classList.remove("d-none");
+       projectTableWrap.classList.add("d-none");
+       exportProjectPdfBtn.disabled = true;
+-      if (previewProjectPdfBtn) previewProjectPdfBtn.disabled = true;
+       requestQuoteBtn.disabled = true;
+       currentProducts = [];
+       return;
+@@ -2288,7 +2513,6 @@ async function initProjectPage() {
+     projectEmpty.classList.add("d-none");
+     projectTableWrap.classList.add("d-none");
+     exportProjectPdfBtn.disabled = true;
+-    if (previewProjectPdfBtn) previewProjectPdfBtn.disabled = true;
+     requestQuoteBtn.disabled = true;
+ 
+     try {
+@@ -2299,7 +2523,6 @@ async function initProjectPage() {
+       projectLoading.classList.add("d-none");
+       projectTableWrap.classList.remove("d-none");
+       exportProjectPdfBtn.disabled = false;
+-      if (previewProjectPdfBtn) previewProjectPdfBtn.disabled = false;
+       requestQuoteBtn.disabled = false;
+     } catch (err) {
+       console.error(err);
+@@ -2325,49 +2548,18 @@ async function initProjectPage() {
+   projectTitle?.addEventListener("blur", persistProjectMeta);
+   projectNotes?.addEventListener("blur", persistProjectMeta);
+ 
+-  exportProjectPdfBtn?.addEventListener("click", async () => {
+-    hideMessages();
+-    try {
+-      await exportProjectPdf(currentProducts, readPdfOptions());
+-      showSuccess("PDF-файл сформирован и загружен.");
+-    } catch (err) {
+-      console.error(err);
+-      showError("Не удалось экспортировать PDF. Проверьте доступность API.");
+-    }
+-  });
+-
+-  previewProjectPdfBtn?.addEventListener("click", async () => {
++  // Единый PDF-мейкер (тот же, что на сравнении и карточке товара):
++  // заголовок, водяной знак, предпросмотр и скачивание — в одном окне
++  exportProjectPdfBtn?.addEventListener("click", () => {
+     hideMessages();
+     if (!currentProducts.length) {
+       showError("Добавьте хотя бы одну модель в проект.");
+       return;
+     }
+-    previewProjectPdfBtn.disabled = true;
+-    try {
+-      const blob = await fetchProjectPdfBlob(currentProducts, readPdfOptions());
+-      if (lastPreviewBlobUrl) URL.revokeObjectURL(lastPreviewBlobUrl);
+-      lastPreviewBlobUrl = URL.createObjectURL(blob);
+-      if (pdfPreviewFrame) pdfPreviewFrame.src = lastPreviewBlobUrl;
+-      const modalEl = $("#pdfPreviewModal");
+-      if (modalEl && window.bootstrap) {
+-        bootstrap.Modal.getOrCreateInstance(modalEl).show();
+-      }
+-    } catch (err) {
+-      console.error(err);
+-      showError("Не удалось сформировать предпросмотр PDF. Проверьте доступность API.");
+-    } finally {
+-      previewProjectPdfBtn.disabled = false;
+-    }
+-  });
+-
+-  pdfPreviewDownloadBtn?.addEventListener("click", () => {
+-    if (!lastPreviewBlobUrl) return;
+-    const a = document.createElement("a");
+-    a.href = lastPreviewBlobUrl;
+-    a.download = "ventsearch-project.pdf";
+-    document.body.appendChild(a);
+-    a.click();
+-    a.remove();
++    openPdfMaker({
++      getIds: () => currentProducts.map((p) => String(p.id)).filter(Boolean),
++      filename: "ventsearch-project.pdf",
++    });
+   });
+ 
+   requestQuoteBtn?.addEventListener("click", async () => {
+diff --git a/frontend/style.css b/frontend/style.css
+index 9232efd..6f15988 100644
+--- a/frontend/style.css
++++ b/frontend/style.css
+@@ -1115,3 +1115,209 @@ body[data-page="product"] .tabs-card .card-body {
+   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.15);
+   padding: 1rem 1.1rem;
+ }
++
++/* ============================================================
++   Таблица каталога (вместо высоких карточек): один экран —
++   десятки моделей, сортировка кликом по заголовку колонки
++   ============================================================ */
++
++.catalog-table-wrap {
++  background: var(--vs-surface);
++  border: 1px solid var(--vs-border);
++  border-radius: var(--vs-radius-md);
++  box-shadow: var(--vs-shadow);
++  overflow-x: auto;
++}
++
++.catalog-table {
++  min-width: 900px;
++  font-size: 0.92rem;
++}
++
++.catalog-table thead th {
++  position: sticky;
++  top: 0;
++  z-index: 2;
++  background: var(--vs-bg);
++  border-bottom: 2px solid var(--vs-border);
++  color: var(--vs-text-muted);
++  font-weight: 600;
++  font-size: 0.82rem;
++  text-transform: uppercase;
++  letter-spacing: 0.03em;
++  padding: 0.65rem 0.75rem;
++  white-space: nowrap;
++  user-select: none;
++}
++
++.catalog-table th.catalog-sortable {
++  cursor: pointer;
++}
++
++.catalog-table th.catalog-sortable:hover {
++  color: var(--vs-accent);
++}
++
++/* Стрелка направления сортировки: у активной колонки — заметная,
++   у остальных сортируемых — бледная подсказка ↕ */
++.catalog-table th.catalog-sortable::after {
++  content: "↕";
++  margin-left: 0.35em;
++  opacity: 0.35;
++}
++
++.catalog-table th.catalog-sortable[data-sort-dir="asc"] {
++  color: var(--vs-accent);
++}
++
++.catalog-table th.catalog-sortable[data-sort-dir="asc"]::after {
++  content: "▲";
++  opacity: 1;
++}
++
++.catalog-table th.catalog-sortable[data-sort-dir="desc"] {
++  color: var(--vs-accent);
++}
++
++.catalog-table th.catalog-sortable[data-sort-dir="desc"]::after {
++  content: "▼";
++  opacity: 1;
++}
++
++.catalog-table td {
++  padding: 0.55rem 0.75rem;
++  vertical-align: middle;
++}
++
++.catalog-group-row td {
++  background: #eef3fb;
++  border-top: 1px solid var(--vs-border);
++  padding: 0.5rem 0.75rem;
++  font-size: 0.9rem;
++}
++
++.catalog-row {
++  cursor: pointer;
++}
++
++.catalog-cell-model a {
++  color: var(--vs-text);
++  text-decoration: none;
++}
++
++.catalog-cell-model a:hover {
++  color: var(--vs-accent);
++  text-decoration: underline;
++}
++
++.catalog-row-selected td {
++  background: rgba(13, 110, 253, 0.06);
++}
++
++.catalog-row-in-project .catalog-cell-model a::before {
++  content: "✓ ";
++  color: var(--vs-success);
++}
++
++.catalog-table .btn-sm {
++  --bs-btn-padding-y: 0.2rem;
++  --bs-btn-padding-x: 0.55rem;
++  --bs-btn-font-size: 0.78rem;
++  white-space: nowrap;
++}
++
++/* ============================================================
++   Q-P график: контейнер занимает всю ширину блока и растёт
++   по высоте вместе с окном (без «сплющенного прямоугольника»)
++   ============================================================ */
++
++.qp-chart-box {
++  width: 100%;
++  height: clamp(420px, 58vh, 760px);
++}
++
++/* ============================================================
++   Страница товара: чертёж, размеры ячейками, документация
++   ============================================================ */
++
++.blueprint-frame {
++  background: #f4f7fb;
++  border: 1px solid var(--vs-border);
++  border-radius: 14px;
++  padding: 0.75rem;
++  text-align: center;
++}
++
++.blueprint-image {
++  max-width: 100%;
++  max-height: 560px;
++  border-radius: 8px;
++}
++
++/* Присоединительные размеры: сетка ячеек «буква → значение» вместо
++   сплошного ряда цифр */
++.dimensions-grid {
++  display: grid;
++  grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
++  gap: 0.5rem;
++}
++
++.dim-cell {
++  background: var(--vs-bg);
++  border: 1px solid var(--vs-border);
++  border-radius: 10px;
++  padding: 0.5rem 0.65rem;
++  text-align: center;
++}
++
++.dim-cell-label {
++  font-family: var(--bs-font-monospace, monospace);
++  font-size: 0.78rem;
++  color: var(--vs-text-muted);
++  margin-bottom: 0.15rem;
++}
++
++.dim-cell-value {
++  font-weight: 700;
++  font-size: 1.02rem;
++}
++
++/* Документация: контрастные плитки с крупной типографикой вместо
++   трёх блёклых серых прямоугольников */
++.doc-tile {
++  display: flex;
++  align-items: center;
++  gap: 0.9rem;
++  height: 100%;
++  background: var(--vs-surface);
++  border: 1px solid var(--vs-border);
++  border-left: 4px solid var(--vs-accent);
++  border-radius: 12px;
++  padding: 1rem 1.1rem;
++  color: var(--vs-text);
++  transition: box-shadow 0.15s, transform 0.15s;
++}
++
++.doc-tile:hover {
++  box-shadow: var(--vs-shadow-hover);
++  transform: translateY(-2px);
++}
++
++.doc-tile-icon {
++  color: var(--vs-accent);
++  flex-shrink: 0;
++}
++
++.doc-tile-text {
++  font-size: 0.85rem;
++  color: var(--vs-text-muted);
++}
++
++.doc-tile-link {
++  text-decoration: none;
++  cursor: pointer;
++}
++
++.doc-tile-link:hover {
++  color: var(--vs-text);
++}

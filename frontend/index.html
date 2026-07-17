@@ -14,7 +14,7 @@
       integrity="sha384-QWTKZyjpPEjISv5WaRU9OFeRpok6YctnYmDr5pNlyT2bRjXh0JMhjY6hW+ALEwIH"
       crossorigin="anonymous"
     />
-    <link rel="stylesheet" href="style.css?v=20260709-1" />
+    <link rel="stylesheet" href="style.css?v=20260717-1" />
         
 <!-- Yandex.Metrika counter -->
 <script type="text/javascript">
@@ -259,26 +259,22 @@
             </div>
             <div class="d-flex align-items-center gap-3 flex-wrap">
               <div class="d-flex align-items-center gap-2">
-                <span class="form-label mb-0 fw-medium text-secondary d-none d-md-block">Плитки:</span>
-                <div class="btn-group btn-group-sm tile-size-group" role="group" aria-label="Размер плиток" id="tileSizeGroup">
-                  <button type="button" class="btn btn-outline-dark" data-tile-size="lg" title="Крупные плитки">
-                    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="1" y="2" width="6.5" height="12" rx="1"/><rect x="8.5" y="2" width="6.5" height="12" rx="1"/></svg>
-                  </button>
-                  <button type="button" class="btn btn-outline-dark" data-tile-size="md" title="Обычные плитки">
-                    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="1" y="2" width="4" height="12" rx="1"/><rect x="6" y="2" width="4" height="12" rx="1"/><rect x="11" y="2" width="4" height="12" rx="1"/></svg>
-                  </button>
-                  <button type="button" class="btn btn-outline-dark" data-tile-size="sm" title="Мелкие плитки">
-                    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="1" y="2" width="2.8" height="12" rx="0.8"/><rect x="4.6" y="2" width="2.8" height="12" rx="0.8"/><rect x="8.2" y="2" width="2.8" height="12" rx="0.8"/><rect x="11.8" y="2" width="2.8" height="12" rx="0.8"/></svg>
-                  </button>
-                </div>
-              </div>
-              <div class="d-flex align-items-center gap-2">
                 <label for="sort" class="form-label mb-0 me-2 fw-medium text-secondary d-none d-md-block">Сортировка:</label>
-                <select id="sort" name="sort" class="form-select form-select-sm">
+                <select id="sort" name="sort" class="form-select form-select-sm" title="Либо кликните по заголовку колонки в таблице">
                   <option value="price_asc">Цена: по возрастанию</option>
                   <option value="price_desc">Цена: по убыванию</option>
+                  <option value="model_asc">Модель: А→Я</option>
+                  <option value="model_desc">Модель: Я→А</option>
+                  <option value="airflow_asc">Расход: меньше сначала</option>
                   <option value="airflow_desc">Расход: больше сначала</option>
+                  <option value="pressure_asc">Давление: меньше сначала</option>
                   <option value="pressure_desc">Давление: больше сначала</option>
+                  <option value="power_asc">Мощность: меньше сначала</option>
+                  <option value="power_desc">Мощность: больше сначала</option>
+                  <option value="noise_asc">Шум: тише сначала</option>
+                  <option value="noise_desc">Шум: громче сначала</option>
+                  <option value="diameter_asc">Диаметр: меньше сначала</option>
+                  <option value="diameter_desc">Диаметр: больше сначала</option>
                 </select>
               </div>
             </div>
@@ -286,7 +282,7 @@
 
           <div id="loading" class="py-4 text-center text-secondary">Загрузка каталога...</div>
           <div data-demo-guard style="min-height: 200px;">
-            <div id="productsGrid" class="row g-3"></div>
+            <div id="productsGrid"></div>
           </div>
 
           <nav
@@ -390,7 +386,7 @@
     <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
     <script src="config.js?v=20260424-1"></script>
     <script src="auth.js?v=20260524-9"></script>
-    <script src="script.js?v=20260709-1"></script>
+    <script src="script.js?v=20260717-1"></script>
     <script src="site-auth.js?v=20260524-9"></script>
     <script src="site-layout.js?v=20260709-1"></script>
   </body>

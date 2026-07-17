@@ -9,10 +9,18 @@
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List
 
 from domain.interfaces.product_repository import AbstractProductRepository
+
+# Хвост «-<число>» (номер вентилятора / количество двигателей) сразу после
+# угла лопастей: в новом формате имён «ВО 13-284-4/15°-4-56A4» типоразмер —
+# только маркировка двигателя (56A4), а число между углом и двигателем не
+# должно дробить модельный ряд на подгруппы. Срезаем его только когда перед
+# ним стоит «°» — старый формат («...15°-456A4», размер 456A4) не задет.
+_TRAILING_COUNT_AFTER_DEGREE_RE = re.compile(r"°-\d+(?:[.,]\d+)?$")
 
 
 def family_key(model: str | None, size: str | None) -> str:
@@ -20,7 +28,8 @@ def family_key(model: str | None, size: str | None) -> str:
     model = (model or "").strip()
     size = (size or "").strip()
     if model and size and model.lower().endswith(f"-{size.lower()}"):
-        return model[: -(len(size) + 1)].strip()
+        head = model[: -(len(size) + 1)].strip()
+        return _TRAILING_COUNT_AFTER_DEGREE_RE.sub("°", head).strip()
     return model
 
 

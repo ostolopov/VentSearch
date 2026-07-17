@@ -180,28 +180,32 @@ function saveWorkingPoint(point) {
   }
 }
 
-const TILE_SIZE_KEY = "ventsearch.tileSize";
-const TILE_SIZE_COLS = {
-  lg: "col-12 col-md-6 col-xl-6",
-  md: "col-6 col-md-6 col-xl-4",
-  sm: "col-6 col-md-4 col-xl-3",
+// Значения ячеек таблицы каталога для клиентской сортировки (подбор по точке
+// не перезапрашивает сервер, поэтому сортируем прямо в браузере).
+const CATALOG_SORT_GETTERS = {
+  model: (p) => String(p.model || ""),
+  airflow: (p) => getRangePeak(p.airflow),
+  pressure: (p) => getRangePeak(p.pressure),
+  power: (p) => toNumber(p.power),
+  noise: (p) => toNumber(p.noise_level),
+  price: (p) => toNumber(p.price),
+  diameter: (p) => toNumber(p.diameter),
 };
 
-function loadTileSize() {
-  try {
-    const v = localStorage.getItem(TILE_SIZE_KEY);
-    return v && TILE_SIZE_COLS[v] ? v : "md";
-  } catch {
-    return "md";
-  }
-}
-
-function saveTileSize(size) {
-  try {
-    localStorage.setItem(TILE_SIZE_KEY, size);
-  } catch {
-    // ignore
-  }
+function sortItemsClient(items, sortKey) {
+  const m = /^([a-z]+)_(asc|desc)$/.exec(String(sortKey || ""));
+  const getter = m ? CATALOG_SORT_GETTERS[m[1]] : null;
+  if (!getter) return [...items];
+  const dir = m[2] === "desc" ? -1 : 1;
+  return [...items].sort((a, b) => {
+    const va = getter(a);
+    const vb = getter(b);
+    if (va == null && vb == null) return 0;
+    if (va == null) return 1;
+    if (vb == null) return -1;
+    if (typeof va === "string") return dir * va.localeCompare(String(vb), "ru");
+    return dir * (va - vb);
+  });
 }
 
 // Фильтры каталога переживают переход на карточку товара и возврат назад
@@ -284,6 +288,9 @@ async function fetchProductsByIds(ids) {
 }
 
 function toNumber(value) {
+  // Number(null) и Number("") дают 0 — из-за этого отсутствующая цена
+  // («по запросу») считалась нулём и попадала в «Итого по проекту» как 0 ₽
+  if (value === null || value === undefined || value === "") return null;
   const n = Number(value);
   return Number.isFinite(n) ? n : null;
 }
@@ -412,6 +419,46 @@ async function fetchJson(url) {
   return res.json();
 }
 
+// Чертёж модели из бумажного каталога. Скрин кладётся в photos/ с именем
+// blueprint_<слаг-модели>.png (точное ожидаемое имя показываем в подсказке
+// под блоком) — появится на карточке сам, без правок кода. Пока файла нет,
+// показываем шаблон-заглушку «синьки» (frontend/img/blueprint-placeholder.svg).
+const BLUEPRINT_EXTENSIONS = ["png", "jpg", "jpeg", "webp"];
+
+async function renderProductBlueprint(product) {
+  const card = document.getElementById("blueprintCard");
+  const img = document.getElementById("blueprintImage");
+  const hint = document.getElementById("blueprintHint");
+  if (!card || !img) return;
+
+  const slug = String(
+    product?._meta?.model_slug || product?.meta?.model_slug || slugify(product?.model) || product?.id || "",
+  ).trim().toLowerCase();
+  const expectedName = `blueprint_${slug}.png`;
+
+  const versions = await ensurePhotosVersionLoaded();
+  let found = null;
+  for (const ext of BLUEPRINT_EXTENSIONS) {
+    const name = `blueprint_${slug}.${ext}`;
+    if (versions && Object.prototype.hasOwnProperty.call(versions, name)) {
+      found = name;
+      break;
+    }
+  }
+
+  if (found) {
+    const version = versions[found];
+    img.src = `${apiUrl(`/photos/${encodeURIComponent(found)}`)}${version ? `?v=${version}` : ""}`;
+    img.alt = `Чертёж ${product?.model || ""}`.trim();
+    if (hint) hint.textContent = `Файл: photos/${found}`;
+  } else {
+    img.src = "img/blueprint-placeholder.svg";
+    img.alt = "Чертёж появится позже";
+    if (hint) hint.textContent = `Чтобы заменить заглушку реальным чертежом, положите скан в photos/${expectedName}`;
+  }
+  card.classList.remove("d-none");
+}
+
 function getRangePeak(range) {
   if (!range || typeof range !== "object") return null;
   const max = toNumber(range.max);
@@ -503,12 +550,16 @@ function isServiceSeriesName(name) {
 }
 
 // familyKey: модель без типоразмера в хвосте — «ВО 13-284-4/15°-456A4» → «ВО 13-284-4/15°».
+// Новый формат имён «ВО 13-284-4/15°-4-56A4» (типоразмер 56A4) даёт после
+// среза суффикса «ВО 13-284-4/15°-4» — число после угла (номер вентилятора /
+// количество двигателей) тоже срезаем, чтобы ряд не дробился на подгруппы.
 // Один и тот же расчёт, что и в backend/application/use_cases/list_product_families.py.
 function familyKey(product) {
   const model = String(product?.model || "").trim();
   const size = String(product?.size || "").trim();
   if (model && size && model.toLowerCase().endsWith(`-${size.toLowerCase()}`)) {
-    return model.slice(0, model.length - size.length - 1).trim();
+    const head = model.slice(0, model.length - size.length - 1).trim();
+    return head.replace(/°-\d+(?:[.,]\d+)?$/, "°").trim();
   }
   return model;
 }
@@ -642,6 +693,10 @@ function buildQpDatasetsShared(products, targetRpm = null, targetPoint = null, o
       z: isPrimary ? 5 : 1,
       __hideLegend: familyMode && !isPrimary,
       __familyProductId: familyMode && !isPrimary ? String(p.id) : null,
+      // Метки для расчёта фокуса осей: значимые кривые (выделенная модель или
+      // все сравниваемые) задают стартовое окно зума, серые контекстные — нет
+      __isProductCurve: true,
+      __isPrimary: isPrimary,
       // Подпись прямо у конца кривой — иначе непонятно, какой типоразмер
       // за какой серой линией, без наведения курсора на тонкую линию
       endLabel: familyMode && !isPrimary ? {
@@ -778,19 +833,40 @@ function renderQpChartShared(container, chartRef, products, targetRpm = null, ta
 
   const series = buildQpDatasetsShared(products, targetRpm, targetPoint, opts);
 
-  // Верхнюю границу оси P считаем по самим кривым вентиляторов (без хвоста
-  // «Кривой сети», который на большом Q улетает высоко и сжимает всё
-  // остальное в нижнюю четверть графика) — так провалы/горбы видно отчётливо
-  let maxCurveP = 0;
+  // Пределы осей считаем по самим кривым вентиляторов (без хвоста «Кривой
+  // сети», который на большом Q улетает высоко и сжимает всё остальное).
+  // Отдельно считаем «фокус» — пределы по значимым кривым: выделенной модели
+  // в модельном ряду или всем сравниваемым. Ось Q заканчивается на максимуме
+  // выбранных кривых +15% (а не на всём ряду), чтобы маленький вентилятор не
+  // терялся в пустом поле; гигантские соседи ряда доступны ползунком зума.
+  let dataMaxQ = 0;
+  let dataMaxP = 0;
+  let focusMaxQ = 0;
+  let focusMaxP = 0;
   for (const s of series) {
-    if (isServiceSeriesName(s.name) || s.name === 'Кривая сети' || !Array.isArray(s.data)) continue;
+    if (!s.__isProductCurve || !Array.isArray(s.data)) continue;
     for (const d of s.data) {
-      const v = Array.isArray(d) ? d[1] : null;
-      if (v != null && v > maxCurveP) maxCurveP = v;
+      if (!Array.isArray(d)) continue;
+      const q = d[0];
+      const pv = d[1];
+      if (q != null && q > dataMaxQ) dataMaxQ = q;
+      if (pv != null && pv > dataMaxP) dataMaxP = pv;
+      if (s.__isPrimary) {
+        if (q != null && q > focusMaxQ) focusMaxQ = q;
+        if (pv != null && pv > focusMaxP) focusMaxP = pv;
+      }
     }
   }
-  if (targetPoint?.p > maxCurveP) maxCurveP = targetPoint.p;
-  const yMax = maxCurveP > 0 ? maxCurveP * 1.18 : undefined;
+  if (!focusMaxQ) focusMaxQ = dataMaxQ;
+  if (!focusMaxP) focusMaxP = dataMaxP;
+  if (targetPoint?.q > focusMaxQ) focusMaxQ = targetPoint.q;
+  if (targetPoint?.p > focusMaxP) focusMaxP = targetPoint.p;
+  if (targetPoint?.q > dataMaxQ) dataMaxQ = targetPoint.q;
+  if (targetPoint?.p > dataMaxP) dataMaxP = targetPoint.p;
+  const xMax = dataMaxQ > 0 ? Math.ceil(dataMaxQ * 1.15) : undefined;
+  const yMax = dataMaxP > 0 ? Math.ceil(dataMaxP * 1.18) : undefined;
+  const xFocusEnd = focusMaxQ > 0 ? Math.ceil(focusMaxQ * 1.15) : undefined;
+  const yFocusEnd = focusMaxP > 0 ? Math.ceil(focusMaxP * 1.18) : undefined;
 
   const option = {
     tooltip: {
@@ -818,11 +894,13 @@ function renderQpChartShared(container, chartRef, products, targetRpm = null, ta
     },
     // Зум по X и Y независим: колесо мыши — по Q (основная ось), а по Y —
     // свой ползунок справа (перетаскивание не задевает масштаб по X)
+    // Стартовое окно зума — «фокус» по значимым кривым (см. расчёт выше):
+    // выбранная модель занимает весь график, а не зажата в углу полной шкалы
     dataZoom: [
-      { type: 'inside', xAxisIndex: 0, filterMode: 'none', zoomOnMouseWheel: true, moveOnMouseMove: true },
-      { type: 'inside', yAxisIndex: 0, filterMode: 'none', zoomOnMouseWheel: false, moveOnMouseMove: false },
-      { type: 'slider', xAxisIndex: 0, filterMode: 'none', height: 14, bottom: 26, brushSelect: false },
-      { type: 'slider', yAxisIndex: 0, filterMode: 'none', width: 14, right: 8, brushSelect: false, showDataShadow: false }
+      { type: 'inside', xAxisIndex: 0, filterMode: 'none', zoomOnMouseWheel: true, moveOnMouseMove: true, startValue: 0, endValue: xFocusEnd },
+      { type: 'inside', yAxisIndex: 0, filterMode: 'none', zoomOnMouseWheel: false, moveOnMouseMove: false, startValue: 0, endValue: yFocusEnd },
+      { type: 'slider', xAxisIndex: 0, filterMode: 'none', height: 14, bottom: 26, brushSelect: false, startValue: 0, endValue: xFocusEnd },
+      { type: 'slider', yAxisIndex: 0, filterMode: 'none', width: 14, right: 8, brushSelect: false, showDataShadow: false, startValue: 0, endValue: yFocusEnd }
     ],
     toolbox: {
       feature: {
@@ -856,6 +934,8 @@ function renderQpChartShared(container, chartRef, products, targetRpm = null, ta
       nameLocation: 'middle',
       nameGap: 30,
       type: 'value',
+      min: 0,
+      max: xMax,
       splitLine: { show: true, lineStyle: { type: 'dashed', color: '#eee' } },
       minorSplitLine: { show: true, lineStyle: { color: '#f5f5f5' } },
       axisLabel: { fontFamily: qpChartFontFamily, formatter: (val) => formatNumber(val) },
@@ -920,19 +1000,29 @@ function renderQpChartShared(container, chartRef, products, targetRpm = null, ta
   return chartRef;
 }
 
-// Запросить у бэкенда PDF по списку моделей и скачать файл.
-// Используется и в сравнении (2+ моделей), и на карточке одиночной модели.
-async function requestPdfExport(ids, filename, chart) {
-  const chartImageDataUrl = chart ? captureChartPngForPdf(chart) : null;
+// Запросить у бэкенда PDF по списку моделей: с графиком (если передан),
+// своим заголовком шапки и водяным знаком. Единая точка для сравнения,
+// карточки товара и страницы проекта (см. openPdfMaker ниже).
+async function fetchClientPdfBlob(ids, options = {}) {
+  const chartImageDataUrl = options.chart ? captureChartPngForPdf(options.chart) : null;
   const response = await fetch(apiUrl("/api/export/pdf"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ ids, filename, chart_image_data_url: chartImageDataUrl }),
+    body: JSON.stringify({
+      ids,
+      filename: options.filename || "ventsearch.pdf",
+      chart_image_data_url: chartImageDataUrl,
+      header_text: options.headerText || undefined,
+      watermark: options.watermark || undefined,
+    }),
   });
   if (!response.ok) {
     throw new Error(`PDF export failed: ${response.status}`);
   }
-  const blob = await response.blob();
+  return response.blob();
+}
+
+function downloadBlob(blob, filename) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
@@ -969,6 +1059,156 @@ function captureChartPngForPdf(sourceChart) {
   }
 }
 
+// ============================================================
+// «Документ для клиента» — общее модальное окно PDF-мейкера.
+// Открывается с любой страницы (сравнение, карточка товара, проект):
+// свой заголовок шапки, водяной знак из photos/, предпросмотр и скачивание.
+// ============================================================
+
+let _pdfMakerContext = null;
+let _pdfMakerBlobUrl = null;
+
+function ensurePdfMakerModal() {
+  let modalEl = document.getElementById("pdfMakerModal");
+  if (modalEl) return modalEl;
+
+  modalEl = document.createElement("div");
+  modalEl.className = "modal fade";
+  modalEl.id = "pdfMakerModal";
+  modalEl.tabIndex = -1;
+  modalEl.setAttribute("aria-hidden", "true");
+  modalEl.innerHTML = `
+    <div class="modal-dialog modal-dialog-centered modal-xl">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h2 class="modal-title h6">Документ для клиента (PDF)</h2>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Закрыть"></button>
+        </div>
+        <div class="modal-body">
+          <div id="pdfMakerAlert" class="alert alert-danger d-none" role="alert"></div>
+          <div class="row g-3 align-items-end">
+            <div class="col-md-6">
+              <label for="pdfMakerHeaderText" class="form-label text-secondary small mb-1">
+                Заголовок документа (пусто — текст по умолчанию)
+              </label>
+              <input id="pdfMakerHeaderText" class="form-control" maxlength="120"
+                placeholder="Например: Коммерческое предложение" />
+            </div>
+            <div class="col-md-6">
+              <label for="pdfMakerWatermark" class="form-label text-secondary small mb-1">
+                Водяной знак компании (файл из папки photos/)
+              </label>
+              <select id="pdfMakerWatermark" class="form-select">
+                <option value="">Без водяного знака</option>
+              </select>
+            </div>
+          </div>
+          <div class="d-flex gap-2 mt-3">
+            <button id="pdfMakerPreviewBtn" class="btn btn-outline-primary btn-sm" type="button">Предпросмотр</button>
+            <button id="pdfMakerDownloadBtn" class="btn btn-dark btn-sm" type="button">Скачать PDF</button>
+            <span id="pdfMakerStatus" class="text-secondary small align-self-center"></span>
+          </div>
+          <div id="pdfMakerPreviewWrap" class="mt-3 d-none">
+            <iframe id="pdfMakerFrame" style="width: 100%; height: 60vh; border: 1px solid var(--vs-border, #e8e8e8); border-radius: 8px;"
+              title="Предпросмотр PDF"></iframe>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modalEl);
+
+  const alertBox = modalEl.querySelector("#pdfMakerAlert");
+  const statusEl = modalEl.querySelector("#pdfMakerStatus");
+  const previewBtn = modalEl.querySelector("#pdfMakerPreviewBtn");
+  const downloadBtn = modalEl.querySelector("#pdfMakerDownloadBtn");
+  const previewWrap = modalEl.querySelector("#pdfMakerPreviewWrap");
+  const frame = modalEl.querySelector("#pdfMakerFrame");
+
+  function showModalError(message) {
+    alertBox.textContent = message;
+    alertBox.classList.remove("d-none");
+  }
+
+  function readOptions() {
+    const ctx = _pdfMakerContext || {};
+    return {
+      filename: ctx.filename || "ventsearch.pdf",
+      chart: typeof ctx.getChart === "function" ? ctx.getChart() : null,
+      headerText: String(modalEl.querySelector("#pdfMakerHeaderText")?.value || "").trim(),
+      watermark: String(modalEl.querySelector("#pdfMakerWatermark")?.value || "").trim(),
+    };
+  }
+
+  async function buildBlob() {
+    alertBox.classList.add("d-none");
+    const ctx = _pdfMakerContext || {};
+    const ids = (typeof ctx.getIds === "function" ? ctx.getIds() : []).map(String).filter(Boolean);
+    if (!ids.length) {
+      showModalError("Нет выбранных моделей для документа.");
+      return null;
+    }
+    statusEl.textContent = "Формируем PDF…";
+    try {
+      return await fetchClientPdfBlob(ids, readOptions());
+    } catch (err) {
+      console.error(err);
+      showModalError("Не удалось сформировать PDF. Проверьте доступность API.");
+      return null;
+    } finally {
+      statusEl.textContent = "";
+    }
+  }
+
+  previewBtn.addEventListener("click", async () => {
+    previewBtn.disabled = true;
+    try {
+      const blob = await buildBlob();
+      if (!blob) return;
+      if (_pdfMakerBlobUrl) URL.revokeObjectURL(_pdfMakerBlobUrl);
+      _pdfMakerBlobUrl = URL.createObjectURL(blob);
+      frame.src = _pdfMakerBlobUrl;
+      previewWrap.classList.remove("d-none");
+    } finally {
+      previewBtn.disabled = false;
+    }
+  });
+
+  downloadBtn.addEventListener("click", async () => {
+    downloadBtn.disabled = true;
+    try {
+      const blob = await buildBlob();
+      if (blob) downloadBlob(blob, readOptions().filename);
+    } finally {
+      downloadBtn.disabled = false;
+    }
+  });
+
+  modalEl.addEventListener("hidden.bs.modal", () => {
+    // Освобождаем blob-URL предпросмотра; настройки (заголовок, водяной
+    // знак) намеренно сохраняются до перезагрузки страницы
+    if (_pdfMakerBlobUrl) {
+      URL.revokeObjectURL(_pdfMakerBlobUrl);
+      _pdfMakerBlobUrl = null;
+    }
+    frame.src = "about:blank";
+    previewWrap.classList.add("d-none");
+  });
+
+  void populateWatermarkOptions(modalEl.querySelector("#pdfMakerWatermark"));
+  return modalEl;
+}
+
+// context: { getIds: () => string[], getChart?: () => EChartsInstance|null, filename?: string }
+function openPdfMaker(context) {
+  const modalEl = ensurePdfMakerModal();
+  _pdfMakerContext = context || {};
+  modalEl.querySelector("#pdfMakerAlert")?.classList.add("d-none");
+  if (typeof bootstrap !== "undefined" && bootstrap.Modal) {
+    bootstrap.Modal.getOrCreateInstance(modalEl).show();
+  }
+}
+
 function describeQuery(filters) {
   const parts = [];
   if (filters.q) parts.push(`поиск: «${filters.q}»`);
@@ -991,16 +1231,6 @@ function parseFilters(form) {
     if (v) filters[key] = v;
   }
   return filters;
-}
-
-function applyClientSort(items, sort) {
-  const copy = [...items];
-  if (sort === "airflow_desc") {
-    copy.sort((a, b) => (getRangePeak(b.airflow) || 0) - (getRangePeak(a.airflow) || 0));
-  } else if (sort === "pressure_desc") {
-    copy.sort((a, b) => (getRangePeak(b.pressure) || 0) - (getRangePeak(a.pressure) || 0));
-  }
-  return copy;
 }
 
 function scoreAnalog(product, targets) {
@@ -1057,7 +1287,6 @@ async function initCatalogPage() {
   const emptySection = $("#emptyStateSection");
   const backToFiltersBtn = $("#backToFiltersBtn");
   const analogsList = $("#analogsList");
-  const tileSizeGroup = $("#tileSizeGroup");
 
   const state = {
     currentPage: 1,
@@ -1070,28 +1299,11 @@ async function initCatalogPage() {
     selectedIds: new Set(loadCompareIds()),
     projectIds: new Set(loadProjectIds()),
     analogs: [],
-    tileSize: loadTileSize(),
+    // 'catalog' — обычный список (сортировка на сервере, есть пагинация);
+    // 'point' — подбор по рабочей точке (все результаты уже в браузере,
+    // клик по заголовку колонки сортирует их без запроса к серверу)
+    mode: "catalog",
   };
-
-  function syncTileSizeUi() {
-    if (!tileSizeGroup) return;
-    for (const btn of tileSizeGroup.querySelectorAll("[data-tile-size]")) {
-      const active = btn.dataset.tileSize === state.tileSize;
-      btn.classList.toggle("btn-dark", active);
-      btn.classList.toggle("btn-outline-dark", !active);
-      btn.setAttribute("aria-pressed", active ? "true" : "false");
-    }
-  }
-  syncTileSizeUi();
-
-  tileSizeGroup?.addEventListener("click", (event) => {
-    const btn = event.target.closest("[data-tile-size]");
-    if (!btn || btn.dataset.tileSize === state.tileSize) return;
-    state.tileSize = btn.dataset.tileSize;
-    saveTileSize(state.tileSize);
-    syncTileSizeUi();
-    renderProducts(state.currentItems, { total: state.lastTotal, page: state.currentPage, limit: state.lastLimit });
-  });
 
   function showError(message) {
     showErrorSafe(message);
@@ -1131,8 +1343,8 @@ async function initCatalogPage() {
       button.classList.toggle("btn-outline-dark", !selected);
       button.textContent = selected ? "В сравнении" : "Сравнить";
       button.title = selected ? "Уже добавлен в сравнение" : "Добавить в сравнение";
-      const card = button.closest(".product-card");
-      if (card) card.classList.toggle("selected", selected);
+      const row = button.closest("tr");
+      if (row) row.classList.toggle("catalog-row-selected", selected);
     }
     const projectButtons = grid.querySelectorAll(".btn-project-toggle");
     for (const button of projectButtons) {
@@ -1140,10 +1352,10 @@ async function initCatalogPage() {
       const inProject = state.projectIds.has(id);
       button.classList.toggle("btn-dark", inProject);
       button.classList.toggle("btn-outline-dark", !inProject);
-      button.textContent = inProject ? "В проекте" : "Добавить в проект";
+      button.textContent = inProject ? "В проекте" : "В проект";
       button.title = inProject ? "Убрать из проекта" : "Добавить в проект";
-      const card = button.closest(".product-card");
-      if (card) card.classList.toggle("in-project", inProject);
+      const row = button.closest("tr");
+      if (row) row.classList.toggle("catalog-row-in-project", inProject);
     }
   }
 
@@ -1215,75 +1427,123 @@ async function initCatalogPage() {
       return;
     }
 
-    function buildProductCard(p) {
-      state.cacheById.set(p.id, p);
-      const col = document.createElement("div");
-      col.className = TILE_SIZE_COLS[state.tileSize] || TILE_SIZE_COLS.md;
+    // Таблица каталога: клик по заголовку колонки сортирует по этому
+    // параметру (повторный клик — в обратную сторону), строки сгруппированы
+    // по модельному ряду. Один экран вмещает десятки моделей вместо 1-2
+    // высоких карточек.
+    const currentSort = String(sortSelect?.value || "");
+    const COLUMNS = [
+      { key: "model", label: "Модель", sortable: true },
+      { key: "size", label: "Типоразмер", sortable: false },
+      { key: "diameter", label: "⌀, мм", sortable: true, numeric: true },
+      { key: "airflow", label: "Расход Q, м³/ч", sortable: true, numeric: true },
+      { key: "pressure", label: "Давление P, Па", sortable: true, numeric: true },
+      { key: "power", label: "Мощность, Вт", sortable: true, numeric: true },
+      { key: "noise", label: "Шум, дБ", sortable: true, numeric: true },
+      { key: "price", label: "Цена", sortable: true, numeric: true },
+      { key: "_actions", label: "", sortable: false },
+    ];
 
-      const card = document.createElement("article");
+    const wrap = document.createElement("div");
+    wrap.className = "table-responsive catalog-table-wrap";
+    const table = document.createElement("table");
+    table.className = "table table-hover align-middle catalog-table mb-0";
+
+    const thead = document.createElement("thead");
+    const headRow = document.createElement("tr");
+    for (const col of COLUMNS) {
+      const th = document.createElement("th");
+      th.textContent = col.label;
+      if (col.numeric) th.classList.add("text-end");
+      if (col.sortable) {
+        th.classList.add("catalog-sortable");
+        th.tabIndex = 0;
+        th.setAttribute("role", "button");
+        const active = currentSort === `${col.key}_asc` ? "asc" : currentSort === `${col.key}_desc` ? "desc" : "";
+        if (active) th.dataset.sortDir = active;
+        th.title = "Сортировать по этой колонке";
+        const applySort = () => {
+          const next = active === "asc" ? `${col.key}_desc` : `${col.key}_asc`;
+          if (sortSelect) sortSelect.value = next;
+          saveCatalogFilters(filtersForm, sortSelect);
+          if (state.mode === "point") {
+            renderProducts(sortItemsClient(state.currentItems, next), {
+              total: state.lastTotal, page: 1, limit: state.lastLimit,
+            });
+          } else {
+            loadPage(1);
+          }
+        };
+        th.addEventListener("click", applySort);
+        th.addEventListener("keydown", (event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            applySort();
+          }
+        });
+      }
+      headRow.appendChild(th);
+    }
+    thead.appendChild(headRow);
+    table.appendChild(thead);
+
+    const tbody = document.createElement("tbody");
+
+    function buildProductRow(p) {
+      state.cacheById.set(p.id, p);
       const selected = state.selectedIds.has(p.id);
       const inProject = state.projectIds.has(p.id);
-      const sizeClass = state.tileSize === "sm" ? " tile-sm" : state.tileSize === "lg" ? " tile-lg" : "";
-      card.className = `card h-100 shadow-sm product-card${sizeClass}${selected ? " selected" : ""}`;
+      const tr = document.createElement("tr");
+      tr.className = `catalog-row${selected ? " catalog-row-selected" : ""}${inProject ? " catalog-row-in-project" : ""}`;
 
-      const imgWrap = document.createElement("div");
-      imgWrap.className = "ratio ratio-4x3 bg-light d-flex align-items-center justify-content-center";
-      renderFanImage(imgWrap, p, p.model || "Вентилятор");
+      const pointBadge = p._point
+        ? `<div class="mt-1"><span class="badge ${p._point.reserve_percent < 0 ? "text-bg-warning" : (p._point.reserve_percent <= 15 ? "text-bg-success" : "text-bg-secondary")}">В точке: ${escapeHtml(formatNumber(p._point.p_available))} Па · ${p._point.reserve_percent < 0 ? "дефицит " + escapeHtml(Math.abs(p._point.reserve_percent)) : "запас " + escapeHtml(p._point.reserve_percent)}%</span></div>`
+        : "";
 
-      const body = document.createElement("div");
-      body.className = "card-body d-flex flex-column";
-      body.innerHTML = `
-        <h2 class="h6 card-title mb-1">${escapeHtml(p.model || "Без названия")}</h2>
-        <div class="text-secondary small mb-2">${escapeHtml([p.type, p.size].filter(Boolean).join(" • ") || "—")}</div>
-        <dl class="row small mb-2">
-          <dt class="col-6 text-secondary">Расход</dt><dd class="col-6 mb-1">${escapeHtml(p.airflow?.raw || "—")}</dd>
-          <dt class="col-6 text-secondary">Давление</dt><dd class="col-6 mb-1">${escapeHtml(p.pressure?.raw || "—")}</dd>
-          <dt class="col-6 text-secondary">Мощн.</dt><dd class="col-6 mb-1">${p.power != null ? `${escapeHtml(p.power)} Вт` : "—"}</dd>
-          <dt class="col-6 text-secondary">Шум</dt><dd class="col-6 mb-1">${p.noise_level != null ? `${escapeHtml(p.noise_level)} дБ` : "—"}</dd>
-        </dl>
-        ${p._point ? `<div class="mb-2"><span class="badge ${p._point.reserve_percent < 0 ? "text-bg-warning" : (p._point.reserve_percent <= 15 ? "text-bg-success" : "text-bg-secondary")}">В точке: ${escapeHtml(formatNumber(p._point.p_available))} Па · ${p._point.reserve_percent < 0 ? "дефицит " + escapeHtml(Math.abs(p._point.reserve_percent)) : "запас " + escapeHtml(p._point.reserve_percent)}%</span></div>` : ""}
-        <div class="mt-auto">
-          <div class="product-price">${escapeHtml(formatPrice(p.price))}</div>
-          <a class="btn btn-sm btn-dark product-open-btn mt-2" href="product.html?id=${encodeURIComponent(p.id)}">Открыть</a>
-        </div>
-        <div class="product-card-actions mt-2 d-flex gap-2">
-          <button type="button" class="btn btn-sm flex-grow-1 btn-project-toggle ${inProject ? "btn-dark" : "btn-outline-dark"}" data-id="${escapeHtml(
-        p.id
-      )}" title="${inProject ? "Убрать из проекта" : "Добавить в проект"}">
-            ${inProject ? "В проекте" : "Добавить в проект"}
-          </button>
-          <button type="button" class="btn btn-sm btn-compare-toggle flex-grow-1 ${selected ? "btn-dark" : "btn-outline-dark"}" data-id="${escapeHtml(p.id)}">
-            ${selected ? "В сравнении" : "Сравнить"}
-          </button>
-        </div>
+      tr.innerHTML = `
+        <td class="catalog-cell-model">
+          <a href="product.html?id=${encodeURIComponent(p.id)}" class="fw-semibold">${escapeHtml(p.model || "Без названия")}</a>
+          ${pointBadge}
+        </td>
+        <td class="text-secondary">${escapeHtml(p.size || "—")}</td>
+        <td class="text-end">${p.diameter != null ? escapeHtml(formatNumber(p.diameter)) : "—"}</td>
+        <td class="text-end text-nowrap">${escapeHtml(p.airflow?.raw || "—")}</td>
+        <td class="text-end text-nowrap">${escapeHtml(p.pressure?.raw || "—")}</td>
+        <td class="text-end">${p.power != null ? escapeHtml(formatNumber(p.power)) : "—"}</td>
+        <td class="text-end">${p.noise_level != null ? escapeHtml(p.noise_level) : "—"}</td>
+        <td class="text-end text-nowrap fw-semibold">${escapeHtml(formatPrice(p.price))}</td>
+        <td class="text-end">
+          <div class="d-flex gap-1 justify-content-end">
+            <button type="button" class="btn btn-sm btn-project-toggle ${inProject ? "btn-dark" : "btn-outline-dark"}" data-id="${escapeHtml(p.id)}" title="${inProject ? "Убрать из проекта" : "Добавить в проект"}">
+              ${inProject ? "В проекте" : "В проект"}
+            </button>
+            <button type="button" class="btn btn-sm btn-compare-toggle ${selected ? "btn-dark" : "btn-outline-dark"}" data-id="${escapeHtml(p.id)}">
+              ${selected ? "В сравнении" : "Сравнить"}
+            </button>
+          </div>
+        </td>
       `;
 
-      const detailsLink = body.querySelector("a");
-      const projectToggleBtn = body.querySelector(".btn-project-toggle");
-      const compareToggleBtn = body.querySelector(".btn-compare-toggle");
-      detailsLink?.addEventListener("click", (event) => event.stopPropagation());
-      projectToggleBtn?.addEventListener("click", (event) => {
+      tr.querySelector(".btn-project-toggle")?.addEventListener("click", (event) => {
         event.preventDefault();
         event.stopPropagation();
         toggleProjectSelection(p.id);
       });
-      compareToggleBtn?.addEventListener("click", (event) => {
+      tr.querySelector(".btn-compare-toggle")?.addEventListener("click", (event) => {
         event.preventDefault();
         event.stopPropagation();
         toggleSelection(p.id);
       });
-
-      card.appendChild(imgWrap);
-      card.appendChild(body);
-      col.appendChild(card);
-      return col;
+      // Вся строка кликабельна (кроме кнопок) — открывает карточку модели
+      tr.addEventListener("click", (event) => {
+        if (event.target.closest("button, a, select, input")) return;
+        window.location.href = `product.html?id=${encodeURIComponent(p.id)}`;
+      });
+      return tr;
     }
 
-    // Группировка по модельному ряду (та же схема, что и на графике Q-P):
-    // одинаковые типоразмеры собираются подряд под общим заголовком, вместо
-    // того чтобы перемежаться карточками других рядов. Сама сортировка и
-    // поиск не меняются — группы просто «стягивают» совпадающие карточки
-    // в один блок, сохраняя порядок первого появления ряда в списке.
+    // Группировка по модельному ряду: строки одного ряда собираются подряд
+    // под общей строкой-заголовком, сохраняя порядок первого появления ряда.
     const groups = new Map();
     for (const p of state.currentItems) {
       const key = familyKey(p);
@@ -1293,20 +1553,24 @@ async function initCatalogPage() {
 
     for (const [key, items] of groups) {
       if (groups.size > 1) {
-        const header = document.createElement("div");
-        header.className = "col-12";
-        header.innerHTML = `
-          <div class="d-flex align-items-baseline gap-2 model-group-header ${groups.size > 1 && grid.childElementCount > 0 ? "mt-2" : ""} mb-1">
-            <h3 class="h6 fw-bold mb-0">${escapeHtml(key || "Прочие")}</h3>
-            <span class="text-secondary small">${items.length} ${pluralRu(items.length, "модель", "модели", "моделей")}</span>
-          </div>
+        const groupRow = document.createElement("tr");
+        groupRow.className = "catalog-group-row";
+        groupRow.innerHTML = `
+          <td colspan="${COLUMNS.length}">
+            <span class="fw-bold">${escapeHtml(key || "Прочие")}</span>
+            <span class="text-secondary small ms-2">${items.length} ${pluralRu(items.length, "модель", "модели", "моделей")}</span>
+          </td>
         `;
-        grid.appendChild(header);
+        tbody.appendChild(groupRow);
       }
       for (const p of items) {
-        grid.appendChild(buildProductCard(p));
+        tbody.appendChild(buildProductRow(p));
       }
     }
+
+    table.appendChild(tbody);
+    wrap.appendChild(table);
+    grid.appendChild(wrap);
 
     syncSelectionUi();
 
@@ -1376,6 +1640,7 @@ async function initCatalogPage() {
   async function loadPage(page) {
     hideError();
     setLoading(true);
+    state.mode = "catalog";
     state.currentPage = page;
     state.filters = parseFilters(filtersForm);
     saveCatalogFilters(filtersForm, sortSelect);
@@ -1383,18 +1648,21 @@ async function initCatalogPage() {
     if (querySummary) querySummary.textContent = state.querySummaryText;
 
     try {
-      const requestedSort = sortSelect?.value || "price_asc";
+      // Все ключи сортировки таблицы понимает сервер (см. SORT_STRATEGIES
+      // в product_repository.py) — сортируется весь каталог, а не страница
+      const requestedSort = /^[a-z]+_(asc|desc)$/.test(String(sortSelect?.value || ""))
+        ? sortSelect.value
+        : "price_asc";
       const params = new URLSearchParams();
       for (const [k, v] of Object.entries(state.filters)) {
         if (k !== "sort") params.set(k, String(v));
       }
-      params.set("sort", requestedSort.startsWith("price_") ? requestedSort : "price_asc");
+      params.set("sort", requestedSort);
       params.set("limit", String(PAGE_SIZE));
       params.set("offset", String((page - 1) * PAGE_SIZE));
 
       const data = await fetchJson(apiUrl(`/api/products?${params.toString()}`));
-      const serverItems = Array.isArray(data?.items) ? data.items : [];
-      const items = applyClientSort(serverItems, requestedSort);
+      const items = Array.isArray(data?.items) ? data.items : [];
       const total = Number.isFinite(Number(data?.total)) ? Number(data.total) : items.length;
       const limit = Number.isFinite(Number(data?.limit)) ? Number(data.limit) : PAGE_SIZE;
 
@@ -1524,7 +1792,10 @@ async function initCatalogPage() {
         );
       } else {
         showCatalogResults();
-        renderProducts(items, { total: items.length, page: 1, limit: Math.max(items.length, 1) });
+        state.mode = "point";
+        renderProducts(sortItemsClient(items, sortSelect?.value), {
+          total: items.length, page: 1, limit: Math.max(items.length, 1),
+        });
       }
     } catch (err) {
       console.error(err);
@@ -1751,21 +2022,6 @@ async function initComparePage() {
     compareChart = renderQpChartShared(qpChartCanvas, compareChart, products, null, loadWorkingPoint());
   }
 
-  async function exportCompareToPdf(products) {
-    if (products.length < 1) {
-      showError("Для экспорта выберите хотя бы одну модель.");
-      return;
-    }
-    hideError();
-    try {
-      const ids = products.map((p) => String(p.id)).filter(Boolean);
-      await requestPdfExport(ids, "ventsearch-compare.pdf", compareChart);
-    } catch (err) {
-      console.error(err);
-      showError("Не удалось экспортировать PDF. Проверьте доступность API.");
-    }
-  }
-
   // Модельные ряды грузим один раз и переиспользуем и в форме добавления,
   // и в свопе типоразмера прямо в шапке таблицы сравнения
   async function loadFamilies() {
@@ -1858,8 +2114,19 @@ async function initComparePage() {
       window.location.reload();
     });
 
+    // Кастомный PDF-мейкер («Документ для клиента») доступен прямо со
+    // страницы сравнения — не нужно идти в «Мой проект»
     exportPdfBtn?.addEventListener("click", () => {
-      exportCompareToPdf(products);
+      if (!products.length) {
+        showError("Для экспорта выберите хотя бы одну модель.");
+        return;
+      }
+      hideError();
+      openPdfMaker({
+        getIds: () => products.map((p) => String(p.id)).filter(Boolean),
+        getChart: () => compareChart,
+        filename: "ventsearch-compare.pdf",
+      });
     });
   } catch (err) {
     console.error(err);
@@ -1921,14 +2188,14 @@ async function initProductPage() {
     $("#productPrice").textContent = formatPrice(data.price);
     renderFanImage($("#productImage"), data, data.model || "Вентилятор", false);
 
+    // Служебные идентификаторы (ID, номер строки CSV) конечному клиенту не
+    // показываем — это внутренние маркеры базы, они есть в админке
     const specBody = $("#specTableBody");
     specBody.innerHTML = "";
     const specs = [
-      ["ID", data.id],
-      ["Номер в CSV", data.number],
       ["Тип", data.type],
       ["Модель", data.model],
-      ["Типоразмер", data.size],
+      ["Типоразмер (двигатель)", data.size],
       ["Диаметр", data.diameter != null ? `${data.diameter} мм` : "—"],
       ["Расход воздуха", data.airflow?.raw || "—"],
       ["Давление", data.pressure?.raw || "—"],
@@ -1942,21 +2209,29 @@ async function initProductPage() {
       specBody.appendChild(tr);
     }
 
-    // Габаритно-присоединительные размеры (чертёж завода) — широкий блок под
-    // двумя колонками (см. #dimensionsCard в product.html): один размер = одна
-    // колонка, чтобы не растягивать страницу по вертикали.
+    // Габаритно-присоединительные размеры (чертёж завода): ячейка на размер
+    // вместо одной длинной строки цифр — так каждую пару «буква-значение»
+    // видно сразу, без сопоставления по вертикали через всю таблицу.
     const dims = data.dimensions;
     if (dims && typeof dims === "object" && Object.keys(dims).length) {
       const entries = Object.entries(dims);
-      const head = $("#dimensionsHead");
-      const body = $("#dimensionsBody");
-      if (head && body) {
-        head.innerHTML = `<tr>${entries.map(([label]) => `<th class="text-secondary fw-semibold"><code>${escapeHtml(label)}</code></th>`).join("")}</tr>`;
-        body.innerHTML = `<tr>${entries.map(([, value]) => `<td>${escapeHtml(value)}</td>`).join("")}</tr>`;
+      const grid = $("#dimensionsGrid");
+      if (grid) {
+        grid.innerHTML = entries
+          .map(([label, value]) => `
+            <div class="dim-cell">
+              <div class="dim-cell-label">${escapeHtml(label)}</div>
+              <div class="dim-cell-value">${escapeHtml(value)}</div>
+            </div>`)
+          .join("");
         $("#dimensionsCard")?.classList.remove("d-none");
       }
-      $("#gabaritsCaption")?.replaceChildren(document.createTextNode(`${entries.length} размеров — таблица выше на этой странице`));
+      $("#gabaritsCaption")?.replaceChildren(document.createTextNode(`${entries.length} размеров — блок выше на этой странице`));
     }
+
+    // Чертёж из каталога: если в photos/ лежит blueprint_<слаг-модели>.png
+    // (или .jpg/.jpeg/.webp) — показываем его; иначе шаблон-заглушку «синьки».
+    await renderProductBlueprint(data);
 
     container.classList.remove("d-none");
     alertBox.classList.add("d-none");
@@ -2011,14 +2286,13 @@ async function initProductPage() {
       productCompareMeta.textContent = `Сейчас показана характеристика модели ${data.model || data.id}.`;
     }
 
-    $("#exportProductPdfBtn")?.addEventListener("click", async () => {
-      try {
-        const slug = currentProduct?._meta?.model_slug || currentProduct?.meta?.model_slug || currentProduct.id;
-        await requestPdfExport([String(currentProduct.id)], `ventsearch-${slug}.pdf`, productChart);
-      } catch (err) {
-        console.error(err);
-        window.alert("Не удалось экспортировать PDF. Проверьте доступность API.");
-      }
+    $("#exportProductPdfBtn")?.addEventListener("click", () => {
+      const slug = currentProduct?._meta?.model_slug || currentProduct?.meta?.model_slug || currentProduct.id;
+      openPdfMaker({
+        getIds: () => [String(currentProduct.id)],
+        getChart: () => productChart,
+        filename: `ventsearch-${slug}.pdf`,
+      });
     });
 
     compareOnProductBtn?.addEventListener("click", async () => {
@@ -2086,31 +2360,24 @@ function buildProjectQuoteBody(products, profile, meta) {
   return lines.join("\n");
 }
 
-async function exportProjectPdf(products) {
-  if (!products.length) {
-    throw new Error("empty");
+// Список файлов photos/ (те же версии, что и для фото вентиляторов) — из них
+// пользователь выбирает водяной знак для PDF-документа клиенту.
+const WATERMARK_EXT_RE = /\.(png|jpe?g|webp|gif)$/i;
+
+async function populateWatermarkOptions(selectEl) {
+  if (!selectEl) return;
+  try {
+    const versions = await ensurePhotosVersionLoaded();
+    const names = Object.keys(versions || {}).filter((n) => WATERMARK_EXT_RE.test(n)).sort();
+    for (const name of names) {
+      const opt = document.createElement("option");
+      opt.value = name;
+      opt.textContent = name;
+      selectEl.appendChild(opt);
+    }
+  } catch (err) {
+    console.warn("Не удалось загрузить список файлов для водяного знака", err);
   }
-  const ids = products.map((p) => String(p.id)).filter(Boolean);
-  const response = await fetch(apiUrl("/api/export/pdf"), {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      ids,
-      filename: "ventsearch-project.pdf",
-    }),
-  });
-  if (!response.ok) {
-    throw new Error(`PDF export failed: ${response.status}`);
-  }
-  const blob = await response.blob();
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = "ventsearch-project.pdf";
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
 }
 
 async function initProjectPage() {
@@ -2281,15 +2548,18 @@ async function initProjectPage() {
   projectTitle?.addEventListener("blur", persistProjectMeta);
   projectNotes?.addEventListener("blur", persistProjectMeta);
 
-  exportProjectPdfBtn?.addEventListener("click", async () => {
+  // Единый PDF-мейкер (тот же, что на сравнении и карточке товара):
+  // заголовок, водяной знак, предпросмотр и скачивание — в одном окне
+  exportProjectPdfBtn?.addEventListener("click", () => {
     hideMessages();
-    try {
-      await exportProjectPdf(currentProducts);
-      showSuccess("PDF-файл сформирован и загружен.");
-    } catch (err) {
-      console.error(err);
-      showError("Не удалось экспортировать PDF. Проверьте доступность API.");
+    if (!currentProducts.length) {
+      showError("Добавьте хотя бы одну модель в проект.");
+      return;
     }
+    openPdfMaker({
+      getIds: () => currentProducts.map((p) => String(p.id)).filter(Boolean),
+      filename: "ventsearch-project.pdf",
+    });
   });
 
   requestQuoteBtn?.addEventListener("click", async () => {
@@ -2365,6 +2635,18 @@ function initContactWidget() {
   let card = null;
   let loaded = false;
 
+
+  const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+  function contactLine(contact) {
+    const value = String(contact || "").trim();
+    if (!value) return "";
+    return EMAIL_RE.test(value)
+      ? `<a href="mailto:${encodeURIComponent(value).replace(/%40/g, "@")}">${escapeHtml(value)}</a>`
+      : escapeHtml(value);
+  }
+
+
   async function fillCard(el) {
     let html = "";
     try {
@@ -2375,16 +2657,24 @@ function initContactWidget() {
           <div class="mb-2">
             <div class="fw-semibold small">${escapeHtml(c.name || "—")}</div>
             ${c.role ? `<div class="text-secondary" style="font-size:.78rem;">${escapeHtml(c.role)}</div>` : ""}
-            ${c.contact ? `<div class="small">${escapeHtml(c.contact)}</div>` : ""}
+
+            ${c.contact ? `<div class="small">${contactLine(c.contact)}</div>` : ""}
+
           </div>`).join("");
       }
     } catch (err) {
       console.warn("Не удалось загрузить контакты", err);
     }
     if (!html) {
-      html = `<div class="small">По всем вопросам: <a href="mailto:ventsearch.team@gmail.com">ventsearch.team@gmail.com</a></div>`;
+
+      html = `<div class="small">По всем вопросам: <a href="mailto:${VENTSEARCH_TEAM_EMAIL}">${VENTSEARCH_TEAM_EMAIL}</a></div>`;
     }
-    el.innerHTML = `<div class="fw-bold mb-2">Кому писать</div>${html}`;
+    const writeBtn = `
+      <a class="btn btn-sm btn-dark w-100 mt-2" href="mailto:${VENTSEARCH_TEAM_EMAIL}?subject=${encodeURIComponent("Вопрос по VENTSEARCH")}">
+        Написать разработчикам
+      </a>`;
+    el.innerHTML = `<div class="fw-bold mb-2">Кому писать</div>${html}${writeBtn}`;
+
   }
 
   fab.addEventListener("click", () => {

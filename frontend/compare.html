@@ -13,7 +13,7 @@
       rel="stylesheet"
       crossorigin="anonymous"
     />
-    <link rel="stylesheet" href="style.css?v=20260709-1" />
+    <link rel="stylesheet" href="style.css?v=20260717-1" />
 
 <!-- Yandex.Metrika counter -->
 <script type="text/javascript">
@@ -98,7 +98,7 @@
         </div>
         <div class="d-flex gap-2">
           <button id="clearCompareBtn" class="btn btn-outline-light btn-sm" type="button">Очистить</button>
-          <button id="exportPdfBtn" class="btn btn-danger btn-sm fw-semibold px-3" type="button">Скачать PDF</button>
+          <button id="exportPdfBtn" class="btn btn-danger btn-sm fw-semibold px-3" type="button">Документ для клиента (PDF)</button>
         </div>
       </div>
     </header>
@@ -136,8 +136,8 @@
               <h2 class="h5 fw-bold mb-0">Аэродинамика (Q–P)</h2>
             </div>
             <div class="card-body p-4" data-demo-guard>
-              <div class="chart-canvas-wrap bg-light rounded-4 p-3 border h-100" style="min-height: 480px;">
-                <div id="qpChart" style="height: 100%; width: 100%; min-height: 450px;"></div>
+              <div class="chart-canvas-wrap bg-light rounded-4 p-3 border h-100">
+                <div id="qpChart" class="qp-chart-box"></div>
               </div>
             </div>
           </div>
@@ -170,7 +170,7 @@
     <script src="config.js?v=20260424-1"></script>
     <script src="auth.js?v=20260524-10"></script>
     <script src="site-auth.js?v=20260524-10"></script>
-    <script src="script.js?v=20260709-1"></script>
+    <script src="script.js?v=20260717-1"></script>
     <script src="site-layout.js?v=20260709-1"></script>
   </body>
 </html>
