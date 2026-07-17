@@ -1,19 +1,23 @@
 :root {
-  --vs-bg: #F5F5F7;
+  /* Инженерная палитра: мягкий холодный фон вместо чистого белого, глубокий
+     сине-стальной акцент вместо яркого bootstrap-синего, графитовый текст
+     вместо чёрного, едва заметные границы. Синий — только для акцентов
+     (кнопки, активные состояния), а не для заливки целых блоков. */
+  --vs-bg: #F5F7FA;
   --vs-surface: #FFFFFF;
-  --vs-accent: #0D6EFD;
-  --vs-accent-hover: #0A58CA;
-  --vs-text: #21201F;
-  --vs-text-muted: #7A7A7A;
-  --vs-border: #E8E8E8;
-  --vs-success: #28A745;
+  --vs-accent: #2563EB;
+  --vs-accent-hover: #1D4ED8;
+  --vs-text: #1E293B;
+  --vs-text-muted: #64748B;
+  --vs-border: #E2E8F0;
+  --vs-success: #16A34A;
   --vs-navbar-height: 64px;
   --vs-sticky-gap: 16px;
   --vs-radius-lg: 20px;
   --vs-radius-md: 16px;
   --vs-radius-sm: 12px;
-  --vs-shadow: 0 4px 24px rgba(0, 0, 0, 0.04);
-  --vs-shadow-hover: 0 8px 32px rgba(0, 0, 0, 0.08);
+  --vs-shadow: 0 4px 16px rgba(30, 58, 138, 0.08);
+  --vs-shadow-hover: 0 8px 28px rgba(30, 58, 138, 0.13);
 }
 
 * {
@@ -71,7 +75,7 @@ h1, h2, h3, h4, h5, h6 {
 
 .nav-link.active {
   background: var(--vs-accent);
-  color: var(--vs-text) !important;
+  color: #FFFFFF !important;
 }
 
 .btn {
@@ -530,7 +534,7 @@ h1, h2, h3, h4, h5, h6 {
 .compare-table .best {
   color: var(--vs-success);
   font-weight: 700;
-  background: rgba(40, 167, 69, 0.1);
+  background: rgba(22, 163, 74, 0.08);
   padding: 0.2rem 0.5rem;
   border-radius: 6px;
 }
@@ -1320,4 +1324,203 @@ body[data-page="product"] .tabs-card .card-body {
 
 .doc-tile-link:hover {
   color: var(--vs-text);
+}
+
+/* ============================================================
+   Раунд полировки: светлые шапки, зебра каталога, иконки
+   действий, сворачиваемые фильтры, единая PDF-кнопка,
+   таблицы размеров, цветная документация
+   ============================================================ */
+
+/* Светлая шапка страницы вместо сплошного синего баннера: синий остаётся
+   только у кнопок и активных состояний */
+.page-hero {
+  padding: 1.5rem 0 0.25rem;
+  color: var(--vs-text);
+}
+
+.page-hero h1 {
+  color: var(--vs-text);
+  font-weight: 800;
+  letter-spacing: -0.01em;
+}
+
+.page-hero .hero-subtitle {
+  color: var(--vs-text-muted);
+  font-size: 1rem;
+}
+
+/* Единый стиль всех PDF-действий (карточка, сравнение, проект, модалка):
+   контурная синяя кнопка с иконкой документа. Красный зарезервирован
+   только за деструктивными действиями (удалить, очистить). */
+.btn-pdf {
+  --bs-btn-color: var(--vs-accent);
+  --bs-btn-border-color: var(--vs-accent);
+  --bs-btn-hover-bg: var(--vs-accent);
+  --bs-btn-hover-color: #fff;
+  --bs-btn-hover-border-color: var(--vs-accent);
+  --bs-btn-active-bg: var(--vs-accent-hover);
+  --bs-btn-active-color: #fff;
+  --bs-btn-active-border-color: var(--vs-accent-hover);
+  --bs-btn-bg: var(--vs-surface);
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.45em;
+  white-space: nowrap;
+}
+
+/* Зебра и дыхание строк каталога */
+.catalog-table td {
+  padding-top: 0.7rem;
+  padding-bottom: 0.7rem;
+}
+
+.catalog-row-alt td {
+  background: #FAFBFD;
+}
+
+.catalog-row:hover td {
+  background: #F1F5FB;
+}
+
+/* Иконки-действия в строке: квадратные компактные кнопки */
+.catalog-icon-btn {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Контрастные стрелки сортировки */
+.catalog-table th.catalog-sortable::after {
+  font-size: 0.95em;
+}
+
+.catalog-table th.catalog-sortable[data-sort-dir]::after {
+  font-weight: 900;
+}
+
+/* Свёрнутая панель фильтров: таблица занимает всю ширину */
+@media (min-width: 768px) {
+  .catalog-layout.filters-collapsed {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .catalog-layout.filters-collapsed > aside {
+    display: none;
+  }
+}
+
+/* Присоединительные размеры: сгруппированные мини-таблицы
+   «Обозначение → Значение» со спокойными границами */
+.dims-tables {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1.25rem;
+  border-top: 2px solid var(--vs-border);
+  padding-top: 1rem;
+}
+
+.dims-table-block {
+  flex: 1 1 240px;
+  min-width: 220px;
+}
+
+.dims-table-title {
+  font-size: 0.8rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--vs-text-muted);
+  margin-bottom: 0.5rem;
+}
+
+.dims-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.92rem;
+}
+
+.dims-table th {
+  text-align: left;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--vs-text-muted);
+  border-bottom: 1px solid var(--vs-border);
+  padding: 0.3rem 0.6rem;
+}
+
+.dims-table td {
+  border-bottom: 1px solid var(--vs-border);
+  padding: 0.38rem 0.6rem;
+}
+
+.dims-table .dims-code {
+  font-family: var(--bs-font-monospace, "SFMono-Regular", Consolas, monospace);
+  color: var(--vs-text-muted);
+  width: 40%;
+}
+
+.dims-table .dims-val {
+  font-weight: 700;
+}
+
+/* Документация: живые цветные плитки вместо серых заглушек */
+.doc-tile {
+  background: #EFF6FF;
+  border-color: #DBEAFE;
+}
+
+.doc-tile-muted {
+  background: var(--vs-bg);
+  border-left-color: var(--vs-border);
+  opacity: 0.75;
+}
+
+.doc-tile-muted:hover {
+  box-shadow: none;
+  transform: none;
+}
+
+.doc-tile-muted .doc-tile-icon {
+  color: var(--vs-text-muted);
+}
+
+.doc-soon-badge {
+  font-size: 0.62rem;
+  vertical-align: middle;
+}
+
+/* Чертёж: компактнее по высоте, курсор-лупа, открытие на весь экран */
+.blueprint-image {
+  max-height: 320px;
+  cursor: zoom-in;
+}
+
+/* Аккордеон-справка в проекте: явный контур и внутренние отступы */
+#projectHelpAccordion .accordion-item {
+  border: 1px solid var(--vs-border);
+  box-shadow: var(--vs-shadow);
+}
+
+#projectHelpAccordion .accordion-body {
+  padding: 1.1rem 1.35rem;
+}
+
+#projectHelpAccordion .accordion-button {
+  font-weight: 600;
+  color: var(--vs-text);
+}
+
+/* Контакты в проекте: лейблы над полями вместо серых плейсхолдеров */
+.contact-field-label {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--vs-text-muted);
+  margin-bottom: 0.25rem;
+  display: block;
 }

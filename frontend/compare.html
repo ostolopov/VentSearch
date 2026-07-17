@@ -13,7 +13,7 @@
       rel="stylesheet"
       crossorigin="anonymous"
     />
-    <link rel="stylesheet" href="style.css?v=20260717-1" />
+    <link rel="stylesheet" href="style.css?v=20260717-2" />
 
 <!-- Yandex.Metrika counter -->
 <script type="text/javascript">
@@ -88,17 +88,20 @@
       </div>
     </nav>
 
-    <header class="mb-4" style="background: var(--vs-accent); color: #FFFFFF; padding: 2.5rem 0; border-radius: 0 0 24px 24px;">
+    <header class="page-hero mb-3">
       <div class="container-fluid px-3 px-lg-4 d-flex flex-wrap justify-content-between align-items-center gap-3">
         <div style="max-width: 800px;">
-          <h1 class="h3 mb-2 fw-bold">Сравнение моделей</h1>
-          <div id="compareMeta" style="font-size: 1.05rem; opacity: 0.9;">
+          <h1 class="h3 mb-1">Сравнение моделей</h1>
+          <div id="compareMeta" class="hero-subtitle">
             Выберите модели в каталоге и возвращайтесь сюда.
           </div>
         </div>
         <div class="d-flex gap-2">
-          <button id="clearCompareBtn" class="btn btn-outline-light btn-sm" type="button">Очистить</button>
-          <button id="exportPdfBtn" class="btn btn-danger btn-sm fw-semibold px-3" type="button">Документ для клиента (PDF)</button>
+          <button id="clearCompareBtn" class="btn btn-outline-danger btn-sm" type="button">Очистить</button>
+          <button id="exportPdfBtn" class="btn btn-pdf btn-sm px-3" type="button">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline></svg>
+            Документ для клиента (PDF)
+          </button>
         </div>
       </div>
     </header>
@@ -170,7 +173,7 @@
     <script src="config.js?v=20260424-1"></script>
     <script src="auth.js?v=20260524-10"></script>
     <script src="site-auth.js?v=20260524-10"></script>
-    <script src="script.js?v=20260717-1"></script>
+    <script src="script.js?v=20260717-2"></script>
     <script src="site-layout.js?v=20260709-1"></script>
   </body>
 </html>

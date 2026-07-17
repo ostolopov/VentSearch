@@ -14,7 +14,7 @@
       integrity="sha384-QWTKZyjpPEjISv5WaRU9OFeRpok6YctnYmDr5pNlyT2bRjXh0JMhjY6hW+ALEwIH"
       crossorigin="anonymous"
     />
-    <link rel="stylesheet" href="style.css?v=20260717-1" />
+    <link rel="stylesheet" href="style.css?v=20260717-2" />
     
     <!-- Yandex.Metrika counter -->
 <script type="text/javascript">
@@ -169,7 +169,10 @@
                       <option value="">Сравнить с другой моделью...</option>
                     </select>
                     <button id="compareOnProductBtn" type="button" class="btn btn-dark btn-sm">Сравнить</button>
-                    <button id="exportProductPdfBtn" type="button" class="btn btn-danger btn-sm text-nowrap">PDF для клиента</button>
+                    <button id="exportProductPdfBtn" type="button" class="btn btn-pdf btn-sm text-nowrap">
+                      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline></svg>
+                      PDF для клиента
+                    </button>
                   </div>
                 </div>
                 <div class="product-chart-wrap flex-grow-1" data-demo-guard>
@@ -186,11 +189,11 @@
              пока файла нет — крупная шаблонная «синька»-заглушка. -->
         <div id="blueprintCard" class="card shadow-sm border-0 mb-4 d-none" style="border-radius: 20px;">
           <div class="card-body p-4">
-            <h2 class="h6 fw-bold mb-3">Чертёж из каталога</h2>
+            <h2 class="h6 fw-bold mb-3">Чертёж из каталога <span class="text-secondary fw-normal small">— нажмите, чтобы открыть на весь экран</span></h2>
             <div class="blueprint-frame" data-demo-guard>
               <img id="blueprintImage" class="blueprint-image" src="" alt="Чертёж" loading="lazy" decoding="async" />
             </div>
-            <div id="blueprintHint" class="small text-secondary mt-2"></div>
+            <div id="blueprintHint" class="small text-secondary mt-2 d-none"></div>
           </div>
         </div>
 
@@ -199,8 +202,8 @@
              видно сразу. -->
         <div id="dimensionsCard" class="card shadow-sm border-0 mb-4 d-none" style="border-radius: 20px;">
           <div class="card-body p-4">
-            <h2 class="h6 fw-bold mb-3">Присоединительные размеры (по чертежу завода), мм</h2>
-            <div id="dimensionsGrid" class="dimensions-grid" data-demo-guard></div>
+            <h2 class="h6 fw-bold mb-3">Присоединительные размеры (по чертежу завода)</h2>
+            <div id="dimensionsGrid" class="dims-tables" data-demo-guard></div>
           </div>
         </div>
 
@@ -209,20 +212,20 @@
             <h2 class="h5 fw-bold mb-3">Документация</h2>
             <div class="row g-3">
               <div class="col-md-4">
-                <div class="doc-tile vs-soon-wrap">
+                <a class="doc-tile doc-tile-link" href="mailto:ventsearch.team@gmail.com?subject=%D0%97%D0%B0%D0%BF%D1%80%D0%BE%D1%81%20%D0%BF%D0%B0%D1%81%D0%BF%D0%BE%D1%80%D1%82%D0%B0%20%D0%B8%D0%B7%D0%B4%D0%B5%D0%BB%D0%B8%D1%8F">
                   <svg class="doc-tile-icon" width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
                   <div>
-                    <h3 class="h6 fw-bold mb-1">Паспорт изделия</h3>
-                    <p class="doc-tile-text mb-0">PDF-файл по запросу у менеджера</p>
+                    <h3 class="h6 fw-bold mb-1">Запросить паспорт изделия</h3>
+                    <p class="doc-tile-text mb-0">Письмо менеджеру — PDF в ответ</p>
                   </div>
-                </div>
+                </a>
               </div>
               <div class="col-md-4">
-                <div class="doc-tile vs-soon-wrap">
+                <div class="doc-tile doc-tile-muted">
                   <svg class="doc-tile-icon" width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
                   <div>
-                    <h3 class="h6 fw-bold mb-1">Схема подключения</h3>
-                    <p class="doc-tile-text mb-0">Параметры двигателя и схемы</p>
+                    <h3 class="h6 fw-bold mb-1">Схема подключения двигателя <span class="badge text-bg-secondary doc-soon-badge">скоро</span></h3>
+                    <p class="doc-tile-text mb-0">Появится в следующих обновлениях</p>
                   </div>
                 </div>
               </div>
@@ -230,7 +233,7 @@
                 <a class="doc-tile doc-tile-link" href="#dimensionsCard">
                   <svg class="doc-tile-icon" width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path><polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline><line x1="12" y1="22.08" x2="12" y2="12"></line></svg>
                   <div>
-                    <h3 class="h6 fw-bold mb-1">Габариты</h3>
+                    <h3 class="h6 fw-bold mb-1">Смотреть габаритные размеры</h3>
                     <p id="gabaritsCaption" class="doc-tile-text mb-0">Таблица монтажных размеров</p>
                   </div>
                 </a>
@@ -251,7 +254,7 @@
     <script src="config.js?v=20260424-1"></script>
     <script src="auth.js?v=20260524-10"></script>
     <script src="site-auth.js?v=20260524-10"></script>
-    <script src="script.js?v=20260717-1"></script>
+    <script src="script.js?v=20260717-2"></script>
     <script src="site-layout.js?v=20260709-1"></script>
   </body>
 </html>

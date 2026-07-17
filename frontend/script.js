@@ -208,8 +208,10 @@ function sortItemsClient(items, sortKey) {
   });
 }
 
-// Фильтры каталога переживают переход на карточку товара и возврат назад
-// (sessionStorage — на время вкладки; новая вкладка начинает с чистых фильтров)
+// Фильтры каталога переживают переход на карточку товара и возврат назад.
+// localStorage, а не sessionStorage: карточки часто открывают в НОВОЙ вкладке
+// (Ctrl+клик), а sessionStorage живёт только внутри одной вкладки — из-за
+// этого фильтры «сбрасывались». Кнопка «Сбросить» очищает сохранённое.
 const CATALOG_FILTERS_KEY = "ventsearch.catalog.filters";
 
 function saveCatalogFilters(form, sortSelect) {
@@ -220,7 +222,7 @@ function saveCatalogFilters(form, sortSelect) {
       if (el.name && String(el.value || "").trim()) data[el.name] = el.value;
     }
     if (sortSelect?.value) data.__sort = sortSelect.value;
-    sessionStorage.setItem(CATALOG_FILTERS_KEY, JSON.stringify(data));
+    localStorage.setItem(CATALOG_FILTERS_KEY, JSON.stringify(data));
   } catch {
     // приватный режим — просто не запоминаем
   }
@@ -229,7 +231,9 @@ function saveCatalogFilters(form, sortSelect) {
 function restoreCatalogFilters(form, sortSelect) {
   if (!form) return;
   try {
-    const raw = sessionStorage.getItem(CATALOG_FILTERS_KEY);
+    // Читаем localStorage, а из sessionStorage подхватываем то, что могло
+    // остаться от предыдущей версии (миграция без потери фильтров)
+    const raw = localStorage.getItem(CATALOG_FILTERS_KEY) || sessionStorage.getItem(CATALOG_FILTERS_KEY);
     if (!raw) return;
     const data = JSON.parse(raw);
     for (const [k, v] of Object.entries(data)) {
@@ -419,10 +423,100 @@ async function fetchJson(url) {
   return res.json();
 }
 
+// Присоединительные размеры: группировка обозначений по смыслу — так глаз
+// сразу находит нужную букву, вместо сопоставления «каши» цифр с чертежом.
+// Num не показываем здесь (он уходит в характеристики как номер вентилятора).
+const DIMENSION_GROUPS = [
+  { title: "Габаритные размеры", keys: ["B", "H", "H1", "L", "L1 max", "L1", "L2", "l", "b"] },
+  { title: "Диаметры", keys: ["D", "D1", "d", "d1"] },
+];
+
+function renderProductDimensions(dims) {
+  const wrap = document.getElementById("dimensionsGrid");
+  if (!wrap) return;
+  const entries = Object.entries(dims || {}).filter(([k]) => k !== "Num");
+  if (!entries.length) return;
+
+  const used = new Set();
+  const groups = [];
+  for (const group of DIMENSION_GROUPS) {
+    const rows = [];
+    for (const key of group.keys) {
+      const found = entries.find(([k]) => k === key);
+      if (found) {
+        rows.push(found);
+        used.add(key);
+      }
+    }
+    if (rows.length) groups.push({ title: group.title, rows });
+  }
+  const rest = entries.filter(([k]) => !used.has(k));
+  if (rest.length) groups.push({ title: "Монтаж и прочее", rows: rest });
+
+  wrap.innerHTML = groups
+    .map((g) => `
+      <div class="dims-table-block">
+        <div class="dims-table-title">${escapeHtml(g.title)}</div>
+        <table class="dims-table">
+          <thead><tr><th>Обозн.</th><th>Значение, мм</th></tr></thead>
+          <tbody>
+            ${g.rows.map(([k, v]) => `<tr><td class="dims-code">${escapeHtml(k)}</td><td class="dims-val">${escapeHtml(v)}</td></tr>`).join("")}
+          </tbody>
+        </table>
+      </div>`)
+    .join("");
+  document.getElementById("dimensionsCard")?.classList.remove("d-none");
+  document.getElementById("gabaritsCaption")?.replaceChildren(
+    document.createTextNode(`${entries.length} размеров — блок выше на этой странице`),
+  );
+}
+
+// Полноэкранный просмотр изображения (чертёж, фото) в модальном окне
+function openImageLightbox(src, alt) {
+  let modalEl = document.getElementById("imageLightboxModal");
+  if (!modalEl) {
+    modalEl = document.createElement("div");
+    modalEl.className = "modal fade";
+    modalEl.id = "imageLightboxModal";
+    modalEl.tabIndex = -1;
+    modalEl.setAttribute("aria-hidden", "true");
+    modalEl.innerHTML = `
+      <div class="modal-dialog modal-dialog-centered modal-xl">
+        <div class="modal-content bg-transparent border-0 shadow-none">
+          <img id="imageLightboxImg" src="" alt="" style="max-width: 100%; max-height: 92vh; object-fit: contain; border-radius: 10px; background: #fff;" />
+        </div>
+      </div>`;
+    modalEl.addEventListener("click", () => {
+      if (typeof bootstrap !== "undefined") bootstrap.Modal.getInstance(modalEl)?.hide();
+    });
+    document.body.appendChild(modalEl);
+  }
+  const img = modalEl.querySelector("#imageLightboxImg");
+  img.src = src;
+  img.alt = alt || "";
+  if (typeof bootstrap !== "undefined" && bootstrap.Modal) {
+    bootstrap.Modal.getOrCreateInstance(modalEl).show();
+  }
+}
+
+// Служебная подсказка «как заменить заглушку чертежа» — только для
+// администраторов: обычному клиенту инструкции про photos/ не нужны.
+// Признак админа — пункт «Управление каталогом» в меню (site-auth.js
+// снимает с него d-none после проверки сессии, поэтому наблюдаем за классом).
+function revealAdminHintWhenAdmin(hintEl) {
+  const adminItem = document.getElementById("navAdminMenuItem");
+  if (!hintEl || !adminItem) return;
+  const sync = () => hintEl.classList.toggle("d-none", adminItem.classList.contains("d-none"));
+  sync();
+  if (typeof MutationObserver !== "undefined") {
+    new MutationObserver(sync).observe(adminItem, { attributes: true, attributeFilter: ["class"] });
+  }
+}
+
 // Чертёж модели из бумажного каталога. Скрин кладётся в photos/ с именем
-// blueprint_<слаг-модели>.png (точное ожидаемое имя показываем в подсказке
-// под блоком) — появится на карточке сам, без правок кода. Пока файла нет,
-// показываем шаблон-заглушку «синьки» (frontend/img/blueprint-placeholder.svg).
+// blueprint_<слаг-модели>.png (точное ожидаемое имя видно администратору в
+// подсказке под блоком) — появится на карточке сам, без правок кода. Пока
+// файла нет, показываем шаблон-заглушку «синьки» (frontend/img/blueprint-placeholder.svg).
 const BLUEPRINT_EXTENSIONS = ["png", "jpg", "jpeg", "webp"];
 
 async function renderProductBlueprint(product) {
@@ -456,6 +550,9 @@ async function renderProductBlueprint(product) {
     img.alt = "Чертёж появится позже";
     if (hint) hint.textContent = `Чтобы заменить заглушку реальным чертежом, положите скан в photos/${expectedName}`;
   }
+  // Клик — полноэкранный просмотр; служебная подсказка видна только админам
+  img.addEventListener("click", () => openImageLightbox(img.src, img.alt));
+  revealAdminHintWhenAdmin(hint);
   card.classList.remove("d-none");
 }
 
@@ -752,8 +849,10 @@ function buildQpDatasetsShared(products, targetRpm = null, targetPoint = null, o
       type: 'line',
       smooth: false,
       symbol: 'none',
-      lineStyle: { type: 'dashed', color: '#7f7f7f', width: 2 },
-      itemStyle: { color: '#7f7f7f' },
+      // Тёплый медный цвет: кривая сети и рабочая точка — «действие»,
+      // они должны отделяться от холодных паспортных кривых вентиляторов
+      lineStyle: { type: 'dashed', color: '#B45309', width: 2 },
+      itemStyle: { color: '#B45309' },
       data: systemPoints
     });
 
@@ -1038,6 +1137,17 @@ function downloadBlob(blob, filename) {
 // и низкого) в PDF выглядит мелкой узкой полосой
 function captureChartPngForPdf(sourceChart) {
   if (!sourceChart || typeof echarts === 'undefined') return null;
+  // Текущие видимые пределы осей: в PDF график должен совпадать с тем, что
+  // пользователь видит на экране (фокус по выбранной модели), а не с полной
+  // шкалой всего модельного ряда до сотен тысяч Q
+  let xExtent = null;
+  let yExtent = null;
+  try {
+    xExtent = sourceChart.getModel().getComponent('xAxis', 0).axis.scale.getExtent();
+    yExtent = sourceChart.getModel().getComponent('yAxis', 0).axis.scale.getExtent();
+  } catch (err) {
+    console.warn('Не удалось прочитать видимые пределы осей для PDF', err);
+  }
   const holder = document.createElement('div');
   holder.style.cssText = 'position:fixed;left:-99999px;top:0;width:1400px;height:560px;';
   document.body.appendChild(holder);
@@ -1048,6 +1158,14 @@ function captureChartPngForPdf(sourceChart) {
     opts.animation = false;
     opts.dataZoom = [];
     opts.toolbox = [];
+    if (Array.isArray(xExtent) && xExtent.length === 2 && Array.isArray(opts.xAxis) && opts.xAxis[0]) {
+      opts.xAxis[0].min = xExtent[0];
+      opts.xAxis[0].max = xExtent[1];
+    }
+    if (Array.isArray(yExtent) && yExtent.length === 2 && Array.isArray(opts.yAxis) && opts.yAxis[0]) {
+      opts.yAxis[0].min = yExtent[0];
+      opts.yAxis[0].max = yExtent[1];
+    }
     chart.setOption(opts);
     return chart.getDataURL({ type: 'png', backgroundColor: '#fff', pixelRatio: 2 });
   } catch (err) {
@@ -1104,8 +1222,8 @@ function ensurePdfMakerModal() {
             </div>
           </div>
           <div class="d-flex gap-2 mt-3">
-            <button id="pdfMakerPreviewBtn" class="btn btn-outline-primary btn-sm" type="button">Предпросмотр</button>
-            <button id="pdfMakerDownloadBtn" class="btn btn-dark btn-sm" type="button">Скачать PDF</button>
+            <button id="pdfMakerPreviewBtn" class="btn btn-outline-secondary btn-sm" type="button">Предпросмотр</button>
+            <button id="pdfMakerDownloadBtn" class="btn btn-pdf btn-sm" type="button">Скачать PDF</button>
             <span id="pdfMakerStatus" class="text-secondary small align-self-center"></span>
           </div>
           <div id="pdfMakerPreviewWrap" class="mt-3 d-none">
@@ -1160,18 +1278,49 @@ function ensurePdfMakerModal() {
     }
   }
 
-  previewBtn.addEventListener("click", async () => {
+  let refreshBusy = false;
+  let refreshQueued = false;
+
+  async function refreshPreview() {
+    if (refreshBusy) {
+      refreshQueued = true;
+      return;
+    }
+    refreshBusy = true;
     previewBtn.disabled = true;
     try {
       const blob = await buildBlob();
-      if (!blob) return;
-      if (_pdfMakerBlobUrl) URL.revokeObjectURL(_pdfMakerBlobUrl);
-      _pdfMakerBlobUrl = URL.createObjectURL(blob);
-      frame.src = _pdfMakerBlobUrl;
-      previewWrap.classList.remove("d-none");
+      if (blob) {
+        if (_pdfMakerBlobUrl) URL.revokeObjectURL(_pdfMakerBlobUrl);
+        _pdfMakerBlobUrl = URL.createObjectURL(blob);
+        frame.src = _pdfMakerBlobUrl;
+        previewWrap.classList.remove("d-none");
+      }
     } finally {
+      refreshBusy = false;
       previewBtn.disabled = false;
+      if (refreshQueued) {
+        refreshQueued = false;
+        void refreshPreview();
+      }
     }
+  }
+
+  previewBtn.addEventListener("click", () => void refreshPreview());
+
+  // Автообновление предпросмотра после правок: смена водяного знака — сразу,
+  // ввод заголовка — с небольшой паузой после окончания печати. Работает
+  // только когда предпросмотр уже открыт, чтобы не генерировать PDF зря.
+  let headerDebounce = null;
+  function autoRefreshIfPreviewOpen() {
+    if (previewWrap.classList.contains("d-none")) return;
+    void refreshPreview();
+  }
+  modalEl.querySelector("#pdfMakerWatermark").addEventListener("change", autoRefreshIfPreviewOpen);
+  modalEl.querySelector("#pdfMakerHeaderText").addEventListener("input", () => {
+    if (previewWrap.classList.contains("d-none")) return;
+    clearTimeout(headerDebounce);
+    headerDebounce = setTimeout(() => autoRefreshIfPreviewOpen(), 700);
   });
 
   downloadBtn.addEventListener("click", async () => {
@@ -1333,6 +1482,9 @@ async function initCatalogPage() {
     return [...state.selectedIds].map((id) => state.cacheById.get(id)).filter(Boolean);
   }
 
+  // Кнопки строки — иконки с подсказкой при наведении: текст «В проект /
+  // Сравнить» на каждой из 48 строк съедал правую часть таблицы.
+  // Иконки живут внутри кнопки, поэтому меняем только классы и title.
   function syncSelectionUi() {
     if (!grid) return;
     const toggleButtons = grid.querySelectorAll(".btn-compare-toggle");
@@ -1341,8 +1493,8 @@ async function initCatalogPage() {
       const selected = state.selectedIds.has(id);
       button.classList.toggle("btn-dark", selected);
       button.classList.toggle("btn-outline-dark", !selected);
-      button.textContent = selected ? "В сравнении" : "Сравнить";
-      button.title = selected ? "Уже добавлен в сравнение" : "Добавить в сравнение";
+      button.title = selected ? "В сравнении — нажмите, чтобы убрать" : "Добавить в сравнение";
+      button.setAttribute("aria-pressed", selected ? "true" : "false");
       const row = button.closest("tr");
       if (row) row.classList.toggle("catalog-row-selected", selected);
     }
@@ -1352,8 +1504,8 @@ async function initCatalogPage() {
       const inProject = state.projectIds.has(id);
       button.classList.toggle("btn-dark", inProject);
       button.classList.toggle("btn-outline-dark", !inProject);
-      button.textContent = inProject ? "В проекте" : "В проект";
-      button.title = inProject ? "Убрать из проекта" : "Добавить в проект";
+      button.title = inProject ? "В проекте — нажмите, чтобы убрать" : "Добавить в проект";
+      button.setAttribute("aria-pressed", inProject ? "true" : "false");
       const row = button.closest("tr");
       if (row) row.classList.toggle("catalog-row-in-project", inProject);
     }
@@ -1514,11 +1666,15 @@ async function initCatalogPage() {
         <td class="text-end text-nowrap fw-semibold">${escapeHtml(formatPrice(p.price))}</td>
         <td class="text-end">
           <div class="d-flex gap-1 justify-content-end">
-            <button type="button" class="btn btn-sm btn-project-toggle ${inProject ? "btn-dark" : "btn-outline-dark"}" data-id="${escapeHtml(p.id)}" title="${inProject ? "Убрать из проекта" : "Добавить в проект"}">
-              ${inProject ? "В проекте" : "В проект"}
+            <button type="button" class="btn btn-sm catalog-icon-btn btn-project-toggle ${inProject ? "btn-dark" : "btn-outline-dark"}"
+                    data-id="${escapeHtml(p.id)}" aria-label="Добавить в проект"
+                    title="${inProject ? "В проекте — нажмите, чтобы убрать" : "Добавить в проект"}">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path><line x1="12" y1="11" x2="12" y2="17"></line><line x1="9" y1="14" x2="15" y2="14"></line></svg>
             </button>
-            <button type="button" class="btn btn-sm btn-compare-toggle ${selected ? "btn-dark" : "btn-outline-dark"}" data-id="${escapeHtml(p.id)}">
-              ${selected ? "В сравнении" : "Сравнить"}
+            <button type="button" class="btn btn-sm catalog-icon-btn btn-compare-toggle ${selected ? "btn-dark" : "btn-outline-dark"}"
+                    data-id="${escapeHtml(p.id)}" aria-label="Добавить в сравнение"
+                    title="${selected ? "В сравнении — нажмите, чтобы убрать" : "Добавить в сравнение"}">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 1 21 5 17 9"></polyline><path d="M3 11V9a4 4 0 0 1 4-4h14"></path><polyline points="7 23 3 19 7 15"></polyline><path d="M21 13v2a4 4 0 0 1-4 4H3"></path></svg>
             </button>
           </div>
         </td>
@@ -1563,9 +1719,12 @@ async function initCatalogPage() {
         `;
         tbody.appendChild(groupRow);
       }
-      for (const p of items) {
-        tbody.appendChild(buildProductRow(p));
-      }
+      items.forEach((p, i) => {
+        const row = buildProductRow(p);
+        // Зебра считается внутри группы: строки-заголовки не сбивают ритм
+        if (i % 2 === 1) row.classList.add("catalog-row-alt");
+        tbody.appendChild(row);
+      });
     }
 
     table.appendChild(tbody);
@@ -1838,6 +1997,31 @@ async function initCatalogPage() {
 
   sortSelect?.addEventListener("change", () => loadPage(1));
 
+  // Сворачиваемая панель фильтров: на ноутбуках колонка съедает четверть
+  // экрана — по кнопке таблица получает всю ширину. Состояние запоминается.
+  {
+    const FILTERS_COLLAPSED_KEY = "ventsearch.catalog.filtersCollapsed";
+    const layout = document.querySelector(".catalog-layout");
+    const toggleBtn = $("#toggleFiltersBtn");
+    const toggleLabel = $("#toggleFiltersBtnLabel");
+    const applyCollapsed = (collapsed) => {
+      layout?.classList.toggle("filters-collapsed", collapsed);
+      if (toggleLabel) toggleLabel.textContent = collapsed ? "Показать фильтры" : "Скрыть фильтры";
+    };
+    let collapsed = false;
+    try {
+      collapsed = localStorage.getItem(FILTERS_COLLAPSED_KEY) === "1";
+    } catch { /* приватный режим */ }
+    applyCollapsed(collapsed);
+    toggleBtn?.addEventListener("click", () => {
+      collapsed = !layout?.classList.contains("filters-collapsed");
+      applyCollapsed(collapsed);
+      try {
+        localStorage.setItem(FILTERS_COLLAPSED_KEY, collapsed ? "1" : "0");
+      } catch { /* приватный режим */ }
+    });
+  }
+
   resetBtn?.addEventListener("click", () => {
     filtersForm?.reset();
     state.selectedIds.clear();
@@ -1947,6 +2131,7 @@ async function initComparePage() {
               ${siblings.map((v) => `<option value="${escapeHtml(v.id)}">${escapeHtml(v.size || v.model)} · ⌀${v.diameter ?? "—"}мм</option>`).join("")}
             </select>`
           : "";
+        const inProject = isInProject(p.id);
         return `<th>
         <div class="d-flex justify-content-between align-items-center">
           <span>${escapeHtml(p.model || p.id)}</span>
@@ -1958,6 +2143,9 @@ async function initComparePage() {
           </button>
         </div>
         ${swapSelect}
+        <button type="button" class="btn btn-sm w-100 mt-1 btn-compare-add-project ${inProject ? "btn-dark" : "btn-outline-dark"}" data-id="${escapeHtml(p.id)}">
+          ${inProject ? "В проекте ✓" : "Добавить в проект"}
+        </button>
       </th>`;
       })
       .join("")}`;
@@ -1970,6 +2158,18 @@ async function initComparePage() {
         ids.delete(id);
         saveCompareIds(ids);
         window.location.reload();
+      });
+    });
+
+    // «Добавить в проект» прямо из шапки сравнения — не нужно возвращаться
+    // в каталог, чтобы забрать выбранную модель в спецификацию
+    headerRow.querySelectorAll(".btn-compare-add-project").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        toggleProjectId(btn.dataset.id);
+        const nowIn = isInProject(btn.dataset.id);
+        btn.classList.toggle("btn-dark", nowIn);
+        btn.classList.toggle("btn-outline-dark", !nowIn);
+        btn.textContent = nowIn ? "В проекте ✓" : "Добавить в проект";
       });
     });
 
@@ -2037,7 +2237,7 @@ async function initComparePage() {
   // Каскадный подбор «модельный ряд → типоразмер» — как выбор поколения,
   // затем размера экрана у телефона, вместо плоского списка из 300+ моделей.
   const MAX_COMPARE = 6;
-  function initFamilyVariantPicker() {
+  function initFamilyVariantPicker(comparedIds = []) {
     const familySelect = $("#familySelect");
     const variantSelect = $("#variantSelect");
     const addForm = $("#addCompareForm");
@@ -2056,6 +2256,13 @@ async function initComparePage() {
       opt.textContent = `${fam.key} (${count} ${pluralRu(count, "типоразмер", "типоразмера", "типоразмеров")})`;
       familySelect.appendChild(opt);
     }
+
+    // Подбор аналога в пределах того же модельного ряда: если сравнение уже
+    // идёт, пикер сразу открыт на ряду сравниваемых моделей
+    const currentFam = families.find((f) =>
+      (f.variants || []).some((v) => comparedIds.some((id) => String(v.id) === String(id))),
+    );
+    if (currentFam) familySelect.value = currentFam.key;
 
     function fillVariants() {
       const fam = families.find((f) => f.key === familySelect.value) || families[0];
@@ -2088,7 +2295,7 @@ async function initComparePage() {
   try {
     hideError();
     await loadFamilies();
-    initFamilyVariantPicker();
+    initFamilyVariantPicker(loadCompareIds());
     const ids = loadCompareIds();
     updateCompareNavBadge();
     if (ids.length < 1) {
@@ -2189,17 +2396,31 @@ async function initProductPage() {
     renderFanImage($("#productImage"), data, data.model || "Вентилятор", false);
 
     // Служебные идентификаторы (ID, номер строки CSV) конечному клиенту не
-    // показываем — это внутренние маркеры базы, они есть в админке
+    // показываем — это внутренние маркеры базы, они есть в админке.
+    // Зато инженеру сразу даём двигатель, обороты, угол лопаток и номер
+    // вентилятора — без похода в график или чертежи.
+    const dims = (data.dimensions && typeof data.dimensions === "object") ? data.dimensions : {};
+    const angleMatch = QP_MODEL_BLADE_ANGLE_RE.exec(String(data.model || ""));
+    const fanNumber = dims.Num || (angleMatch ? angleMatch[1] : null);
+    const powerVal = toNumber(data.power);
+    const powerText = powerVal == null
+      ? "—"
+      : powerVal >= 1000
+        ? `${formatNumber(powerVal / 1000)} кВт (${formatNumber(powerVal)} Вт)`
+        : `${formatNumber(powerVal)} Вт`;
     const specBody = $("#specTableBody");
     specBody.innerHTML = "";
     const specs = [
       ["Тип", data.type],
       ["Модель", data.model],
-      ["Типоразмер (двигатель)", data.size],
+      ["Двигатель (типоразмер)", data.size],
+      ["Номер вентилятора", fanNumber || "—"],
+      ["Угол установки лопаток", angleMatch ? `${angleMatch[2]}°` : "—"],
+      ["Частота вращения", data.nominal_rpm != null ? `${formatNumber(data.nominal_rpm)} об/мин` : "—"],
       ["Диаметр", data.diameter != null ? `${data.diameter} мм` : "—"],
       ["Расход воздуха", data.airflow?.raw || "—"],
       ["Давление", data.pressure?.raw || "—"],
-      ["Мощность", data.power != null ? `${data.power} Вт` : "—"],
+      ["Мощность", powerText],
       ["Уровень шума", data.noise_level != null ? `${data.noise_level} дБ` : "—"],
       ["Цена", formatPrice(data.price)],
     ];
@@ -2209,25 +2430,10 @@ async function initProductPage() {
       specBody.appendChild(tr);
     }
 
-    // Габаритно-присоединительные размеры (чертёж завода): ячейка на размер
-    // вместо одной длинной строки цифр — так каждую пару «буква-значение»
-    // видно сразу, без сопоставления по вертикали через всю таблицу.
-    const dims = data.dimensions;
-    if (dims && typeof dims === "object" && Object.keys(dims).length) {
-      const entries = Object.entries(dims);
-      const grid = $("#dimensionsGrid");
-      if (grid) {
-        grid.innerHTML = entries
-          .map(([label, value]) => `
-            <div class="dim-cell">
-              <div class="dim-cell-label">${escapeHtml(label)}</div>
-              <div class="dim-cell-value">${escapeHtml(value)}</div>
-            </div>`)
-          .join("");
-        $("#dimensionsCard")?.classList.remove("d-none");
-      }
-      $("#gabaritsCaption")?.replaceChildren(document.createTextNode(`${entries.length} размеров — блок выше на этой странице`));
-    }
+    // Габаритно-присоединительные размеры: сгруппированные мини-таблицы
+    // «Обозначение → Значение» (габариты / диаметры / монтаж) вместо
+    // раздробленных плиток — считывается как строка спецификации.
+    renderProductDimensions(dims);
 
     // Чертёж из каталога: если в photos/ лежит blueprint_<слаг-модели>.png
     // (или .jpg/.jpeg/.webp) — показываем его; иначе шаблон-заглушку «синьки».
@@ -2579,6 +2785,10 @@ async function initProjectPage() {
     const subject = encodeURIComponent(`Запрос цены — ${readProjectMetaForm().title || "VENTSEARCH"}`);
     const mailto = `mailto:${VENTSEARCH_TEAM_EMAIL}?subject=${subject}&body=${encodeURIComponent(body)}`;
     window.location.href = mailto;
+    // Мгновенная обратная связь: mailto не даёт подтверждения отправки,
+    // поэтому объясняем, что произошло и чего ждать дальше
+    document.getElementById("quoteSentNote")?.classList.remove("d-none");
+    showSuccess("Черновик письма с составом проекта сформирован — отправьте его из почтового клиента.");
   });
 
   clearProjectBtn?.addEventListener("click", () => {

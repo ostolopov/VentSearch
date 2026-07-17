@@ -1,0 +1,1329 @@
+diff --git a/backend/presentation/app.py b/backend/presentation/app.py
+index 551c52a..952df42 100644
+--- a/backend/presentation/app.py
++++ b/backend/presentation/app.py
+@@ -212,6 +212,43 @@ def _pick_fonts() -> tuple[str, str]:
+ 
+ VENTSEARCH_ADDRESS = "Заречная ул., 1, Ивантеевка"
+ 
++# Фото по типу вентилятора — та же карта, что FAN_IMAGES_BY_TYPE на фронтенде
++_PDF_PHOTO_BY_TYPE = {
++    "ВКОП": "vkop.jpeg", "ВО": "vo.jpeg", "ВР": "vr.jpeg", "ВЦ": "vc.jpeg",
++    "УВО": "uvo.jpeg", "Ц": "c.jpeg", "ОСЕВОЙ": "vo.jpeg",
++}
++
++_BLUEPRINT_PDF_EXTENSIONS = ("png", "jpg", "jpeg", "webp")
++
++
++def _pdf_slugify(value: str) -> str:
++    """Тот же слаг, что slugify() на фронтенде — для поиска blueprint_<слаг>.*"""
++    s = re.sub(r"\s+", "-", str(value or "").lower())
++    s = re.sub(r"[^\wа-яё-]+", "-", s)
++    s = re.sub(r"-+", "-", s).strip("-")
++    return s
++
++
++def _find_product_photo(product: dict[str, Any]) -> Optional[Path]:
++    type_key = re.sub(r"\s+", "", str(product.get("type") or "")).upper()
++    name = _PDF_PHOTO_BY_TYPE.get(type_key)
++    if not name:
++        return None
++    path = PHOTOS_DIR / name
++    return path if path.is_file() else None
++
++
++def _find_product_blueprint(product: dict[str, Any]) -> Optional[Path]:
++    meta = product.get("_meta") or product.get("meta") or {}
++    slug = str(meta.get("model_slug") or "").strip().lower() or _pdf_slugify(product.get("model") or "")
++    if not slug:
++        return None
++    for ext in _BLUEPRINT_PDF_EXTENSIONS:
++        path = PHOTOS_DIR / f"blueprint_{slug}.{ext}"
++        if path.is_file():
++            return path
++    return None
++
+ 
+ def _build_compare_pdf(
+     products: list[dict[str, Any]],
+@@ -235,6 +272,9 @@ def _build_compare_pdf(
+     c_best = colors.HexColor("#e8f7e8")
+ 
+     def draw_watermark():
++        """Полупрозрачный «призрак» по центру страницы + небольшая видимая
++        копия знака в подвале: клиент должен видеть логотип компании явно,
++        а не только сквозь текст."""
+         if not watermark_path:
+             return
+         try:
+@@ -253,6 +293,18 @@ def _build_compare_pdf(
+                 preserveAspectRatio=True, mask="auto",
+             )
+             pdf.restoreState()
++            # видимый знак в правом нижнем углу (подвал страницы)
++            badge_h = 10 * mm
++            badge_w = iw * (badge_h / ih)
++            if badge_w > 40 * mm:
++                badge_w = 40 * mm
++                badge_h = ih * (badge_w / iw)
++            pdf.drawImage(
++                wm_image,
++                right - badge_w, 5 * mm,
++                width=badge_w, height=badge_h,
++                preserveAspectRatio=True, mask="auto",
++            )
+         except Exception:
+             pass
+ 
+@@ -398,24 +450,44 @@ def _build_compare_pdf(
+     for idx, p in enumerate(products, start=1):
+         dims = p.get("dimensions") or {}
+         dims_size = 7.5
++        photo_path = _find_product_photo(p)
++        # Служебный ID в клиентском документе не показываем; вместо этой
++        # строки — частота вращения и двигатель
++        rpm = p.get("nominal_rpm")
++        rpm_text = f"{_format_num(rpm)} об/мин" if rpm else "—"
++        photo_w = 26 * mm if photo_path else 0
++        title_limit = 78 if photo_path else 95
+         dims_lines = []
+         if dims:
+             dims_text = "Размеры (мм): " + "   ·   ".join(f"{k}={v}" for k, v in dims.items())
+             dims_lines = wrap_to_width(dims_text, font_r, dims_size, width - 6 * mm)
+         card_h = (25.5 + len(dims_lines) * 4) * mm if dims_lines else 30 * mm
++        if photo_path and card_h < 30 * mm:
++            card_h = 30 * mm
+         if y - card_h < 6 * mm:
+             new_page()
+         pdf.setStrokeColor(c_border)
+         pdf.setFillColor(colors.white)
+         pdf.roundRect(left, y - card_h, width, card_h, 2 * mm, stroke=1, fill=1)
++        if photo_path:
++            try:
++                pdf.drawImage(
++                    ImageReader(str(photo_path)),
++                    right - photo_w - 2 * mm, y - 26 * mm,
++                    width=photo_w, height=24 * mm,
++                    preserveAspectRatio=True, mask="auto",
++                )
++            except Exception:
++                pass
+         pdf.setFillColor(c_text)
+         pdf.setFont(font_b, 10)
+-        pdf.drawString(left + 3 * mm, y - 6 * mm, f"{idx}. {_normalize_ws(p.get('model') or p.get('id') or '—')}"[:95])
++        pdf.drawString(left + 3 * mm, y - 6 * mm, f"{idx}. {_normalize_ws(p.get('model') or p.get('id') or '—')}"[:title_limit])
+         pdf.setFillColor(c_muted)
+         pdf.setFont(font_r, 8.5)
+-        pdf.drawString(left + 3 * mm, y - 11 * mm, f"ID: {_normalize_ws(p.get('id') or '—')}")
++        pdf.drawString(left + 3 * mm, y - 11 * mm,
++                       f"Двигатель: {_normalize_ws(p.get('size') or '—')}   |   Частота вращения: {rpm_text}")
+         pdf.drawString(left + 3 * mm, y - 15.5 * mm,
+-                       f"Тип: {_normalize_ws(p.get('type') or '—')}   |   Типоразмер: {_normalize_ws(p.get('size') or '—')}")
++                       f"Тип: {_normalize_ws(p.get('type') or '—')}   |   Диаметр: {diameters[idx-1]}")
+         pdf.drawString(left + 3 * mm, y - 20 * mm,
+                        f"Расход: {airflows[idx-1]}   |   Давление: {pressures[idx-1]}")
+         pdf.drawString(left + 3 * mm, y - 24.5 * mm,
+@@ -426,6 +498,39 @@ def _build_compare_pdf(
+                 pdf.drawString(left + 3 * mm, y - (29.5 + i * 4) * mm, dl)
+         y -= card_h + 3.5 * mm
+ 
++    # Чертежи из каталога (photos/blueprint_<слаг>.*) — по одному на модель,
++    # если файл добавлен; без файла раздел просто не печатается
++    blueprint_items = [
++        (p, path) for p in products
++        if (path := _find_product_blueprint(p)) is not None
++    ]
++    for p, bp_path in blueprint_items:
++        try:
++            bp_image = ImageReader(str(bp_path))
++            iw, ih = bp_image.getSize()
++            draw_w = width
++            draw_h = draw_w * ih / iw
++            max_h = 120 * mm
++            if draw_h > max_h:
++                draw_h = max_h
++                draw_w = draw_h * iw / ih
++            block_h = draw_h + 12 * mm
++            if y - block_h < 12 * mm:
++                new_page()
++            line(f"Чертёж: {_normalize_ws(p.get('model') or '—')}", step=6.5 * mm, bold=True, size=10)
++            pdf.setStrokeColor(c_border)
++            pdf.setFillColor(colors.white)
++            pdf.roundRect(left, y - draw_h - 3 * mm, width, draw_h + 3 * mm, 2 * mm, stroke=1, fill=1)
++            pdf.drawImage(
++                bp_image,
++                left + (width - draw_w) / 2, y - draw_h - 1.5 * mm,
++                width=draw_w, height=draw_h,
++                preserveAspectRatio=True, mask="auto",
++            )
++            y -= draw_h + 8 * mm
++        except Exception:
++            pass
++
+     pdf.save()
+     data = buf.getvalue()
+     buf.close()
+diff --git a/frontend/404.html b/frontend/404.html
+index 4658ef6..1b7767a 100644
+--- a/frontend/404.html
++++ b/frontend/404.html
+@@ -13,7 +13,7 @@
+       rel="stylesheet"
+       crossorigin="anonymous"
+     />
+-    <link rel="stylesheet" href="style.css?v=20260717-1" />
++    <link rel="stylesheet" href="style.css?v=20260717-2" />
+   </head>
+   <body data-page="error">
+     <nav class="navbar navbar-expand-lg sticky-top">
+@@ -99,7 +99,7 @@
+     <script src="config.js?v=20260424-1"></script>
+     <script src="auth.js?v=20260524-9"></script>
+     <script src="site-auth.js?v=20260524-9"></script>
+-    <script src="script.js?v=20260717-1"></script>
++    <script src="script.js?v=20260717-2"></script>
+     <script src="site-layout.js?v=20260709-1"></script>
+   </body>
+ </html>
+diff --git a/frontend/500.html b/frontend/500.html
+index 8f46516..36534f6 100644
+--- a/frontend/500.html
++++ b/frontend/500.html
+@@ -13,7 +13,7 @@
+       rel="stylesheet"
+       crossorigin="anonymous"
+     />
+-    <link rel="stylesheet" href="style.css?v=20260717-1" />
++    <link rel="stylesheet" href="style.css?v=20260717-2" />
+   </head>
+   <body data-page="error">
+     <nav class="navbar navbar-expand-lg sticky-top">
+@@ -99,7 +99,7 @@
+     <script src="config.js?v=20260424-1"></script>
+     <script src="auth.js?v=20260524-9"></script>
+     <script src="site-auth.js?v=20260524-9"></script>
+-    <script src="script.js?v=20260717-1"></script>
++    <script src="script.js?v=20260717-2"></script>
+     <script src="site-layout.js?v=20260709-1"></script>
+   </body>
+ </html>
+diff --git a/frontend/admin.html b/frontend/admin.html
+index 73428f2..de08043 100644
+--- a/frontend/admin.html
++++ b/frontend/admin.html
+@@ -13,7 +13,7 @@
+       rel="stylesheet"
+       crossorigin="anonymous"
+     />
+-    <link rel="stylesheet" href="style.css?v=20260717-1" />
++    <link rel="stylesheet" href="style.css?v=20260717-2" />
+   </head>
+   <body class="admin-page" data-page="admin">
+     <nav class="navbar navbar-expand-lg sticky-top">
+diff --git a/frontend/auth.html b/frontend/auth.html
+index daebf3b..2e7fac5 100644
+--- a/frontend/auth.html
++++ b/frontend/auth.html
+@@ -13,7 +13,7 @@
+       rel="stylesheet"
+       crossorigin="anonymous"
+     />
+-    <link rel="stylesheet" href="style.css?v=20260717-1" />
++    <link rel="stylesheet" href="style.css?v=20260717-2" />
+   </head>
+   <body data-page="auth" class="auth-page">
+     <nav class="navbar navbar-expand-lg sticky-top">
+@@ -69,9 +69,9 @@
+       </div>
+     </nav>
+ 
+-    <header class="mb-4" style="background: var(--vs-accent); color: #FFFFFF; padding: 2.5rem 0; border-radius: 0 0 24px 24px;">
++    <header class="page-hero mb-3">
+       <div class="container-fluid px-3 px-lg-4 text-center">
+-        <h1 class="h3 mb-0 fw-bold">Вход и регистрация</h1>
++        <h1 class="h3 mb-0">Вход и регистрация</h1>
+       </div>
+     </header>
+ 
+@@ -123,7 +123,7 @@
+     <script src="config.js?v=20260424-1"></script>
+     <script src="auth.js?v=20260524-4"></script>
+     <script src="auth-page.js?v=20260524-4"></script>
+-    <script src="script.js?v=20260717-1"></script>
++    <script src="script.js?v=20260717-2"></script>
+     <script src="site-layout.js?v=20260709-1"></script>
+   </body>
+ </html>
+diff --git a/frontend/compare.html b/frontend/compare.html
+index 18e2f77..5c9b519 100644
+--- a/frontend/compare.html
++++ b/frontend/compare.html
+@@ -13,7 +13,7 @@
+       rel="stylesheet"
+       crossorigin="anonymous"
+     />
+-    <link rel="stylesheet" href="style.css?v=20260717-1" />
++    <link rel="stylesheet" href="style.css?v=20260717-2" />
+ 
+ <!-- Yandex.Metrika counter -->
+ <script type="text/javascript">
+@@ -88,17 +88,20 @@
+       </div>
+     </nav>
+ 
+-    <header class="mb-4" style="background: var(--vs-accent); color: #FFFFFF; padding: 2.5rem 0; border-radius: 0 0 24px 24px;">
++    <header class="page-hero mb-3">
+       <div class="container-fluid px-3 px-lg-4 d-flex flex-wrap justify-content-between align-items-center gap-3">
+         <div style="max-width: 800px;">
+-          <h1 class="h3 mb-2 fw-bold">Сравнение моделей</h1>
+-          <div id="compareMeta" style="font-size: 1.05rem; opacity: 0.9;">
++          <h1 class="h3 mb-1">Сравнение моделей</h1>
++          <div id="compareMeta" class="hero-subtitle">
+             Выберите модели в каталоге и возвращайтесь сюда.
+           </div>
+         </div>
+         <div class="d-flex gap-2">
+-          <button id="clearCompareBtn" class="btn btn-outline-light btn-sm" type="button">Очистить</button>
+-          <button id="exportPdfBtn" class="btn btn-danger btn-sm fw-semibold px-3" type="button">Документ для клиента (PDF)</button>
++          <button id="clearCompareBtn" class="btn btn-outline-danger btn-sm" type="button">Очистить</button>
++          <button id="exportPdfBtn" class="btn btn-pdf btn-sm px-3" type="button">
++            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline></svg>
++            Документ для клиента (PDF)
++          </button>
+         </div>
+       </div>
+     </header>
+@@ -170,7 +173,7 @@
+     <script src="config.js?v=20260424-1"></script>
+     <script src="auth.js?v=20260524-10"></script>
+     <script src="site-auth.js?v=20260524-10"></script>
+-    <script src="script.js?v=20260717-1"></script>
++    <script src="script.js?v=20260717-2"></script>
+     <script src="site-layout.js?v=20260709-1"></script>
+   </body>
+ </html>
+diff --git a/frontend/delivery.html b/frontend/delivery.html
+index 9854dd9..cdf7835 100644
+--- a/frontend/delivery.html
++++ b/frontend/delivery.html
+@@ -13,7 +13,7 @@
+       rel="stylesheet"
+       crossorigin="anonymous"
+     />
+-    <link rel="stylesheet" href="style.css?v=20260717-1" />
++    <link rel="stylesheet" href="style.css?v=20260717-2" />
+   </head>
+   <body data-page="delivery">
+     <nav class="navbar navbar-expand-lg sticky-top">
+@@ -81,9 +81,9 @@
+       </div>
+     </nav>
+ 
+-    <header class="mb-4" style="background: var(--vs-accent); color: #FFFFFF; padding: 2.5rem 0; border-radius: 0 0 24px 24px;">
++    <header class="page-hero mb-3">
+       <div class="container-fluid px-3 px-lg-4">
+-        <h1 class="h3 mb-0 fw-bold">Доставка и оплата</h1>
++        <h1 class="h3 mb-0">Доставка и оплата</h1>
+       </div>
+     </header>
+ 
+@@ -180,7 +180,7 @@
+     <script src="config.js?v=20260424-1"></script>
+     <script src="auth.js?v=20260524-9"></script>
+     <script src="site-auth.js?v=20260524-9"></script>
+-    <script src="script.js?v=20260717-1"></script>
++    <script src="script.js?v=20260717-2"></script>
+     <script src="site-layout.js?v=20260709-1"></script>
+   </body>
+ </html>
+diff --git a/frontend/index.html b/frontend/index.html
+index 23d568b..e17064d 100644
+--- a/frontend/index.html
++++ b/frontend/index.html
+@@ -14,7 +14,7 @@
+       integrity="sha384-QWTKZyjpPEjISv5WaRU9OFeRpok6YctnYmDr5pNlyT2bRjXh0JMhjY6hW+ALEwIH"
+       crossorigin="anonymous"
+     />
+-    <link rel="stylesheet" href="style.css?v=20260717-1" />
++    <link rel="stylesheet" href="style.css?v=20260717-2" />
+         
+ <!-- Yandex.Metrika counter -->
+ <script type="text/javascript">
+@@ -107,15 +107,15 @@
+       </div>
+     </nav>
+ 
+-    <header class="mb-4" style="background: var(--vs-accent); color: #FFFFFF; padding: 2.5rem 0; border-radius: 0 0 24px 24px;">
++    <header class="page-hero mb-3">
+       <div class="container-fluid px-3 px-lg-4">
+         <div class="d-flex flex-column flex-md-row align-items-md-center justify-content-between gap-3">
+           <div style="max-width: 800px;">
+-            <h1 class="h3 mb-2 fw-bold">Профессиональный подбор промышленных вентиляторов</h1>
+-            <div style="font-size: 1.05rem; opacity: 0.9;">B2B-платформа для инженерного выбора: точный поиск по параметрам, наглядное сравнение Q–P и быстрый экспорт отчётов.</div>
++            <h1 class="h3 mb-1">Подбор промышленных вентиляторов</h1>
++            <div class="hero-subtitle">Точный поиск по параметрам, сравнение Q–P и документ для клиента.</div>
+           </div>
+           <button
+-            class="btn btn-dark btn-sm d-lg-none"
++            class="btn btn-primary btn-sm d-lg-none"
+             type="button"
+             data-bs-toggle="offcanvas"
+             data-bs-target="#filtersOffcanvas"
+@@ -258,6 +258,11 @@
+               </div>
+             </div>
+             <div class="d-flex align-items-center gap-3 flex-wrap">
++              <button id="toggleFiltersBtn" type="button" class="btn btn-sm btn-outline-secondary d-none d-md-inline-flex align-items-center gap-1"
++                      title="Скрыть или показать панель фильтров — таблице станет просторнее">
++                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"></polygon></svg>
++                <span id="toggleFiltersBtnLabel">Скрыть фильтры</span>
++              </button>
+               <div class="d-flex align-items-center gap-2">
+                 <label for="sort" class="form-label mb-0 me-2 fw-medium text-secondary d-none d-md-block">Сортировка:</label>
+                 <select id="sort" name="sort" class="form-select form-select-sm" title="Либо кликните по заголовку колонки в таблице">
+@@ -386,7 +391,7 @@
+     <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
+     <script src="config.js?v=20260424-1"></script>
+     <script src="auth.js?v=20260524-9"></script>
+-    <script src="script.js?v=20260717-1"></script>
++    <script src="script.js?v=20260717-2"></script>
+     <script src="site-auth.js?v=20260524-9"></script>
+     <script src="site-layout.js?v=20260709-1"></script>
+   </body>
+diff --git a/frontend/product.html b/frontend/product.html
+index 119c05b..f4bd9ac 100644
+--- a/frontend/product.html
++++ b/frontend/product.html
+@@ -14,7 +14,7 @@
+       integrity="sha384-QWTKZyjpPEjISv5WaRU9OFeRpok6YctnYmDr5pNlyT2bRjXh0JMhjY6hW+ALEwIH"
+       crossorigin="anonymous"
+     />
+-    <link rel="stylesheet" href="style.css?v=20260717-1" />
++    <link rel="stylesheet" href="style.css?v=20260717-2" />
+     
+     <!-- Yandex.Metrika counter -->
+ <script type="text/javascript">
+@@ -169,7 +169,10 @@
+                       <option value="">Сравнить с другой моделью...</option>
+                     </select>
+                     <button id="compareOnProductBtn" type="button" class="btn btn-dark btn-sm">Сравнить</button>
+-                    <button id="exportProductPdfBtn" type="button" class="btn btn-danger btn-sm text-nowrap">PDF для клиента</button>
++                    <button id="exportProductPdfBtn" type="button" class="btn btn-pdf btn-sm text-nowrap">
++                      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline></svg>
++                      PDF для клиента
++                    </button>
+                   </div>
+                 </div>
+                 <div class="product-chart-wrap flex-grow-1" data-demo-guard>
+@@ -186,11 +189,11 @@
+              пока файла нет — крупная шаблонная «синька»-заглушка. -->
+         <div id="blueprintCard" class="card shadow-sm border-0 mb-4 d-none" style="border-radius: 20px;">
+           <div class="card-body p-4">
+-            <h2 class="h6 fw-bold mb-3">Чертёж из каталога</h2>
++            <h2 class="h6 fw-bold mb-3">Чертёж из каталога <span class="text-secondary fw-normal small">— нажмите, чтобы открыть на весь экран</span></h2>
+             <div class="blueprint-frame" data-demo-guard>
+               <img id="blueprintImage" class="blueprint-image" src="" alt="Чертёж" loading="lazy" decoding="async" />
+             </div>
+-            <div id="blueprintHint" class="small text-secondary mt-2"></div>
++            <div id="blueprintHint" class="small text-secondary mt-2 d-none"></div>
+           </div>
+         </div>
+ 
+@@ -199,8 +202,8 @@
+              видно сразу. -->
+         <div id="dimensionsCard" class="card shadow-sm border-0 mb-4 d-none" style="border-radius: 20px;">
+           <div class="card-body p-4">
+-            <h2 class="h6 fw-bold mb-3">Присоединительные размеры (по чертежу завода), мм</h2>
+-            <div id="dimensionsGrid" class="dimensions-grid" data-demo-guard></div>
++            <h2 class="h6 fw-bold mb-3">Присоединительные размеры (по чертежу завода)</h2>
++            <div id="dimensionsGrid" class="dims-tables" data-demo-guard></div>
+           </div>
+         </div>
+ 
+@@ -209,20 +212,20 @@
+             <h2 class="h5 fw-bold mb-3">Документация</h2>
+             <div class="row g-3">
+               <div class="col-md-4">
+-                <div class="doc-tile vs-soon-wrap">
++                <a class="doc-tile doc-tile-link" href="mailto:ventsearch.team@gmail.com?subject=%D0%97%D0%B0%D0%BF%D1%80%D0%BE%D1%81%20%D0%BF%D0%B0%D1%81%D0%BF%D0%BE%D1%80%D1%82%D0%B0%20%D0%B8%D0%B7%D0%B4%D0%B5%D0%BB%D0%B8%D1%8F">
+                   <svg class="doc-tile-icon" width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
+                   <div>
+-                    <h3 class="h6 fw-bold mb-1">Паспорт изделия</h3>
+-                    <p class="doc-tile-text mb-0">PDF-файл по запросу у менеджера</p>
++                    <h3 class="h6 fw-bold mb-1">Запросить паспорт изделия</h3>
++                    <p class="doc-tile-text mb-0">Письмо менеджеру — PDF в ответ</p>
+                   </div>
+-                </div>
++                </a>
+               </div>
+               <div class="col-md-4">
+-                <div class="doc-tile vs-soon-wrap">
++                <div class="doc-tile doc-tile-muted">
+                   <svg class="doc-tile-icon" width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+                   <div>
+-                    <h3 class="h6 fw-bold mb-1">Схема подключения</h3>
+-                    <p class="doc-tile-text mb-0">Параметры двигателя и схемы</p>
++                    <h3 class="h6 fw-bold mb-1">Схема подключения двигателя <span class="badge text-bg-secondary doc-soon-badge">скоро</span></h3>
++                    <p class="doc-tile-text mb-0">Появится в следующих обновлениях</p>
+                   </div>
+                 </div>
+               </div>
+@@ -230,7 +233,7 @@
+                 <a class="doc-tile doc-tile-link" href="#dimensionsCard">
+                   <svg class="doc-tile-icon" width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path><polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline><line x1="12" y1="22.08" x2="12" y2="12"></line></svg>
+                   <div>
+-                    <h3 class="h6 fw-bold mb-1">Габариты</h3>
++                    <h3 class="h6 fw-bold mb-1">Смотреть габаритные размеры</h3>
+                     <p id="gabaritsCaption" class="doc-tile-text mb-0">Таблица монтажных размеров</p>
+                   </div>
+                 </a>
+@@ -251,7 +254,7 @@
+     <script src="config.js?v=20260424-1"></script>
+     <script src="auth.js?v=20260524-10"></script>
+     <script src="site-auth.js?v=20260524-10"></script>
+-    <script src="script.js?v=20260717-1"></script>
++    <script src="script.js?v=20260717-2"></script>
+     <script src="site-layout.js?v=20260709-1"></script>
+   </body>
+ </html>
+diff --git a/frontend/project.html b/frontend/project.html
+index 31ad5be..32f7d95 100644
+--- a/frontend/project.html
++++ b/frontend/project.html
+@@ -13,7 +13,7 @@
+       rel="stylesheet"
+       crossorigin="anonymous"
+     />
+-    <link rel="stylesheet" href="style.css?v=20260717-1" />
++    <link rel="stylesheet" href="style.css?v=20260717-2" />
+ 
+ <!-- Yandex.Metrika counter -->
+ <script type="text/javascript">
+@@ -87,9 +87,9 @@
+       </div>
+     </nav>
+ 
+-    <header class="mb-4" style="background: var(--vs-accent); color: #FFFFFF; padding: 1.75rem 0; border-radius: 0 0 24px 24px;">
++    <header class="page-hero mb-3">
+       <div class="container-fluid px-3 px-lg-4">
+-        <h1 class="h4 mb-0 fw-bold">Проект для клиента</h1>
++        <h1 class="h4 mb-0">Проект для клиента</h1>
+       </div>
+     </header>
+ 
+@@ -199,16 +199,20 @@
+               <h3 class="h6 fw-bold mb-3">Контактные данные</h3>
+               <form id="profileForm" class="vstack gap-3 mb-4">
+                 <div>
+-                  <input id="profileCompany" class="form-control" placeholder="Название компании (ООО «Пример»)" required />
++                  <label for="profileCompany" class="contact-field-label">Компания</label>
++                  <input id="profileCompany" class="form-control" placeholder="ООО «Пример»" required />
+                 </div>
+                 <div>
+-                  <input id="profileName" class="form-control" placeholder="Контактное лицо (ФИО)" required pattern="^[a-zA-Zа-яА-ЯёЁ\s\-]+$" title="Только буквы, пробелы и дефисы" />
++                  <label for="profileName" class="contact-field-label">Контактное лицо</label>
++                  <input id="profileName" class="form-control" placeholder="Фамилия Имя Отчество" required pattern="^[a-zA-Zа-яА-ЯёЁ\s\-]+$" title="Только буквы, пробелы и дефисы" />
+                 </div>
+                 <div>
+-                  <input id="profileEmail" type="email" class="form-control" placeholder="E-mail (name@company.ru)" required pattern="^[a-zA-Z0-9._%\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$" title="Введите корректный email (например, name@domain.com)" />
++                  <label for="profileEmail" class="contact-field-label">E-mail</label>
++                  <input id="profileEmail" type="email" class="form-control" placeholder="name@company.ru" required pattern="^[a-zA-Z0-9._%\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$" title="Введите корректный email (например, name@domain.com)" />
+                 </div>
+                 <div>
+-                  <input id="profilePhone" type="tel" class="form-control" placeholder="Телефон (+7 ...)" required pattern="^\+?[0-9\s\-\(\)]{10,20}$" title="Введите корректный номер телефона" />
++                  <label for="profilePhone" class="contact-field-label">Телефон</label>
++                  <input id="profilePhone" type="tel" class="form-control" placeholder="+7 ..." required pattern="^\+?[0-9\s\-\(\)]{10,20}$" title="Введите корректный номер телефона" />
+                 </div>
+                 <div class="d-flex justify-content-end mt-1">
+                   <button class="btn btn-outline-secondary btn-sm" type="submit">Сохранить контакты</button>
+@@ -217,7 +221,13 @@
+ 
+               <div class="d-flex flex-column gap-2 mt-4">
+                 <button id="requestQuoteBtn" class="btn btn-primary w-100 py-3" style="border-radius: 10px; font-weight: 600;" type="button">Отправить запрос</button>
+-                <button id="exportProjectPdfBtn" class="btn btn-outline-dark w-100 py-2" style="border-radius: 10px; font-weight: 500;" type="button">Документ для клиента (PDF)</button>
++                <button id="exportProjectPdfBtn" class="btn btn-pdf w-100 py-3" style="border-radius: 10px;" type="button">
++                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline></svg>
++                  Документ для клиента (PDF)
++                </button>
++                <div id="quoteSentNote" class="small text-secondary text-center d-none mt-1">
++                  Черновик письма открыт в вашем почтовом клиенте — после отправки менеджер свяжется с вами.
++                </div>
+               </div>
+             </div>
+           </div>
+@@ -231,7 +241,7 @@
+     <script src="config.js?v=20260424-1"></script>
+     <script src="auth.js?v=20260524-4"></script>
+     <script src="site-auth.js?v=20260524-4"></script>
+-    <script src="script.js?v=20260717-1"></script>
++    <script src="script.js?v=20260717-2"></script>
+     <script src="site-layout.js?v=20260709-1"></script>
+   </body>
+ </html>
+diff --git a/frontend/script.js b/frontend/script.js
+index 6855ed3..28660e5 100644
+--- a/frontend/script.js
++++ b/frontend/script.js
+@@ -208,8 +208,10 @@ function sortItemsClient(items, sortKey) {
+   });
+ }
+ 
+-// Фильтры каталога переживают переход на карточку товара и возврат назад
+-// (sessionStorage — на время вкладки; новая вкладка начинает с чистых фильтров)
++// Фильтры каталога переживают переход на карточку товара и возврат назад.
++// localStorage, а не sessionStorage: карточки часто открывают в НОВОЙ вкладке
++// (Ctrl+клик), а sessionStorage живёт только внутри одной вкладки — из-за
++// этого фильтры «сбрасывались». Кнопка «Сбросить» очищает сохранённое.
+ const CATALOG_FILTERS_KEY = "ventsearch.catalog.filters";
+ 
+ function saveCatalogFilters(form, sortSelect) {
+@@ -220,7 +222,7 @@ function saveCatalogFilters(form, sortSelect) {
+       if (el.name && String(el.value || "").trim()) data[el.name] = el.value;
+     }
+     if (sortSelect?.value) data.__sort = sortSelect.value;
+-    sessionStorage.setItem(CATALOG_FILTERS_KEY, JSON.stringify(data));
++    localStorage.setItem(CATALOG_FILTERS_KEY, JSON.stringify(data));
+   } catch {
+     // приватный режим — просто не запоминаем
+   }
+@@ -229,7 +231,9 @@ function saveCatalogFilters(form, sortSelect) {
+ function restoreCatalogFilters(form, sortSelect) {
+   if (!form) return;
+   try {
+-    const raw = sessionStorage.getItem(CATALOG_FILTERS_KEY);
++    // Читаем localStorage, а из sessionStorage подхватываем то, что могло
++    // остаться от предыдущей версии (миграция без потери фильтров)
++    const raw = localStorage.getItem(CATALOG_FILTERS_KEY) || sessionStorage.getItem(CATALOG_FILTERS_KEY);
+     if (!raw) return;
+     const data = JSON.parse(raw);
+     for (const [k, v] of Object.entries(data)) {
+@@ -419,10 +423,100 @@ async function fetchJson(url) {
+   return res.json();
+ }
+ 
++// Присоединительные размеры: группировка обозначений по смыслу — так глаз
++// сразу находит нужную букву, вместо сопоставления «каши» цифр с чертежом.
++// Num не показываем здесь (он уходит в характеристики как номер вентилятора).
++const DIMENSION_GROUPS = [
++  { title: "Габаритные размеры", keys: ["B", "H", "H1", "L", "L1 max", "L1", "L2", "l", "b"] },
++  { title: "Диаметры", keys: ["D", "D1", "d", "d1"] },
++];
++
++function renderProductDimensions(dims) {
++  const wrap = document.getElementById("dimensionsGrid");
++  if (!wrap) return;
++  const entries = Object.entries(dims || {}).filter(([k]) => k !== "Num");
++  if (!entries.length) return;
++
++  const used = new Set();
++  const groups = [];
++  for (const group of DIMENSION_GROUPS) {
++    const rows = [];
++    for (const key of group.keys) {
++      const found = entries.find(([k]) => k === key);
++      if (found) {
++        rows.push(found);
++        used.add(key);
++      }
++    }
++    if (rows.length) groups.push({ title: group.title, rows });
++  }
++  const rest = entries.filter(([k]) => !used.has(k));
++  if (rest.length) groups.push({ title: "Монтаж и прочее", rows: rest });
++
++  wrap.innerHTML = groups
++    .map((g) => `
++      <div class="dims-table-block">
++        <div class="dims-table-title">${escapeHtml(g.title)}</div>
++        <table class="dims-table">
++          <thead><tr><th>Обозн.</th><th>Значение, мм</th></tr></thead>
++          <tbody>
++            ${g.rows.map(([k, v]) => `<tr><td class="dims-code">${escapeHtml(k)}</td><td class="dims-val">${escapeHtml(v)}</td></tr>`).join("")}
++          </tbody>
++        </table>
++      </div>`)
++    .join("");
++  document.getElementById("dimensionsCard")?.classList.remove("d-none");
++  document.getElementById("gabaritsCaption")?.replaceChildren(
++    document.createTextNode(`${entries.length} размеров — блок выше на этой странице`),
++  );
++}
++
++// Полноэкранный просмотр изображения (чертёж, фото) в модальном окне
++function openImageLightbox(src, alt) {
++  let modalEl = document.getElementById("imageLightboxModal");
++  if (!modalEl) {
++    modalEl = document.createElement("div");
++    modalEl.className = "modal fade";
++    modalEl.id = "imageLightboxModal";
++    modalEl.tabIndex = -1;
++    modalEl.setAttribute("aria-hidden", "true");
++    modalEl.innerHTML = `
++      <div class="modal-dialog modal-dialog-centered modal-xl">
++        <div class="modal-content bg-transparent border-0 shadow-none">
++          <img id="imageLightboxImg" src="" alt="" style="max-width: 100%; max-height: 92vh; object-fit: contain; border-radius: 10px; background: #fff;" />
++        </div>
++      </div>`;
++    modalEl.addEventListener("click", () => {
++      if (typeof bootstrap !== "undefined") bootstrap.Modal.getInstance(modalEl)?.hide();
++    });
++    document.body.appendChild(modalEl);
++  }
++  const img = modalEl.querySelector("#imageLightboxImg");
++  img.src = src;
++  img.alt = alt || "";
++  if (typeof bootstrap !== "undefined" && bootstrap.Modal) {
++    bootstrap.Modal.getOrCreateInstance(modalEl).show();
++  }
++}
++
++// Служебная подсказка «как заменить заглушку чертежа» — только для
++// администраторов: обычному клиенту инструкции про photos/ не нужны.
++// Признак админа — пункт «Управление каталогом» в меню (site-auth.js
++// снимает с него d-none после проверки сессии, поэтому наблюдаем за классом).
++function revealAdminHintWhenAdmin(hintEl) {
++  const adminItem = document.getElementById("navAdminMenuItem");
++  if (!hintEl || !adminItem) return;
++  const sync = () => hintEl.classList.toggle("d-none", adminItem.classList.contains("d-none"));
++  sync();
++  if (typeof MutationObserver !== "undefined") {
++    new MutationObserver(sync).observe(adminItem, { attributes: true, attributeFilter: ["class"] });
++  }
++}
++
+ // Чертёж модели из бумажного каталога. Скрин кладётся в photos/ с именем
+-// blueprint_<слаг-модели>.png (точное ожидаемое имя показываем в подсказке
+-// под блоком) — появится на карточке сам, без правок кода. Пока файла нет,
+-// показываем шаблон-заглушку «синьки» (frontend/img/blueprint-placeholder.svg).
++// blueprint_<слаг-модели>.png (точное ожидаемое имя видно администратору в
++// подсказке под блоком) — появится на карточке сам, без правок кода. Пока
++// файла нет, показываем шаблон-заглушку «синьки» (frontend/img/blueprint-placeholder.svg).
+ const BLUEPRINT_EXTENSIONS = ["png", "jpg", "jpeg", "webp"];
+ 
+ async function renderProductBlueprint(product) {
+@@ -456,6 +550,9 @@ async function renderProductBlueprint(product) {
+     img.alt = "Чертёж появится позже";
+     if (hint) hint.textContent = `Чтобы заменить заглушку реальным чертежом, положите скан в photos/${expectedName}`;
+   }
++  // Клик — полноэкранный просмотр; служебная подсказка видна только админам
++  img.addEventListener("click", () => openImageLightbox(img.src, img.alt));
++  revealAdminHintWhenAdmin(hint);
+   card.classList.remove("d-none");
+ }
+ 
+@@ -752,8 +849,10 @@ function buildQpDatasetsShared(products, targetRpm = null, targetPoint = null, o
+       type: 'line',
+       smooth: false,
+       symbol: 'none',
+-      lineStyle: { type: 'dashed', color: '#7f7f7f', width: 2 },
+-      itemStyle: { color: '#7f7f7f' },
++      // Тёплый медный цвет: кривая сети и рабочая точка — «действие»,
++      // они должны отделяться от холодных паспортных кривых вентиляторов
++      lineStyle: { type: 'dashed', color: '#B45309', width: 2 },
++      itemStyle: { color: '#B45309' },
+       data: systemPoints
+     });
+ 
+@@ -1038,6 +1137,17 @@ function downloadBlob(blob, filename) {
+ // и низкого) в PDF выглядит мелкой узкой полосой
+ function captureChartPngForPdf(sourceChart) {
+   if (!sourceChart || typeof echarts === 'undefined') return null;
++  // Текущие видимые пределы осей: в PDF график должен совпадать с тем, что
++  // пользователь видит на экране (фокус по выбранной модели), а не с полной
++  // шкалой всего модельного ряда до сотен тысяч Q
++  let xExtent = null;
++  let yExtent = null;
++  try {
++    xExtent = sourceChart.getModel().getComponent('xAxis', 0).axis.scale.getExtent();
++    yExtent = sourceChart.getModel().getComponent('yAxis', 0).axis.scale.getExtent();
++  } catch (err) {
++    console.warn('Не удалось прочитать видимые пределы осей для PDF', err);
++  }
+   const holder = document.createElement('div');
+   holder.style.cssText = 'position:fixed;left:-99999px;top:0;width:1400px;height:560px;';
+   document.body.appendChild(holder);
+@@ -1048,6 +1158,14 @@ function captureChartPngForPdf(sourceChart) {
+     opts.animation = false;
+     opts.dataZoom = [];
+     opts.toolbox = [];
++    if (Array.isArray(xExtent) && xExtent.length === 2 && Array.isArray(opts.xAxis) && opts.xAxis[0]) {
++      opts.xAxis[0].min = xExtent[0];
++      opts.xAxis[0].max = xExtent[1];
++    }
++    if (Array.isArray(yExtent) && yExtent.length === 2 && Array.isArray(opts.yAxis) && opts.yAxis[0]) {
++      opts.yAxis[0].min = yExtent[0];
++      opts.yAxis[0].max = yExtent[1];
++    }
+     chart.setOption(opts);
+     return chart.getDataURL({ type: 'png', backgroundColor: '#fff', pixelRatio: 2 });
+   } catch (err) {
+@@ -1104,8 +1222,8 @@ function ensurePdfMakerModal() {
+             </div>
+           </div>
+           <div class="d-flex gap-2 mt-3">
+-            <button id="pdfMakerPreviewBtn" class="btn btn-outline-primary btn-sm" type="button">Предпросмотр</button>
+-            <button id="pdfMakerDownloadBtn" class="btn btn-dark btn-sm" type="button">Скачать PDF</button>
++            <button id="pdfMakerPreviewBtn" class="btn btn-outline-secondary btn-sm" type="button">Предпросмотр</button>
++            <button id="pdfMakerDownloadBtn" class="btn btn-pdf btn-sm" type="button">Скачать PDF</button>
+             <span id="pdfMakerStatus" class="text-secondary small align-self-center"></span>
+           </div>
+           <div id="pdfMakerPreviewWrap" class="mt-3 d-none">
+@@ -1160,18 +1278,49 @@ function ensurePdfMakerModal() {
+     }
+   }
+ 
+-  previewBtn.addEventListener("click", async () => {
++  let refreshBusy = false;
++  let refreshQueued = false;
++
++  async function refreshPreview() {
++    if (refreshBusy) {
++      refreshQueued = true;
++      return;
++    }
++    refreshBusy = true;
+     previewBtn.disabled = true;
+     try {
+       const blob = await buildBlob();
+-      if (!blob) return;
+-      if (_pdfMakerBlobUrl) URL.revokeObjectURL(_pdfMakerBlobUrl);
+-      _pdfMakerBlobUrl = URL.createObjectURL(blob);
+-      frame.src = _pdfMakerBlobUrl;
+-      previewWrap.classList.remove("d-none");
++      if (blob) {
++        if (_pdfMakerBlobUrl) URL.revokeObjectURL(_pdfMakerBlobUrl);
++        _pdfMakerBlobUrl = URL.createObjectURL(blob);
++        frame.src = _pdfMakerBlobUrl;
++        previewWrap.classList.remove("d-none");
++      }
+     } finally {
++      refreshBusy = false;
+       previewBtn.disabled = false;
++      if (refreshQueued) {
++        refreshQueued = false;
++        void refreshPreview();
++      }
+     }
++  }
++
++  previewBtn.addEventListener("click", () => void refreshPreview());
++
++  // Автообновление предпросмотра после правок: смена водяного знака — сразу,
++  // ввод заголовка — с небольшой паузой после окончания печати. Работает
++  // только когда предпросмотр уже открыт, чтобы не генерировать PDF зря.
++  let headerDebounce = null;
++  function autoRefreshIfPreviewOpen() {
++    if (previewWrap.classList.contains("d-none")) return;
++    void refreshPreview();
++  }
++  modalEl.querySelector("#pdfMakerWatermark").addEventListener("change", autoRefreshIfPreviewOpen);
++  modalEl.querySelector("#pdfMakerHeaderText").addEventListener("input", () => {
++    if (previewWrap.classList.contains("d-none")) return;
++    clearTimeout(headerDebounce);
++    headerDebounce = setTimeout(() => autoRefreshIfPreviewOpen(), 700);
+   });
+ 
+   downloadBtn.addEventListener("click", async () => {
+@@ -1333,6 +1482,9 @@ async function initCatalogPage() {
+     return [...state.selectedIds].map((id) => state.cacheById.get(id)).filter(Boolean);
+   }
+ 
++  // Кнопки строки — иконки с подсказкой при наведении: текст «В проект /
++  // Сравнить» на каждой из 48 строк съедал правую часть таблицы.
++  // Иконки живут внутри кнопки, поэтому меняем только классы и title.
+   function syncSelectionUi() {
+     if (!grid) return;
+     const toggleButtons = grid.querySelectorAll(".btn-compare-toggle");
+@@ -1341,8 +1493,8 @@ async function initCatalogPage() {
+       const selected = state.selectedIds.has(id);
+       button.classList.toggle("btn-dark", selected);
+       button.classList.toggle("btn-outline-dark", !selected);
+-      button.textContent = selected ? "В сравнении" : "Сравнить";
+-      button.title = selected ? "Уже добавлен в сравнение" : "Добавить в сравнение";
++      button.title = selected ? "В сравнении — нажмите, чтобы убрать" : "Добавить в сравнение";
++      button.setAttribute("aria-pressed", selected ? "true" : "false");
+       const row = button.closest("tr");
+       if (row) row.classList.toggle("catalog-row-selected", selected);
+     }
+@@ -1352,8 +1504,8 @@ async function initCatalogPage() {
+       const inProject = state.projectIds.has(id);
+       button.classList.toggle("btn-dark", inProject);
+       button.classList.toggle("btn-outline-dark", !inProject);
+-      button.textContent = inProject ? "В проекте" : "В проект";
+-      button.title = inProject ? "Убрать из проекта" : "Добавить в проект";
++      button.title = inProject ? "В проекте — нажмите, чтобы убрать" : "Добавить в проект";
++      button.setAttribute("aria-pressed", inProject ? "true" : "false");
+       const row = button.closest("tr");
+       if (row) row.classList.toggle("catalog-row-in-project", inProject);
+     }
+@@ -1514,11 +1666,15 @@ async function initCatalogPage() {
+         <td class="text-end text-nowrap fw-semibold">${escapeHtml(formatPrice(p.price))}</td>
+         <td class="text-end">
+           <div class="d-flex gap-1 justify-content-end">
+-            <button type="button" class="btn btn-sm btn-project-toggle ${inProject ? "btn-dark" : "btn-outline-dark"}" data-id="${escapeHtml(p.id)}" title="${inProject ? "Убрать из проекта" : "Добавить в проект"}">
+-              ${inProject ? "В проекте" : "В проект"}
++            <button type="button" class="btn btn-sm catalog-icon-btn btn-project-toggle ${inProject ? "btn-dark" : "btn-outline-dark"}"
++                    data-id="${escapeHtml(p.id)}" aria-label="Добавить в проект"
++                    title="${inProject ? "В проекте — нажмите, чтобы убрать" : "Добавить в проект"}">
++              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path><line x1="12" y1="11" x2="12" y2="17"></line><line x1="9" y1="14" x2="15" y2="14"></line></svg>
+             </button>
+-            <button type="button" class="btn btn-sm btn-compare-toggle ${selected ? "btn-dark" : "btn-outline-dark"}" data-id="${escapeHtml(p.id)}">
+-              ${selected ? "В сравнении" : "Сравнить"}
++            <button type="button" class="btn btn-sm catalog-icon-btn btn-compare-toggle ${selected ? "btn-dark" : "btn-outline-dark"}"
++                    data-id="${escapeHtml(p.id)}" aria-label="Добавить в сравнение"
++                    title="${selected ? "В сравнении — нажмите, чтобы убрать" : "Добавить в сравнение"}">
++              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 1 21 5 17 9"></polyline><path d="M3 11V9a4 4 0 0 1 4-4h14"></path><polyline points="7 23 3 19 7 15"></polyline><path d="M21 13v2a4 4 0 0 1-4 4H3"></path></svg>
+             </button>
+           </div>
+         </td>
+@@ -1563,9 +1719,12 @@ async function initCatalogPage() {
+         `;
+         tbody.appendChild(groupRow);
+       }
+-      for (const p of items) {
+-        tbody.appendChild(buildProductRow(p));
+-      }
++      items.forEach((p, i) => {
++        const row = buildProductRow(p);
++        // Зебра считается внутри группы: строки-заголовки не сбивают ритм
++        if (i % 2 === 1) row.classList.add("catalog-row-alt");
++        tbody.appendChild(row);
++      });
+     }
+ 
+     table.appendChild(tbody);
+@@ -1838,6 +1997,31 @@ async function initCatalogPage() {
+ 
+   sortSelect?.addEventListener("change", () => loadPage(1));
+ 
++  // Сворачиваемая панель фильтров: на ноутбуках колонка съедает четверть
++  // экрана — по кнопке таблица получает всю ширину. Состояние запоминается.
++  {
++    const FILTERS_COLLAPSED_KEY = "ventsearch.catalog.filtersCollapsed";
++    const layout = document.querySelector(".catalog-layout");
++    const toggleBtn = $("#toggleFiltersBtn");
++    const toggleLabel = $("#toggleFiltersBtnLabel");
++    const applyCollapsed = (collapsed) => {
++      layout?.classList.toggle("filters-collapsed", collapsed);
++      if (toggleLabel) toggleLabel.textContent = collapsed ? "Показать фильтры" : "Скрыть фильтры";
++    };
++    let collapsed = false;
++    try {
++      collapsed = localStorage.getItem(FILTERS_COLLAPSED_KEY) === "1";
++    } catch { /* приватный режим */ }
++    applyCollapsed(collapsed);
++    toggleBtn?.addEventListener("click", () => {
++      collapsed = !layout?.classList.contains("filters-collapsed");
++      applyCollapsed(collapsed);
++      try {
++        localStorage.setItem(FILTERS_COLLAPSED_KEY, collapsed ? "1" : "0");
++      } catch { /* приватный режим */ }
++    });
++  }
++
+   resetBtn?.addEventListener("click", () => {
+     filtersForm?.reset();
+     state.selectedIds.clear();
+@@ -1947,6 +2131,7 @@ async function initComparePage() {
+               ${siblings.map((v) => `<option value="${escapeHtml(v.id)}">${escapeHtml(v.size || v.model)} · ⌀${v.diameter ?? "—"}мм</option>`).join("")}
+             </select>`
+           : "";
++        const inProject = isInProject(p.id);
+         return `<th>
+         <div class="d-flex justify-content-between align-items-center">
+           <span>${escapeHtml(p.model || p.id)}</span>
+@@ -1958,6 +2143,9 @@ async function initComparePage() {
+           </button>
+         </div>
+         ${swapSelect}
++        <button type="button" class="btn btn-sm w-100 mt-1 btn-compare-add-project ${inProject ? "btn-dark" : "btn-outline-dark"}" data-id="${escapeHtml(p.id)}">
++          ${inProject ? "В проекте ✓" : "Добавить в проект"}
++        </button>
+       </th>`;
+       })
+       .join("")}`;
+@@ -1973,6 +2161,18 @@ async function initComparePage() {
+       });
+     });
+ 
++    // «Добавить в проект» прямо из шапки сравнения — не нужно возвращаться
++    // в каталог, чтобы забрать выбранную модель в спецификацию
++    headerRow.querySelectorAll(".btn-compare-add-project").forEach((btn) => {
++      btn.addEventListener("click", () => {
++        toggleProjectId(btn.dataset.id);
++        const nowIn = isInProject(btn.dataset.id);
++        btn.classList.toggle("btn-dark", nowIn);
++        btn.classList.toggle("btn-outline-dark", !nowIn);
++        btn.textContent = nowIn ? "В проекте ✓" : "Добавить в проект";
++      });
++    });
++
+     // Смена типоразмера прямо в шапке — без удаления и повторного добавления,
+     // как в модельном ряду на карточке товара
+     headerRow.querySelectorAll(".compare-swap-size").forEach((select) => {
+@@ -2037,7 +2237,7 @@ async function initComparePage() {
+   // Каскадный подбор «модельный ряд → типоразмер» — как выбор поколения,
+   // затем размера экрана у телефона, вместо плоского списка из 300+ моделей.
+   const MAX_COMPARE = 6;
+-  function initFamilyVariantPicker() {
++  function initFamilyVariantPicker(comparedIds = []) {
+     const familySelect = $("#familySelect");
+     const variantSelect = $("#variantSelect");
+     const addForm = $("#addCompareForm");
+@@ -2057,6 +2257,13 @@ async function initComparePage() {
+       familySelect.appendChild(opt);
+     }
+ 
++    // Подбор аналога в пределах того же модельного ряда: если сравнение уже
++    // идёт, пикер сразу открыт на ряду сравниваемых моделей
++    const currentFam = families.find((f) =>
++      (f.variants || []).some((v) => comparedIds.some((id) => String(v.id) === String(id))),
++    );
++    if (currentFam) familySelect.value = currentFam.key;
++
+     function fillVariants() {
+       const fam = families.find((f) => f.key === familySelect.value) || families[0];
+       variantSelect.innerHTML = "";
+@@ -2088,7 +2295,7 @@ async function initComparePage() {
+   try {
+     hideError();
+     await loadFamilies();
+-    initFamilyVariantPicker();
++    initFamilyVariantPicker(loadCompareIds());
+     const ids = loadCompareIds();
+     updateCompareNavBadge();
+     if (ids.length < 1) {
+@@ -2189,17 +2396,31 @@ async function initProductPage() {
+     renderFanImage($("#productImage"), data, data.model || "Вентилятор", false);
+ 
+     // Служебные идентификаторы (ID, номер строки CSV) конечному клиенту не
+-    // показываем — это внутренние маркеры базы, они есть в админке
++    // показываем — это внутренние маркеры базы, они есть в админке.
++    // Зато инженеру сразу даём двигатель, обороты, угол лопаток и номер
++    // вентилятора — без похода в график или чертежи.
++    const dims = (data.dimensions && typeof data.dimensions === "object") ? data.dimensions : {};
++    const angleMatch = QP_MODEL_BLADE_ANGLE_RE.exec(String(data.model || ""));
++    const fanNumber = dims.Num || (angleMatch ? angleMatch[1] : null);
++    const powerVal = toNumber(data.power);
++    const powerText = powerVal == null
++      ? "—"
++      : powerVal >= 1000
++        ? `${formatNumber(powerVal / 1000)} кВт (${formatNumber(powerVal)} Вт)`
++        : `${formatNumber(powerVal)} Вт`;
+     const specBody = $("#specTableBody");
+     specBody.innerHTML = "";
+     const specs = [
+       ["Тип", data.type],
+       ["Модель", data.model],
+-      ["Типоразмер (двигатель)", data.size],
++      ["Двигатель (типоразмер)", data.size],
++      ["Номер вентилятора", fanNumber || "—"],
++      ["Угол установки лопаток", angleMatch ? `${angleMatch[2]}°` : "—"],
++      ["Частота вращения", data.nominal_rpm != null ? `${formatNumber(data.nominal_rpm)} об/мин` : "—"],
+       ["Диаметр", data.diameter != null ? `${data.diameter} мм` : "—"],
+       ["Расход воздуха", data.airflow?.raw || "—"],
+       ["Давление", data.pressure?.raw || "—"],
+-      ["Мощность", data.power != null ? `${data.power} Вт` : "—"],
++      ["Мощность", powerText],
+       ["Уровень шума", data.noise_level != null ? `${data.noise_level} дБ` : "—"],
+       ["Цена", formatPrice(data.price)],
+     ];
+@@ -2209,25 +2430,10 @@ async function initProductPage() {
+       specBody.appendChild(tr);
+     }
+ 
+-    // Габаритно-присоединительные размеры (чертёж завода): ячейка на размер
+-    // вместо одной длинной строки цифр — так каждую пару «буква-значение»
+-    // видно сразу, без сопоставления по вертикали через всю таблицу.
+-    const dims = data.dimensions;
+-    if (dims && typeof dims === "object" && Object.keys(dims).length) {
+-      const entries = Object.entries(dims);
+-      const grid = $("#dimensionsGrid");
+-      if (grid) {
+-        grid.innerHTML = entries
+-          .map(([label, value]) => `
+-            <div class="dim-cell">
+-              <div class="dim-cell-label">${escapeHtml(label)}</div>
+-              <div class="dim-cell-value">${escapeHtml(value)}</div>
+-            </div>`)
+-          .join("");
+-        $("#dimensionsCard")?.classList.remove("d-none");
+-      }
+-      $("#gabaritsCaption")?.replaceChildren(document.createTextNode(`${entries.length} размеров — блок выше на этой странице`));
+-    }
++    // Габаритно-присоединительные размеры: сгруппированные мини-таблицы
++    // «Обозначение → Значение» (габариты / диаметры / монтаж) вместо
++    // раздробленных плиток — считывается как строка спецификации.
++    renderProductDimensions(dims);
+ 
+     // Чертёж из каталога: если в photos/ лежит blueprint_<слаг-модели>.png
+     // (или .jpg/.jpeg/.webp) — показываем его; иначе шаблон-заглушку «синьки».
+@@ -2579,6 +2785,10 @@ async function initProjectPage() {
+     const subject = encodeURIComponent(`Запрос цены — ${readProjectMetaForm().title || "VENTSEARCH"}`);
+     const mailto = `mailto:${VENTSEARCH_TEAM_EMAIL}?subject=${subject}&body=${encodeURIComponent(body)}`;
+     window.location.href = mailto;
++    // Мгновенная обратная связь: mailto не даёт подтверждения отправки,
++    // поэтому объясняем, что произошло и чего ждать дальше
++    document.getElementById("quoteSentNote")?.classList.remove("d-none");
++    showSuccess("Черновик письма с составом проекта сформирован — отправьте его из почтового клиента.");
+   });
+ 
+   clearProjectBtn?.addEventListener("click", () => {
+diff --git a/frontend/style.css b/frontend/style.css
+index 6f15988..4faab25 100644
+--- a/frontend/style.css
++++ b/frontend/style.css
+@@ -1,19 +1,23 @@
+ :root {
+-  --vs-bg: #F5F5F7;
++  /* Инженерная палитра: мягкий холодный фон вместо чистого белого, глубокий
++     сине-стальной акцент вместо яркого bootstrap-синего, графитовый текст
++     вместо чёрного, едва заметные границы. Синий — только для акцентов
++     (кнопки, активные состояния), а не для заливки целых блоков. */
++  --vs-bg: #F5F7FA;
+   --vs-surface: #FFFFFF;
+-  --vs-accent: #0D6EFD;
+-  --vs-accent-hover: #0A58CA;
+-  --vs-text: #21201F;
+-  --vs-text-muted: #7A7A7A;
+-  --vs-border: #E8E8E8;
+-  --vs-success: #28A745;
++  --vs-accent: #2563EB;
++  --vs-accent-hover: #1D4ED8;
++  --vs-text: #1E293B;
++  --vs-text-muted: #64748B;
++  --vs-border: #E2E8F0;
++  --vs-success: #16A34A;
+   --vs-navbar-height: 64px;
+   --vs-sticky-gap: 16px;
+   --vs-radius-lg: 20px;
+   --vs-radius-md: 16px;
+   --vs-radius-sm: 12px;
+-  --vs-shadow: 0 4px 24px rgba(0, 0, 0, 0.04);
+-  --vs-shadow-hover: 0 8px 32px rgba(0, 0, 0, 0.08);
++  --vs-shadow: 0 4px 16px rgba(30, 58, 138, 0.08);
++  --vs-shadow-hover: 0 8px 28px rgba(30, 58, 138, 0.13);
+ }
+ 
+ * {
+@@ -71,7 +75,7 @@ h1, h2, h3, h4, h5, h6 {
+ 
+ .nav-link.active {
+   background: var(--vs-accent);
+-  color: var(--vs-text) !important;
++  color: #FFFFFF !important;
+ }
+ 
+ .btn {
+@@ -530,7 +534,7 @@ h1, h2, h3, h4, h5, h6 {
+ .compare-table .best {
+   color: var(--vs-success);
+   font-weight: 700;
+-  background: rgba(40, 167, 69, 0.1);
++  background: rgba(22, 163, 74, 0.08);
+   padding: 0.2rem 0.5rem;
+   border-radius: 6px;
+ }
+@@ -1321,3 +1325,202 @@ body[data-page="product"] .tabs-card .card-body {
+ .doc-tile-link:hover {
+   color: var(--vs-text);
+ }
++
++/* ============================================================
++   Раунд полировки: светлые шапки, зебра каталога, иконки
++   действий, сворачиваемые фильтры, единая PDF-кнопка,
++   таблицы размеров, цветная документация
++   ============================================================ */
++
++/* Светлая шапка страницы вместо сплошного синего баннера: синий остаётся
++   только у кнопок и активных состояний */
++.page-hero {
++  padding: 1.5rem 0 0.25rem;
++  color: var(--vs-text);
++}
++
++.page-hero h1 {
++  color: var(--vs-text);
++  font-weight: 800;
++  letter-spacing: -0.01em;
++}
++
++.page-hero .hero-subtitle {
++  color: var(--vs-text-muted);
++  font-size: 1rem;
++}
++
++/* Единый стиль всех PDF-действий (карточка, сравнение, проект, модалка):
++   контурная синяя кнопка с иконкой документа. Красный зарезервирован
++   только за деструктивными действиями (удалить, очистить). */
++.btn-pdf {
++  --bs-btn-color: var(--vs-accent);
++  --bs-btn-border-color: var(--vs-accent);
++  --bs-btn-hover-bg: var(--vs-accent);
++  --bs-btn-hover-color: #fff;
++  --bs-btn-hover-border-color: var(--vs-accent);
++  --bs-btn-active-bg: var(--vs-accent-hover);
++  --bs-btn-active-color: #fff;
++  --bs-btn-active-border-color: var(--vs-accent-hover);
++  --bs-btn-bg: var(--vs-surface);
++  font-weight: 600;
++  display: inline-flex;
++  align-items: center;
++  justify-content: center;
++  gap: 0.45em;
++  white-space: nowrap;
++}
++
++/* Зебра и дыхание строк каталога */
++.catalog-table td {
++  padding-top: 0.7rem;
++  padding-bottom: 0.7rem;
++}
++
++.catalog-row-alt td {
++  background: #FAFBFD;
++}
++
++.catalog-row:hover td {
++  background: #F1F5FB;
++}
++
++/* Иконки-действия в строке: квадратные компактные кнопки */
++.catalog-icon-btn {
++  width: 30px;
++  height: 30px;
++  padding: 0;
++  display: inline-flex;
++  align-items: center;
++  justify-content: center;
++}
++
++/* Контрастные стрелки сортировки */
++.catalog-table th.catalog-sortable::after {
++  font-size: 0.95em;
++}
++
++.catalog-table th.catalog-sortable[data-sort-dir]::after {
++  font-weight: 900;
++}
++
++/* Свёрнутая панель фильтров: таблица занимает всю ширину */
++@media (min-width: 768px) {
++  .catalog-layout.filters-collapsed {
++    grid-template-columns: minmax(0, 1fr);
++  }
++
++  .catalog-layout.filters-collapsed > aside {
++    display: none;
++  }
++}
++
++/* Присоединительные размеры: сгруппированные мини-таблицы
++   «Обозначение → Значение» со спокойными границами */
++.dims-tables {
++  display: flex;
++  flex-wrap: wrap;
++  gap: 1.25rem;
++  border-top: 2px solid var(--vs-border);
++  padding-top: 1rem;
++}
++
++.dims-table-block {
++  flex: 1 1 240px;
++  min-width: 220px;
++}
++
++.dims-table-title {
++  font-size: 0.8rem;
++  font-weight: 700;
++  text-transform: uppercase;
++  letter-spacing: 0.04em;
++  color: var(--vs-text-muted);
++  margin-bottom: 0.5rem;
++}
++
++.dims-table {
++  width: 100%;
++  border-collapse: collapse;
++  font-size: 0.92rem;
++}
++
++.dims-table th {
++  text-align: left;
++  font-size: 0.75rem;
++  font-weight: 600;
++  color: var(--vs-text-muted);
++  border-bottom: 1px solid var(--vs-border);
++  padding: 0.3rem 0.6rem;
++}
++
++.dims-table td {
++  border-bottom: 1px solid var(--vs-border);
++  padding: 0.38rem 0.6rem;
++}
++
++.dims-table .dims-code {
++  font-family: var(--bs-font-monospace, "SFMono-Regular", Consolas, monospace);
++  color: var(--vs-text-muted);
++  width: 40%;
++}
++
++.dims-table .dims-val {
++  font-weight: 700;
++}
++
++/* Документация: живые цветные плитки вместо серых заглушек */
++.doc-tile {
++  background: #EFF6FF;
++  border-color: #DBEAFE;
++}
++
++.doc-tile-muted {
++  background: var(--vs-bg);
++  border-left-color: var(--vs-border);
++  opacity: 0.75;
++}
++
++.doc-tile-muted:hover {
++  box-shadow: none;
++  transform: none;
++}
++
++.doc-tile-muted .doc-tile-icon {
++  color: var(--vs-text-muted);
++}
++
++.doc-soon-badge {
++  font-size: 0.62rem;
++  vertical-align: middle;
++}
++
++/* Чертёж: компактнее по высоте, курсор-лупа, открытие на весь экран */
++.blueprint-image {
++  max-height: 320px;
++  cursor: zoom-in;
++}
++
++/* Аккордеон-справка в проекте: явный контур и внутренние отступы */
++#projectHelpAccordion .accordion-item {
++  border: 1px solid var(--vs-border);
++  box-shadow: var(--vs-shadow);
++}
++
++#projectHelpAccordion .accordion-body {
++  padding: 1.1rem 1.35rem;
++}
++
++#projectHelpAccordion .accordion-button {
++  font-weight: 600;
++  color: var(--vs-text);
++}
++
++/* Контакты в проекте: лейблы над полями вместо серых плейсхолдеров */
++.contact-field-label {
++  font-size: 0.78rem;
++  font-weight: 600;
++  color: var(--vs-text-muted);
++  margin-bottom: 0.25rem;
++  display: block;
++}

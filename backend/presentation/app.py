@@ -212,6 +212,43 @@ def _pick_fonts() -> tuple[str, str]:
 
 VENTSEARCH_ADDRESS = "Заречная ул., 1, Ивантеевка"
 
+# Фото по типу вентилятора — та же карта, что FAN_IMAGES_BY_TYPE на фронтенде
+_PDF_PHOTO_BY_TYPE = {
+    "ВКОП": "vkop.jpeg", "ВО": "vo.jpeg", "ВР": "vr.jpeg", "ВЦ": "vc.jpeg",
+    "УВО": "uvo.jpeg", "Ц": "c.jpeg", "ОСЕВОЙ": "vo.jpeg",
+}
+
+_BLUEPRINT_PDF_EXTENSIONS = ("png", "jpg", "jpeg", "webp")
+
+
+def _pdf_slugify(value: str) -> str:
+    """Тот же слаг, что slugify() на фронтенде — для поиска blueprint_<слаг>.*"""
+    s = re.sub(r"\s+", "-", str(value or "").lower())
+    s = re.sub(r"[^\wа-яё-]+", "-", s)
+    s = re.sub(r"-+", "-", s).strip("-")
+    return s
+
+
+def _find_product_photo(product: dict[str, Any]) -> Optional[Path]:
+    type_key = re.sub(r"\s+", "", str(product.get("type") or "")).upper()
+    name = _PDF_PHOTO_BY_TYPE.get(type_key)
+    if not name:
+        return None
+    path = PHOTOS_DIR / name
+    return path if path.is_file() else None
+
+
+def _find_product_blueprint(product: dict[str, Any]) -> Optional[Path]:
+    meta = product.get("_meta") or product.get("meta") or {}
+    slug = str(meta.get("model_slug") or "").strip().lower() or _pdf_slugify(product.get("model") or "")
+    if not slug:
+        return None
+    for ext in _BLUEPRINT_PDF_EXTENSIONS:
+        path = PHOTOS_DIR / f"blueprint_{slug}.{ext}"
+        if path.is_file():
+            return path
+    return None
+
 
 def _build_compare_pdf(
     products: list[dict[str, Any]],
@@ -235,6 +272,9 @@ def _build_compare_pdf(
     c_best = colors.HexColor("#e8f7e8")
 
     def draw_watermark():
+        """Полупрозрачный «призрак» по центру страницы + небольшая видимая
+        копия знака в подвале: клиент должен видеть логотип компании явно,
+        а не только сквозь текст."""
         if not watermark_path:
             return
         try:
@@ -253,6 +293,18 @@ def _build_compare_pdf(
                 preserveAspectRatio=True, mask="auto",
             )
             pdf.restoreState()
+            # видимый знак в правом нижнем углу (подвал страницы)
+            badge_h = 10 * mm
+            badge_w = iw * (badge_h / ih)
+            if badge_w > 40 * mm:
+                badge_w = 40 * mm
+                badge_h = ih * (badge_w / iw)
+            pdf.drawImage(
+                wm_image,
+                right - badge_w, 5 * mm,
+                width=badge_w, height=badge_h,
+                preserveAspectRatio=True, mask="auto",
+            )
         except Exception:
             pass
 
@@ -398,24 +450,44 @@ def _build_compare_pdf(
     for idx, p in enumerate(products, start=1):
         dims = p.get("dimensions") or {}
         dims_size = 7.5
+        photo_path = _find_product_photo(p)
+        # Служебный ID в клиентском документе не показываем; вместо этой
+        # строки — частота вращения и двигатель
+        rpm = p.get("nominal_rpm")
+        rpm_text = f"{_format_num(rpm)} об/мин" if rpm else "—"
+        photo_w = 26 * mm if photo_path else 0
+        title_limit = 78 if photo_path else 95
         dims_lines = []
         if dims:
             dims_text = "Размеры (мм): " + "   ·   ".join(f"{k}={v}" for k, v in dims.items())
             dims_lines = wrap_to_width(dims_text, font_r, dims_size, width - 6 * mm)
         card_h = (25.5 + len(dims_lines) * 4) * mm if dims_lines else 30 * mm
+        if photo_path and card_h < 30 * mm:
+            card_h = 30 * mm
         if y - card_h < 6 * mm:
             new_page()
         pdf.setStrokeColor(c_border)
         pdf.setFillColor(colors.white)
         pdf.roundRect(left, y - card_h, width, card_h, 2 * mm, stroke=1, fill=1)
+        if photo_path:
+            try:
+                pdf.drawImage(
+                    ImageReader(str(photo_path)),
+                    right - photo_w - 2 * mm, y - 26 * mm,
+                    width=photo_w, height=24 * mm,
+                    preserveAspectRatio=True, mask="auto",
+                )
+            except Exception:
+                pass
         pdf.setFillColor(c_text)
         pdf.setFont(font_b, 10)
-        pdf.drawString(left + 3 * mm, y - 6 * mm, f"{idx}. {_normalize_ws(p.get('model') or p.get('id') or '—')}"[:95])
+        pdf.drawString(left + 3 * mm, y - 6 * mm, f"{idx}. {_normalize_ws(p.get('model') or p.get('id') or '—')}"[:title_limit])
         pdf.setFillColor(c_muted)
         pdf.setFont(font_r, 8.5)
-        pdf.drawString(left + 3 * mm, y - 11 * mm, f"ID: {_normalize_ws(p.get('id') or '—')}")
+        pdf.drawString(left + 3 * mm, y - 11 * mm,
+                       f"Двигатель: {_normalize_ws(p.get('size') or '—')}   |   Частота вращения: {rpm_text}")
         pdf.drawString(left + 3 * mm, y - 15.5 * mm,
-                       f"Тип: {_normalize_ws(p.get('type') or '—')}   |   Типоразмер: {_normalize_ws(p.get('size') or '—')}")
+                       f"Тип: {_normalize_ws(p.get('type') or '—')}   |   Диаметр: {diameters[idx-1]}")
         pdf.drawString(left + 3 * mm, y - 20 * mm,
                        f"Расход: {airflows[idx-1]}   |   Давление: {pressures[idx-1]}")
         pdf.drawString(left + 3 * mm, y - 24.5 * mm,
@@ -425,6 +497,39 @@ def _build_compare_pdf(
             for i, dl in enumerate(dims_lines):
                 pdf.drawString(left + 3 * mm, y - (29.5 + i * 4) * mm, dl)
         y -= card_h + 3.5 * mm
+
+    # Чертежи из каталога (photos/blueprint_<слаг>.*) — по одному на модель,
+    # если файл добавлен; без файла раздел просто не печатается
+    blueprint_items = [
+        (p, path) for p in products
+        if (path := _find_product_blueprint(p)) is not None
+    ]
+    for p, bp_path in blueprint_items:
+        try:
+            bp_image = ImageReader(str(bp_path))
+            iw, ih = bp_image.getSize()
+            draw_w = width
+            draw_h = draw_w * ih / iw
+            max_h = 120 * mm
+            if draw_h > max_h:
+                draw_h = max_h
+                draw_w = draw_h * iw / ih
+            block_h = draw_h + 12 * mm
+            if y - block_h < 12 * mm:
+                new_page()
+            line(f"Чертёж: {_normalize_ws(p.get('model') or '—')}", step=6.5 * mm, bold=True, size=10)
+            pdf.setStrokeColor(c_border)
+            pdf.setFillColor(colors.white)
+            pdf.roundRect(left, y - draw_h - 3 * mm, width, draw_h + 3 * mm, 2 * mm, stroke=1, fill=1)
+            pdf.drawImage(
+                bp_image,
+                left + (width - draw_w) / 2, y - draw_h - 1.5 * mm,
+                width=draw_w, height=draw_h,
+                preserveAspectRatio=True, mask="auto",
+            )
+            y -= draw_h + 8 * mm
+        except Exception:
+            pass
 
     pdf.save()
     data = buf.getvalue()

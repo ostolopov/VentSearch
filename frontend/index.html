@@ -14,7 +14,7 @@
       integrity="sha384-QWTKZyjpPEjISv5WaRU9OFeRpok6YctnYmDr5pNlyT2bRjXh0JMhjY6hW+ALEwIH"
       crossorigin="anonymous"
     />
-    <link rel="stylesheet" href="style.css?v=20260717-1" />
+    <link rel="stylesheet" href="style.css?v=20260717-2" />
         
 <!-- Yandex.Metrika counter -->
 <script type="text/javascript">
@@ -107,15 +107,15 @@
       </div>
     </nav>
 
-    <header class="mb-4" style="background: var(--vs-accent); color: #FFFFFF; padding: 2.5rem 0; border-radius: 0 0 24px 24px;">
+    <header class="page-hero mb-3">
       <div class="container-fluid px-3 px-lg-4">
         <div class="d-flex flex-column flex-md-row align-items-md-center justify-content-between gap-3">
           <div style="max-width: 800px;">
-            <h1 class="h3 mb-2 fw-bold">Профессиональный подбор промышленных вентиляторов</h1>
-            <div style="font-size: 1.05rem; opacity: 0.9;">B2B-платформа для инженерного выбора: точный поиск по параметрам, наглядное сравнение Q–P и быстрый экспорт отчётов.</div>
+            <h1 class="h3 mb-1">Подбор промышленных вентиляторов</h1>
+            <div class="hero-subtitle">Точный поиск по параметрам, сравнение Q–P и документ для клиента.</div>
           </div>
           <button
-            class="btn btn-dark btn-sm d-lg-none"
+            class="btn btn-primary btn-sm d-lg-none"
             type="button"
             data-bs-toggle="offcanvas"
             data-bs-target="#filtersOffcanvas"
@@ -258,6 +258,11 @@
               </div>
             </div>
             <div class="d-flex align-items-center gap-3 flex-wrap">
+              <button id="toggleFiltersBtn" type="button" class="btn btn-sm btn-outline-secondary d-none d-md-inline-flex align-items-center gap-1"
+                      title="Скрыть или показать панель фильтров — таблице станет просторнее">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"></polygon></svg>
+                <span id="toggleFiltersBtnLabel">Скрыть фильтры</span>
+              </button>
               <div class="d-flex align-items-center gap-2">
                 <label for="sort" class="form-label mb-0 me-2 fw-medium text-secondary d-none d-md-block">Сортировка:</label>
                 <select id="sort" name="sort" class="form-select form-select-sm" title="Либо кликните по заголовку колонки в таблице">
@@ -386,7 +391,7 @@
     <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
     <script src="config.js?v=20260424-1"></script>
     <script src="auth.js?v=20260524-9"></script>
-    <script src="script.js?v=20260717-1"></script>
+    <script src="script.js?v=20260717-2"></script>
     <script src="site-auth.js?v=20260524-9"></script>
     <script src="site-layout.js?v=20260709-1"></script>
   </body>
