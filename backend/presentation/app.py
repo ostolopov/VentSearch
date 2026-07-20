@@ -216,6 +216,81 @@ VENTSEARCH_ADDRESS = "Заречная ул., 1, Ивантеевка"
 # в photos/ под этим именем; опция выключена, пока файла нет.
 LETTERHEAD_FILENAME = "ШАПКА_ВЕНТМАШ.png"
 
+
+def _autocrop_whitespace(pil_img, pad_px: int = 10, threshold: int = 248, rule_row_frac: float = 0.85):
+    """Обрезает пустые белые поля вокруг реального содержимого (лого,
+    текст реквизитов). Готовые бланки обычно экспортируются с большими
+    отступами — если растянуть такую картинку на всю ширину страницы
+    «как есть», масштаб (мм на пиксель) определяется шириной картинки:
+    чем больше в ней пустых полей по бокам, тем мельче выходит сам текст.
+
+    Сплошные полноширинные декоративные линии (двойная черта под шапкой)
+    из расчёта левой/правой границы исключаются намеренно — иначе такая
+    линия одна тянет рамку обрезки на всю ширину картинки, и обрезки
+    по бокам не происходит вовсе."""
+    from PIL import Image as _Image
+    if pil_img.mode in ("RGBA", "LA") or (pil_img.mode == "P" and "transparency" in pil_img.info):
+        rgba = pil_img.convert("RGBA")
+        rgb = _Image.new("RGB", pil_img.size, (255, 255, 255))
+        rgb.paste(rgba, mask=rgba.split()[-1])
+    else:
+        rgb = pil_img.convert("RGB")
+    w, h = rgb.size
+
+    # Анализ на уменьшенной копии: при «высоком разрешении» (сканы,
+    # экспорт из Word) построчный/поколоночный разбор в чистом Python на
+    # полном изображении был бы медленным. Рамку считаем на копии, потом
+    # масштабируем координаты обратно на оригинал.
+    analysis_max = 700
+    scale = min(1.0, analysis_max / max(w, h))
+    aw, ah = max(1, round(w * scale)), max(1, round(h * scale))
+    analysis = rgb.resize((aw, ah), _Image.BILINEAR) if scale < 1.0 else rgb
+
+    mask = analysis.convert("L").point(lambda p: 1 if p < threshold else 0)
+    rows = [list(mask.crop((0, y, aw, y + 1)).getdata()) for y in range(ah)]
+
+    top = bottom = None
+    for y, row in enumerate(rows):
+        if any(row):
+            if top is None:
+                top = y
+            bottom = y
+
+    content_rows = [row for row in rows if (sum(row) / aw) < rule_row_frac]
+    left = right = None
+    if content_rows:
+        for x in range(aw):
+            if any(row[x] for row in content_rows):
+                if left is None:
+                    left = x
+                right = x
+
+    if top is None or left is None:
+        return rgb
+    inv = 1.0 / scale
+    l = max(0, round(left * inv) - pad_px)
+    t = max(0, round(top * inv) - pad_px)
+    r = min(w, round((right + 1) * inv) + pad_px)
+    b = min(h, round((bottom + 1) * inv) + pad_px)
+    return rgb.crop((l, t, r, b))
+
+
+def _load_letterhead_reader(path: Path) -> Optional["ImageReader"]:
+    """ImageReader поверх автообрезанной картинки бланка (см. выше)."""
+    try:
+        from PIL import Image as _Image
+        with _Image.open(path) as im:
+            cropped = _autocrop_whitespace(im)
+            out = BytesIO()
+            cropped.save(out, format="PNG")
+            out.seek(0)
+            return ImageReader(out)
+    except Exception:
+        try:
+            return ImageReader(str(path))
+        except Exception:
+            return None
+
 # Фото по типу вентилятора — та же карта, что FAN_IMAGES_BY_TYPE на фронтенде
 _PDF_PHOTO_BY_TYPE = {
     "ВКОП": "vkop.jpeg", "ВО": "vo.jpeg", "ВР": "vr.jpeg", "ВЦ": "vc.jpeg",
@@ -279,16 +354,24 @@ def _build_compare_pdf(
 
     # Фирменный бланк (шапка заказчика) — печатается ПЕРВЫМ на каждой
     # странице, во всю ширину, сверху. Опция выключена по умолчанию.
+    letterhead_w = 0.0
     letterhead_h = 0.0
     letterhead_reader = None
     if letterhead_path:
         try:
-            letterhead_reader = ImageReader(str(letterhead_path))
+            letterhead_reader = _load_letterhead_reader(letterhead_path)
             lw, lh = letterhead_reader.getSize()
-            letterhead_h = width * lh / lw
-            max_letterhead_h = 45 * mm
+            letterhead_w = width
+            letterhead_h = letterhead_w * lh / lw
+            # Бланки — широкие и невысокие (логотип + пара строк реквизитов),
+            # поэтому потолок высокий: типичный бланк на всю ширину A4 в него
+            # укладывается. Если кап всё же сработал, ширину пересчитываем
+            # под ту же высоту — иначе drawImage вписывает картинку по
+            # меньшей стороне бокса и она сжимается в узкую полоску слева.
+            max_letterhead_h = 60 * mm
             if letterhead_h > max_letterhead_h:
                 letterhead_h = max_letterhead_h
+                letterhead_w = letterhead_h * lw / lh
         except Exception:
             letterhead_reader = None
 
@@ -299,7 +382,7 @@ def _build_compare_pdf(
             pdf.drawImage(
                 letterhead_reader,
                 left, page_h - 14 * mm - letterhead_h,
-                width=width, height=letterhead_h,
+                width=letterhead_w, height=letterhead_h,
                 preserveAspectRatio=True, mask="auto",
             )
         except Exception:
