@@ -370,3 +370,11 @@ class PdfExportRequest(BaseModel):
         default=None,
         description="Имя файла водяного знака из папки photos/ (опционально, без пути).",
     )
+    show_title: bool = Field(
+        default=False,
+        description="Показывать заголовок (синяя плашка с названием отчёта и датой) в PDF.",
+    )
+    letterhead: bool = Field(
+        default=False,
+        description="Показывать фирменную шапку (бланк заказчика) сверху каждой страницы PDF.",
+    )

@@ -1150,8 +1150,21 @@ function renderQpChartShared(container, chartRef, products, targetRpm = null, ta
           title: 'Исходный масштаб',
           icon: 'path://M512 128a384 384 0 1 0 384 384h-80a304 304 0 1 1-89-215l-79 79h248V107l-90 90A382 382 0 0 0 512 128z',
           onclick: () => {
-            chartRef.dispatchAction({ type: 'dataZoom', xAxisIndex: 0, startValue: 0, endValue: xFocusEnd });
-            chartRef.dispatchAction({ type: 'dataZoom', yAxisIndex: 0, startValue: 0, endValue: yFocusEnd });
+            // ВАЖНО: адресуемся по dataZoomIndex, а не xAxisIndex/yAxisIndex.
+            // У ECharts баг сопоставления — дозум-экшен с одним лишь yAxisIndex
+            // (без xAxisIndex в payload) всё равно попадает и в X-компоненты
+            // (см. индексы 0/2 в массиве dataZoom выше), затирая их диапазон
+            // значением Y — график схлопывается в точку. dataZoomIndex
+            // однозначно адресует нужный компонент и обходит эту путаницу.
+            chartRef.dispatchAction({
+              type: 'dataZoom',
+              batch: [
+                { dataZoomIndex: 0, startValue: 0, endValue: xFocusEnd },
+                { dataZoomIndex: 1, startValue: 0, endValue: yFocusEnd },
+                { dataZoomIndex: 2, startValue: 0, endValue: xFocusEnd },
+                { dataZoomIndex: 3, startValue: 0, endValue: yFocusEnd }
+              ]
+            });
           },
         },
         saveAsImage: { title: 'Скачать PNG', name: 'ventsearch-chart' }
@@ -1269,6 +1282,8 @@ async function fetchClientPdfBlob(ids, options = {}) {
       chart_image_data_url: chartImageDataUrl,
       header_text: options.headerText || undefined,
       watermark: options.watermark || undefined,
+      show_title: !!options.showTitle,
+      letterhead: !!options.letterhead,
     }),
   });
   if (!response.ok) {
@@ -1388,6 +1403,20 @@ function ensurePdfMakerModal() {
               <input type="hidden" id="pdfMakerWatermark" value="">
             </div>
           </div>
+          <div class="d-flex flex-wrap gap-3 mt-3">
+            <div class="form-check form-switch">
+              <input class="form-check-input" type="checkbox" id="pdfMakerShowTitle">
+              <label class="form-check-label small text-secondary" for="pdfMakerShowTitle">
+                Заголовок (плашка с названием и датой)
+              </label>
+            </div>
+            <div class="form-check form-switch">
+              <input class="form-check-input" type="checkbox" id="pdfMakerLetterhead">
+              <label class="form-check-label small text-secondary" for="pdfMakerLetterhead">
+                Фирменная шапка сверху (бланк заказчика)
+              </label>
+            </div>
+          </div>
           <div class="d-flex gap-2 mt-3">
             <button id="pdfMakerPreviewBtn" class="btn btn-outline-secondary btn-sm" type="button">Предпросмотр</button>
             <button id="pdfMakerDownloadBtn" class="btn btn-pdf btn-sm" type="button">Скачать PDF</button>
@@ -1422,6 +1451,8 @@ function ensurePdfMakerModal() {
       chart: typeof ctx.getChart === "function" ? ctx.getChart() : null,
       headerText: String(modalEl.querySelector("#pdfMakerHeaderText")?.value || "").trim(),
       watermark: String(modalEl.querySelector("#pdfMakerWatermark")?.value || "").trim(),
+      showTitle: !!modalEl.querySelector("#pdfMakerShowTitle")?.checked,
+      letterhead: !!modalEl.querySelector("#pdfMakerLetterhead")?.checked,
     };
   }
 
@@ -1488,6 +1519,8 @@ function ensurePdfMakerModal() {
     clearTimeout(headerDebounce);
     headerDebounce = setTimeout(() => autoRefreshIfPreviewOpen(), 700);
   });
+  modalEl.querySelector("#pdfMakerShowTitle").addEventListener("change", autoRefreshIfPreviewOpen);
+  modalEl.querySelector("#pdfMakerLetterhead").addEventListener("change", autoRefreshIfPreviewOpen);
 
   downloadBtn.addEventListener("click", async () => {
     downloadBtn.disabled = true;

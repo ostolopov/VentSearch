@@ -212,6 +212,10 @@ def _pick_fonts() -> tuple[str, str]:
 
 VENTSEARCH_ADDRESS = "Заречная ул., 1, Ивантеевка"
 
+# Фирменный бланк (шапка заказчика) для верха каждой страницы PDF — кладётся
+# в photos/ под этим именем; опция выключена, пока файла нет.
+LETTERHEAD_FILENAME = "ШАПКА_ВЕНТМАШ.png"
+
 # Фото по типу вентилятора — та же карта, что FAN_IMAGES_BY_TYPE на фронтенде
 _PDF_PHOTO_BY_TYPE = {
     "ВКОП": "vkop.jpeg", "ВО": "vo.jpeg", "ВР": "vr.jpeg", "ВЦ": "vc.jpeg",
@@ -257,15 +261,13 @@ def _find_product_blueprint(product: dict[str, Any]) -> Optional[Path]:
     return _find_blueprint_variant(product, "blueprint")
 
 
-def _find_product_blueprint_vals(product: dict[str, Any]) -> Optional[Path]:
-    return _find_blueprint_variant(product, "blueprintVals")
-
-
 def _build_compare_pdf(
     products: list[dict[str, Any]],
     chart_png: Optional[bytes] = None,
     header_text: Optional[str] = None,
     watermark_path: Optional[Path] = None,
+    letterhead_path: Optional[Path] = None,
+    show_title: bool = True,
 ) -> bytes:
     buf = BytesIO()
     pdf = rl_canvas.Canvas(buf, pagesize=A4)
@@ -273,8 +275,38 @@ def _build_compare_pdf(
     left = 14 * mm
     right = page_w - 14 * mm
     width = right - left
-    y = page_h - 14 * mm
     font_r, font_b = _pick_fonts()
+
+    # Фирменный бланк (шапка заказчика) — печатается ПЕРВЫМ на каждой
+    # странице, во всю ширину, сверху. Опция выключена по умолчанию.
+    letterhead_h = 0.0
+    letterhead_reader = None
+    if letterhead_path:
+        try:
+            letterhead_reader = ImageReader(str(letterhead_path))
+            lw, lh = letterhead_reader.getSize()
+            letterhead_h = width * lh / lw
+            max_letterhead_h = 45 * mm
+            if letterhead_h > max_letterhead_h:
+                letterhead_h = max_letterhead_h
+        except Exception:
+            letterhead_reader = None
+
+    def draw_letterhead():
+        if not letterhead_reader:
+            return
+        try:
+            pdf.drawImage(
+                letterhead_reader,
+                left, page_h - 14 * mm - letterhead_h,
+                width=width, height=letterhead_h,
+                preserveAspectRatio=True, mask="auto",
+            )
+        except Exception:
+            pass
+
+    top_margin = 14 * mm + (letterhead_h + 6 * mm if letterhead_reader else 0)
+    y = page_h - top_margin
     c_primary = colors.HexColor("#027bf3")
     c_surface = colors.HexColor("#f6f8fa")
     c_border = colors.HexColor("#e2e5e9")
@@ -323,7 +355,8 @@ def _build_compare_pdf(
         nonlocal y
         pdf.showPage()
         draw_watermark()
-        y = page_h - 14 * mm
+        draw_letterhead()
+        y = page_h - top_margin
 
     def line(text, step=5.6 * mm, bold=False, color=None, size=10):
         nonlocal y
@@ -376,13 +409,15 @@ def _build_compare_pdf(
     pdf.setAuthor("VENTSEARCH API")
     pdf.setTitle("VENTSEARCH Карточка модели" if single else "VENTSEARCH Сравнение моделей")
     draw_watermark()
-    default_title = "VENTSEARCH — карточка модели" if single else "VENTSEARCH — отчет по сравнению"
-    title = (header_text or "").strip() or default_title
-    card_header(
-        title,
-        f"Дата: {datetime.now().strftime('%d.%m.%Y %H:%M')}"
-        + ("" if single else f"   |   Моделей: {len(products)}"),
-    )
+    draw_letterhead()
+    if show_title:
+        default_title = "VENTSEARCH — карточка модели" if single else "VENTSEARCH — отчет по сравнению"
+        title = (header_text or "").strip() or default_title
+        card_header(
+            title,
+            f"Дата: {datetime.now().strftime('%d.%m.%Y %H:%M')}"
+            + ("" if single else f"   |   Моделей: {len(products)}"),
+        )
     line(VENTSEARCH_ADDRESS, step=6.0 * mm, color=c_muted, size=8.5)
 
     if chart_png:
@@ -509,10 +544,10 @@ def _build_compare_pdf(
                 pdf.drawString(left + 3 * mm, y - (29.5 + i * 4) * mm, dl)
         y -= card_h + 3.5 * mm
 
-    # Чертёж из каталога печатаем ОДИН РАЗ (общий для ряда), крупно, каждое
-    # изображение с новой строки во всю ширину: сначала сам чертёж
-    # (blueprint), ниже — таблица значений (blueprintVals). Одинаковые для
-    # разных моделей файлы не дублируем.
+    # Чертёж из каталога печатаем ОДИН РАЗ (общий для ряда), крупно, во всю
+    # ширину страницы. Одинаковые для разных моделей файлы не дублируем.
+    # Таблицу присоединительных размеров (blueprintVals) в PDF не выводим —
+    # по просьбе клиента остаётся только сам чертёж.
     def _draw_full_width_image(path, title):
         nonlocal y
         try:
@@ -541,15 +576,10 @@ def _build_compare_pdf(
     seen_bp: set[str] = set()
     for p in products:
         bp_path = _find_product_blueprint(p)
-        vals_path = _find_product_blueprint_vals(p)
-        key = f"{bp_path}|{vals_path}"
-        if (not bp_path and not vals_path) or key in seen_bp:
+        if not bp_path or str(bp_path) in seen_bp:
             continue
-        seen_bp.add(key)
-        if bp_path:
-            _draw_full_width_image(bp_path, "Чертёж из каталога")
-        if vals_path:
-            _draw_full_width_image(vals_path, "Таблица присоединительных размеров")
+        seen_bp.add(str(bp_path))
+        _draw_full_width_image(bp_path, "Чертёж из каталога")
 
     pdf.save()
     data = buf.getvalue()
@@ -756,11 +786,18 @@ def create_app() -> FastAPI:
                 and candidate.resolve().parent == PHOTOS_DIR.resolve()
             ):
                 watermark_path = candidate
+        letterhead_path = None
+        if payload.letterhead:
+            candidate = PHOTOS_DIR / LETTERHEAD_FILENAME
+            if candidate.is_file():
+                letterhead_path = candidate
         pdf_bytes = _build_compare_pdf(
             products_list,
             chart_png=chart_png,
             header_text=payload.header_text,
             watermark_path=watermark_path,
+            letterhead_path=letterhead_path,
+            show_title=payload.show_title,
         )
         filename = _safe_pdf_filename(payload.filename)
         headers = {"Content-Disposition": f'attachment; filename="{filename}"'}

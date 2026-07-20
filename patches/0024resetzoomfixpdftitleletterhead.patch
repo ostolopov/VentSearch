@@ -1,0 +1,251 @@
+diff --git a/backend/presentation/api/schemas.py b/backend/presentation/api/schemas.py
+index 7b6da92..25cb9e5 100644
+--- a/backend/presentation/api/schemas.py
++++ b/backend/presentation/api/schemas.py
+@@ -370,3 +370,11 @@ class PdfExportRequest(BaseModel):
+         default=None,
+         description="Имя файла водяного знака из папки photos/ (опционально, без пути).",
+     )
++    show_title: bool = Field(
++        default=False,
++        description="Показывать заголовок (синяя плашка с названием отчёта и датой) в PDF.",
++    )
++    letterhead: bool = Field(
++        default=False,
++        description="Показывать фирменную шапку (бланк заказчика) сверху каждой страницы PDF.",
++    )
+diff --git a/backend/presentation/app.py b/backend/presentation/app.py
+index 1d970d4..89abc27 100644
+--- a/backend/presentation/app.py
++++ b/backend/presentation/app.py
+@@ -212,6 +212,10 @@ def _pick_fonts() -> tuple[str, str]:
+ 
+ VENTSEARCH_ADDRESS = "Заречная ул., 1, Ивантеевка"
+ 
++# Фирменный бланк (шапка заказчика) для верха каждой страницы PDF — кладётся
++# в photos/ под этим именем; опция выключена, пока файла нет.
++LETTERHEAD_FILENAME = "ШАПКА_ВЕНТМАШ.png"
++
+ # Фото по типу вентилятора — та же карта, что FAN_IMAGES_BY_TYPE на фронтенде
+ _PDF_PHOTO_BY_TYPE = {
+     "ВКОП": "vkop.jpeg", "ВО": "vo.jpeg", "ВР": "vr.jpeg", "ВЦ": "vc.jpeg",
+@@ -257,15 +261,13 @@ def _find_product_blueprint(product: dict[str, Any]) -> Optional[Path]:
+     return _find_blueprint_variant(product, "blueprint")
+ 
+ 
+-def _find_product_blueprint_vals(product: dict[str, Any]) -> Optional[Path]:
+-    return _find_blueprint_variant(product, "blueprintVals")
+-
+-
+ def _build_compare_pdf(
+     products: list[dict[str, Any]],
+     chart_png: Optional[bytes] = None,
+     header_text: Optional[str] = None,
+     watermark_path: Optional[Path] = None,
++    letterhead_path: Optional[Path] = None,
++    show_title: bool = True,
+ ) -> bytes:
+     buf = BytesIO()
+     pdf = rl_canvas.Canvas(buf, pagesize=A4)
+@@ -273,8 +275,38 @@ def _build_compare_pdf(
+     left = 14 * mm
+     right = page_w - 14 * mm
+     width = right - left
+-    y = page_h - 14 * mm
+     font_r, font_b = _pick_fonts()
++
++    # Фирменный бланк (шапка заказчика) — печатается ПЕРВЫМ на каждой
++    # странице, во всю ширину, сверху. Опция выключена по умолчанию.
++    letterhead_h = 0.0
++    letterhead_reader = None
++    if letterhead_path:
++        try:
++            letterhead_reader = ImageReader(str(letterhead_path))
++            lw, lh = letterhead_reader.getSize()
++            letterhead_h = width * lh / lw
++            max_letterhead_h = 45 * mm
++            if letterhead_h > max_letterhead_h:
++                letterhead_h = max_letterhead_h
++        except Exception:
++            letterhead_reader = None
++
++    def draw_letterhead():
++        if not letterhead_reader:
++            return
++        try:
++            pdf.drawImage(
++                letterhead_reader,
++                left, page_h - 14 * mm - letterhead_h,
++                width=width, height=letterhead_h,
++                preserveAspectRatio=True, mask="auto",
++            )
++        except Exception:
++            pass
++
++    top_margin = 14 * mm + (letterhead_h + 6 * mm if letterhead_reader else 0)
++    y = page_h - top_margin
+     c_primary = colors.HexColor("#027bf3")
+     c_surface = colors.HexColor("#f6f8fa")
+     c_border = colors.HexColor("#e2e5e9")
+@@ -323,7 +355,8 @@ def _build_compare_pdf(
+         nonlocal y
+         pdf.showPage()
+         draw_watermark()
+-        y = page_h - 14 * mm
++        draw_letterhead()
++        y = page_h - top_margin
+ 
+     def line(text, step=5.6 * mm, bold=False, color=None, size=10):
+         nonlocal y
+@@ -376,13 +409,15 @@ def _build_compare_pdf(
+     pdf.setAuthor("VENTSEARCH API")
+     pdf.setTitle("VENTSEARCH Карточка модели" if single else "VENTSEARCH Сравнение моделей")
+     draw_watermark()
+-    default_title = "VENTSEARCH — карточка модели" if single else "VENTSEARCH — отчет по сравнению"
+-    title = (header_text or "").strip() or default_title
+-    card_header(
+-        title,
+-        f"Дата: {datetime.now().strftime('%d.%m.%Y %H:%M')}"
+-        + ("" if single else f"   |   Моделей: {len(products)}"),
+-    )
++    draw_letterhead()
++    if show_title:
++        default_title = "VENTSEARCH — карточка модели" if single else "VENTSEARCH — отчет по сравнению"
++        title = (header_text or "").strip() or default_title
++        card_header(
++            title,
++            f"Дата: {datetime.now().strftime('%d.%m.%Y %H:%M')}"
++            + ("" if single else f"   |   Моделей: {len(products)}"),
++        )
+     line(VENTSEARCH_ADDRESS, step=6.0 * mm, color=c_muted, size=8.5)
+ 
+     if chart_png:
+@@ -509,10 +544,10 @@ def _build_compare_pdf(
+                 pdf.drawString(left + 3 * mm, y - (29.5 + i * 4) * mm, dl)
+         y -= card_h + 3.5 * mm
+ 
+-    # Чертёж из каталога печатаем ОДИН РАЗ (общий для ряда), крупно, каждое
+-    # изображение с новой строки во всю ширину: сначала сам чертёж
+-    # (blueprint), ниже — таблица значений (blueprintVals). Одинаковые для
+-    # разных моделей файлы не дублируем.
++    # Чертёж из каталога печатаем ОДИН РАЗ (общий для ряда), крупно, во всю
++    # ширину страницы. Одинаковые для разных моделей файлы не дублируем.
++    # Таблицу присоединительных размеров (blueprintVals) в PDF не выводим —
++    # по просьбе клиента остаётся только сам чертёж.
+     def _draw_full_width_image(path, title):
+         nonlocal y
+         try:
+@@ -541,15 +576,10 @@ def _build_compare_pdf(
+     seen_bp: set[str] = set()
+     for p in products:
+         bp_path = _find_product_blueprint(p)
+-        vals_path = _find_product_blueprint_vals(p)
+-        key = f"{bp_path}|{vals_path}"
+-        if (not bp_path and not vals_path) or key in seen_bp:
++        if not bp_path or str(bp_path) in seen_bp:
+             continue
+-        seen_bp.add(key)
+-        if bp_path:
+-            _draw_full_width_image(bp_path, "Чертёж из каталога")
+-        if vals_path:
+-            _draw_full_width_image(vals_path, "Таблица присоединительных размеров")
++        seen_bp.add(str(bp_path))
++        _draw_full_width_image(bp_path, "Чертёж из каталога")
+ 
+     pdf.save()
+     data = buf.getvalue()
+@@ -756,11 +786,18 @@ def create_app() -> FastAPI:
+                 and candidate.resolve().parent == PHOTOS_DIR.resolve()
+             ):
+                 watermark_path = candidate
++        letterhead_path = None
++        if payload.letterhead:
++            candidate = PHOTOS_DIR / LETTERHEAD_FILENAME
++            if candidate.is_file():
++                letterhead_path = candidate
+         pdf_bytes = _build_compare_pdf(
+             products_list,
+             chart_png=chart_png,
+             header_text=payload.header_text,
+             watermark_path=watermark_path,
++            letterhead_path=letterhead_path,
++            show_title=payload.show_title,
+         )
+         filename = _safe_pdf_filename(payload.filename)
+         headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
+diff --git a/frontend/script.js b/frontend/script.js
+index b78a34e..81df8d1 100644
+--- a/frontend/script.js
++++ b/frontend/script.js
+@@ -1150,8 +1150,21 @@ function renderQpChartShared(container, chartRef, products, targetRpm = null, ta
+           title: 'Исходный масштаб',
+           icon: 'path://M512 128a384 384 0 1 0 384 384h-80a304 304 0 1 1-89-215l-79 79h248V107l-90 90A382 382 0 0 0 512 128z',
+           onclick: () => {
+-            chartRef.dispatchAction({ type: 'dataZoom', xAxisIndex: 0, startValue: 0, endValue: xFocusEnd });
+-            chartRef.dispatchAction({ type: 'dataZoom', yAxisIndex: 0, startValue: 0, endValue: yFocusEnd });
++            // ВАЖНО: адресуемся по dataZoomIndex, а не xAxisIndex/yAxisIndex.
++            // У ECharts баг сопоставления — дозум-экшен с одним лишь yAxisIndex
++            // (без xAxisIndex в payload) всё равно попадает и в X-компоненты
++            // (см. индексы 0/2 в массиве dataZoom выше), затирая их диапазон
++            // значением Y — график схлопывается в точку. dataZoomIndex
++            // однозначно адресует нужный компонент и обходит эту путаницу.
++            chartRef.dispatchAction({
++              type: 'dataZoom',
++              batch: [
++                { dataZoomIndex: 0, startValue: 0, endValue: xFocusEnd },
++                { dataZoomIndex: 1, startValue: 0, endValue: yFocusEnd },
++                { dataZoomIndex: 2, startValue: 0, endValue: xFocusEnd },
++                { dataZoomIndex: 3, startValue: 0, endValue: yFocusEnd }
++              ]
++            });
+           },
+         },
+         saveAsImage: { title: 'Скачать PNG', name: 'ventsearch-chart' }
+@@ -1269,6 +1282,8 @@ async function fetchClientPdfBlob(ids, options = {}) {
+       chart_image_data_url: chartImageDataUrl,
+       header_text: options.headerText || undefined,
+       watermark: options.watermark || undefined,
++      show_title: !!options.showTitle,
++      letterhead: !!options.letterhead,
+     }),
+   });
+   if (!response.ok) {
+@@ -1388,6 +1403,20 @@ function ensurePdfMakerModal() {
+               <input type="hidden" id="pdfMakerWatermark" value="">
+             </div>
+           </div>
++          <div class="d-flex flex-wrap gap-3 mt-3">
++            <div class="form-check form-switch">
++              <input class="form-check-input" type="checkbox" id="pdfMakerShowTitle">
++              <label class="form-check-label small text-secondary" for="pdfMakerShowTitle">
++                Заголовок (плашка с названием и датой)
++              </label>
++            </div>
++            <div class="form-check form-switch">
++              <input class="form-check-input" type="checkbox" id="pdfMakerLetterhead">
++              <label class="form-check-label small text-secondary" for="pdfMakerLetterhead">
++                Фирменная шапка сверху (бланк заказчика)
++              </label>
++            </div>
++          </div>
+           <div class="d-flex gap-2 mt-3">
+             <button id="pdfMakerPreviewBtn" class="btn btn-outline-secondary btn-sm" type="button">Предпросмотр</button>
+             <button id="pdfMakerDownloadBtn" class="btn btn-pdf btn-sm" type="button">Скачать PDF</button>
+@@ -1422,6 +1451,8 @@ function ensurePdfMakerModal() {
+       chart: typeof ctx.getChart === "function" ? ctx.getChart() : null,
+       headerText: String(modalEl.querySelector("#pdfMakerHeaderText")?.value || "").trim(),
+       watermark: String(modalEl.querySelector("#pdfMakerWatermark")?.value || "").trim(),
++      showTitle: !!modalEl.querySelector("#pdfMakerShowTitle")?.checked,
++      letterhead: !!modalEl.querySelector("#pdfMakerLetterhead")?.checked,
+     };
+   }
+ 
+@@ -1488,6 +1519,8 @@ function ensurePdfMakerModal() {
+     clearTimeout(headerDebounce);
+     headerDebounce = setTimeout(() => autoRefreshIfPreviewOpen(), 700);
+   });
++  modalEl.querySelector("#pdfMakerShowTitle").addEventListener("change", autoRefreshIfPreviewOpen);
++  modalEl.querySelector("#pdfMakerLetterhead").addEventListener("change", autoRefreshIfPreviewOpen);
+ 
+   downloadBtn.addEventListener("click", async () => {
+     downloadBtn.disabled = true;
