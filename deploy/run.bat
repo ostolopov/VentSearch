@@ -1,4 +1,6 @@
 @echo off
+rem Кодовая страница UTF-8, иначе кириллица в консоли превращается в кракозябры
+chcp 65001 >nul
 rem Запуск API локально без Docker (Windows CMD).
 rem Запуск из корня репозитория: deploy\run.bat
 setlocal
@@ -51,11 +53,18 @@ for /f "usebackq delims=" %%I in (`powershell -NoProfile -Command "$ip=(Get-NetI
 )
 
 echo.
-echo Секреты: secrets\.env.local
-echo API:     http://127.0.0.1:8000/docs
+echo ============================================================
+echo  Открывайте сайт в браузере:   http://127.0.0.1:8000/
+echo  Документация API (Swagger):   http://127.0.0.1:8000/docs
 if defined LAN_IP (
-  echo Сеть:    http://%LAN_IP%:8000/
+  echo  Для других устройств в сети:  http://%LAN_IP%:8000/
 )
+echo.
+echo  ВНИМАНИЕ: ниже uvicorn напишет "Running on http://0.0.0.0:8000".
+echo  0.0.0.0 означает "на всех сетевых адресах" — это НЕ адрес для
+echo  браузера. Открывайте именно http://127.0.0.1:8000/
+echo  Секреты берутся из secrets\.env.local
+echo ============================================================
 echo.
 
 "%VPY%" app.py

@@ -238,16 +238,27 @@ def _find_product_photo(product: dict[str, Any]) -> Optional[Path]:
     return path if path.is_file() else None
 
 
-def _find_product_blueprint(product: dict[str, Any]) -> Optional[Path]:
+def _find_blueprint_variant(product: dict[str, Any], base: str) -> Optional[Path]:
+    """Ищет photos/<base>_<slug>.<ext>, затем общий photos/<base>.<ext>."""
     meta = product.get("_meta") or product.get("meta") or {}
     slug = str(meta.get("model_slug") or "").strip().lower() or _pdf_slugify(product.get("model") or "")
-    if not slug:
-        return None
-    for ext in _BLUEPRINT_PDF_EXTENSIONS:
-        path = PHOTOS_DIR / f"blueprint_{slug}.{ext}"
+    names: list[str] = []
+    if slug:
+        names += [f"{base}_{slug}.{ext}" for ext in _BLUEPRINT_PDF_EXTENSIONS]
+    names += [f"{base}.{ext}" for ext in _BLUEPRINT_PDF_EXTENSIONS]
+    for name in names:
+        path = PHOTOS_DIR / name
         if path.is_file():
             return path
     return None
+
+
+def _find_product_blueprint(product: dict[str, Any]) -> Optional[Path]:
+    return _find_blueprint_variant(product, "blueprint")
+
+
+def _find_product_blueprint_vals(product: dict[str, Any]) -> Optional[Path]:
+    return _find_blueprint_variant(product, "blueprintVals")
 
 
 def _build_compare_pdf(
@@ -498,38 +509,47 @@ def _build_compare_pdf(
                 pdf.drawString(left + 3 * mm, y - (29.5 + i * 4) * mm, dl)
         y -= card_h + 3.5 * mm
 
-    # Чертежи из каталога (photos/blueprint_<слаг>.*) — по одному на модель,
-    # если файл добавлен; без файла раздел просто не печатается
-    blueprint_items = [
-        (p, path) for p in products
-        if (path := _find_product_blueprint(p)) is not None
-    ]
-    for p, bp_path in blueprint_items:
+    # Чертёж из каталога печатаем ОДИН РАЗ (общий для ряда), крупно, каждое
+    # изображение с новой строки во всю ширину: сначала сам чертёж
+    # (blueprint), ниже — таблица значений (blueprintVals). Одинаковые для
+    # разных моделей файлы не дублируем.
+    def _draw_full_width_image(path, title):
+        nonlocal y
         try:
-            bp_image = ImageReader(str(bp_path))
-            iw, ih = bp_image.getSize()
+            img = ImageReader(str(path))
+            iw, ih = img.getSize()
             draw_w = width
             draw_h = draw_w * ih / iw
-            max_h = 120 * mm
+            max_h = 210 * mm
             if draw_h > max_h:
                 draw_h = max_h
                 draw_w = draw_h * iw / ih
-            block_h = draw_h + 12 * mm
-            if y - block_h < 12 * mm:
+            if y - (draw_h + 10 * mm) < 12 * mm:
                 new_page()
-            line(f"Чертёж: {_normalize_ws(p.get('model') or '—')}", step=6.5 * mm, bold=True, size=10)
+            line(title, step=6.5 * mm, bold=True, size=10)
             pdf.setStrokeColor(c_border)
             pdf.setFillColor(colors.white)
             pdf.roundRect(left, y - draw_h - 3 * mm, width, draw_h + 3 * mm, 2 * mm, stroke=1, fill=1)
             pdf.drawImage(
-                bp_image,
-                left + (width - draw_w) / 2, y - draw_h - 1.5 * mm,
-                width=draw_w, height=draw_h,
-                preserveAspectRatio=True, mask="auto",
+                img, left + (width - draw_w) / 2, y - draw_h - 1.5 * mm,
+                width=draw_w, height=draw_h, preserveAspectRatio=True, mask="auto",
             )
             y -= draw_h + 8 * mm
         except Exception:
             pass
+
+    seen_bp: set[str] = set()
+    for p in products:
+        bp_path = _find_product_blueprint(p)
+        vals_path = _find_product_blueprint_vals(p)
+        key = f"{bp_path}|{vals_path}"
+        if (not bp_path and not vals_path) or key in seen_bp:
+            continue
+        seen_bp.add(key)
+        if bp_path:
+            _draw_full_width_image(bp_path, "Чертёж из каталога")
+        if vals_path:
+            _draw_full_width_image(vals_path, "Таблица присоединительных размеров")
 
     pdf.save()
     data = buf.getvalue()

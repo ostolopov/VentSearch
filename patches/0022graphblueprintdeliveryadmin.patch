@@ -1,0 +1,976 @@
+diff --git a/TROUBLESHOOTING.md b/TROUBLESHOOTING.md
+index 9a8c0c9..b3539b8 100644
+--- a/TROUBLESHOOTING.md
++++ b/TROUBLESHOOTING.md
+@@ -147,12 +147,25 @@ python scripts/generate_favicons.py
+ 
+ ## Чертежи из каталога на карточке модели
+ 
+-Блок «Чертёж из каталога» на странице модели показывает файл
+-`photos/blueprint_<слаг-модели>.png` (также подойдут `.jpg`/`.jpeg`/`.webp`).
+-Точное ожидаемое имя файла для конкретной модели написано в подсказке прямо
+-под блоком — скопируйте его, положите скан из бумажного каталога с этим
+-именем в `photos/`, и он появится сам (без перезапуска). Пока файла нет,
+-показывается шаблон-заглушка `frontend/img/blueprint-placeholder.svg`.
++Блок «Чертёж из каталога» показывает ДВЕ картинки рядом: слева сам чертёж,
++справа — таблицу подробных значений. Файлы кладутся в `photos/`:
++
++- левая (чертёж): `blueprint_<слаг-модели>.png` или общий `blueprint.png`;
++- правая (значения): `blueprintVals_<слаг-модели>.png` или общий
++  `blueprintVals.png`.
++
++Подойдут расширения `.png`/`.jpg`/`.jpeg`/`.webp`. Сначала ищется вариант с
++`_<слаг>`, потом общий файл без слага, потом заглушка (`frontend/img/…`).
++Точные ожидаемые имена для текущей модели видны в подсказке под блоком
++(только у администратора). Клик по любой картинке открывает её на весь экран.
++Эти же изображения попадают в PDF-документ для клиента.
++
++## Раздел «Доставка» временно закрыт
++
++Страница доставки намеренно залита серым с красной надписью «Недоступно в
++инсайдерской версии» — независимо от `DEMO_MODE`. Это заглушка «в разработке».
++Чтобы снова открыть раздел, уберите в `frontend/delivery.html` атрибут
++`data-locked-section` у блока `<div class="row g-4" ...>`.
+ 
+ ## Сортировка каталога
+ 
+diff --git a/backend/presentation/app.py b/backend/presentation/app.py
+index 952df42..d8d7275 100644
+--- a/backend/presentation/app.py
++++ b/backend/presentation/app.py
+@@ -238,18 +238,29 @@ def _find_product_photo(product: dict[str, Any]) -> Optional[Path]:
+     return path if path.is_file() else None
+ 
+ 
+-def _find_product_blueprint(product: dict[str, Any]) -> Optional[Path]:
++def _find_blueprint_variant(product: dict[str, Any], base: str) -> Optional[Path]:
++    """Ищет photos/<base>_<slug>.<ext>, затем общий photos/<base>.<ext>."""
+     meta = product.get("_meta") or product.get("meta") or {}
+     slug = str(meta.get("model_slug") or "").strip().lower() or _pdf_slugify(product.get("model") or "")
+-    if not slug:
+-        return None
+-    for ext in _BLUEPRINT_PDF_EXTENSIONS:
+-        path = PHOTOS_DIR / f"blueprint_{slug}.{ext}"
++    names: list[str] = []
++    if slug:
++        names += [f"{base}_{slug}.{ext}" for ext in _BLUEPRINT_PDF_EXTENSIONS]
++    names += [f"{base}.{ext}" for ext in _BLUEPRINT_PDF_EXTENSIONS]
++    for name in names:
++        path = PHOTOS_DIR / name
+         if path.is_file():
+             return path
+     return None
+ 
+ 
++def _find_product_blueprint(product: dict[str, Any]) -> Optional[Path]:
++    return _find_blueprint_variant(product, "blueprint")
++
++
++def _find_product_blueprint_vals(product: dict[str, Any]) -> Optional[Path]:
++    return _find_blueprint_variant(product, "blueprintVals")
++
++
+ def _build_compare_pdf(
+     products: list[dict[str, Any]],
+     chart_png: Optional[bytes] = None,
+@@ -498,36 +509,50 @@ def _build_compare_pdf(
+                 pdf.drawString(left + 3 * mm, y - (29.5 + i * 4) * mm, dl)
+         y -= card_h + 3.5 * mm
+ 
+-    # Чертежи из каталога (photos/blueprint_<слаг>.*) — по одному на модель,
+-    # если файл добавлен; без файла раздел просто не печатается
+-    blueprint_items = [
+-        (p, path) for p in products
+-        if (path := _find_product_blueprint(p)) is not None
+-    ]
+-    for p, bp_path in blueprint_items:
++    # Чертежи из каталога: слева сам чертёж (blueprint), справа — таблица
++    # значений (blueprintVals), если файл добавлен. Без файлов раздел не
++    # печатается. Модели без чертежа пропускаются.
++    def _fit(reader, box_w, box_h):
++        iw, ih = reader.getSize()
++        s = min(box_w / iw, box_h / ih)
++        return iw * s, ih * s
++
++    for p in products:
++        bp_path = _find_product_blueprint(p)
++        vals_path = _find_product_blueprint_vals(p)
++        if not bp_path and not vals_path:
++            continue
+         try:
+-            bp_image = ImageReader(str(bp_path))
+-            iw, ih = bp_image.getSize()
+-            draw_w = width
+-            draw_h = draw_w * ih / iw
+-            max_h = 120 * mm
+-            if draw_h > max_h:
+-                draw_h = max_h
+-                draw_w = draw_h * iw / ih
+-            block_h = draw_h + 12 * mm
+-            if y - block_h < 12 * mm:
++            block_h = 96 * mm
++            if y - (block_h + 8 * mm) < 12 * mm:
+                 new_page()
+             line(f"Чертёж: {_normalize_ws(p.get('model') or '—')}", step=6.5 * mm, bold=True, size=10)
++            gap = 4 * mm
++            two = bool(bp_path and vals_path)
++            left_w = (width * 0.6 - gap / 2) if two else width
++            right_w = (width * 0.4 - gap / 2) if two else 0
++            top_y = y
+             pdf.setStrokeColor(c_border)
+             pdf.setFillColor(colors.white)
+-            pdf.roundRect(left, y - draw_h - 3 * mm, width, draw_h + 3 * mm, 2 * mm, stroke=1, fill=1)
+-            pdf.drawImage(
+-                bp_image,
+-                left + (width - draw_w) / 2, y - draw_h - 1.5 * mm,
+-                width=draw_w, height=draw_h,
+-                preserveAspectRatio=True, mask="auto",
+-            )
+-            y -= draw_h + 8 * mm
++            if bp_path:
++                pdf.roundRect(left, top_y - block_h, left_w, block_h, 2 * mm, stroke=1, fill=1)
++                dw, dh = _fit(ImageReader(str(bp_path)), left_w - 4 * mm, block_h - 4 * mm)
++                pdf.drawImage(
++                    ImageReader(str(bp_path)),
++                    left + (left_w - dw) / 2, top_y - (block_h + dh) / 2,
++                    width=dw, height=dh, preserveAspectRatio=True, mask="auto",
++                )
++            if vals_path:
++                rx = left + (left_w + gap if bp_path else 0)
++                rw = right_w if bp_path else width
++                pdf.roundRect(rx, top_y - block_h, rw, block_h, 2 * mm, stroke=1, fill=1)
++                dw, dh = _fit(ImageReader(str(vals_path)), rw - 4 * mm, block_h - 4 * mm)
++                pdf.drawImage(
++                    ImageReader(str(vals_path)),
++                    rx + (rw - dw) / 2, top_y - (block_h + dh) / 2,
++                    width=dw, height=dh, preserveAspectRatio=True, mask="auto",
++                )
++            y -= block_h + 8 * mm
+         except Exception:
+             pass
+ 
+diff --git a/frontend/404.html b/frontend/404.html
+index 1b7767a..e0beeca 100644
+--- a/frontend/404.html
++++ b/frontend/404.html
+@@ -13,7 +13,7 @@
+       rel="stylesheet"
+       crossorigin="anonymous"
+     />
+-    <link rel="stylesheet" href="style.css?v=20260717-2" />
++    <link rel="stylesheet" href="style.css?v=20260717-3" />
+   </head>
+   <body data-page="error">
+     <nav class="navbar navbar-expand-lg sticky-top">
+@@ -99,7 +99,7 @@
+     <script src="config.js?v=20260424-1"></script>
+     <script src="auth.js?v=20260524-9"></script>
+     <script src="site-auth.js?v=20260524-9"></script>
+-    <script src="script.js?v=20260717-2"></script>
++    <script src="script.js?v=20260717-3"></script>
+     <script src="site-layout.js?v=20260709-1"></script>
+   </body>
+ </html>
+diff --git a/frontend/500.html b/frontend/500.html
+index 36534f6..2907d33 100644
+--- a/frontend/500.html
++++ b/frontend/500.html
+@@ -13,7 +13,7 @@
+       rel="stylesheet"
+       crossorigin="anonymous"
+     />
+-    <link rel="stylesheet" href="style.css?v=20260717-2" />
++    <link rel="stylesheet" href="style.css?v=20260717-3" />
+   </head>
+   <body data-page="error">
+     <nav class="navbar navbar-expand-lg sticky-top">
+@@ -99,7 +99,7 @@
+     <script src="config.js?v=20260424-1"></script>
+     <script src="auth.js?v=20260524-9"></script>
+     <script src="site-auth.js?v=20260524-9"></script>
+-    <script src="script.js?v=20260717-2"></script>
++    <script src="script.js?v=20260717-3"></script>
+     <script src="site-layout.js?v=20260709-1"></script>
+   </body>
+ </html>
+diff --git a/frontend/admin.html b/frontend/admin.html
+index de08043..ab017b3 100644
+--- a/frontend/admin.html
++++ b/frontend/admin.html
+@@ -13,7 +13,7 @@
+       rel="stylesheet"
+       crossorigin="anonymous"
+     />
+-    <link rel="stylesheet" href="style.css?v=20260717-2" />
++    <link rel="stylesheet" href="style.css?v=20260717-3" />
+   </head>
+   <body class="admin-page" data-page="admin">
+     <nav class="navbar navbar-expand-lg sticky-top">
+@@ -298,7 +298,7 @@
+     <script src="config.js?v=20260424-1"></script>
+     <script src="auth.js?v=20260524-10"></script>
+     <script src="site-auth.js?v=20260524-10"></script>
+-    <script src="admin.js?v=20260524-11"></script>
++    <script src="admin.js?v=20260717-3"></script>
+     <script src="admin-page.js?v=20260524-10"></script>
+     <script src="site-layout.js?v=20260709-1"></script>
+   </body>
+diff --git a/frontend/admin.js b/frontend/admin.js
+index 3c0df92..f4acbdb 100644
+--- a/frontend/admin.js
++++ b/frontend/admin.js
+@@ -701,7 +701,7 @@ function renderDebugCard(title, rows) {
+ // откладывает данные в _pendingBloomCanvases, реальная отрисовка в drawPendingBloomCanvases().
+ let _pendingBloomCanvases = [];
+ 
+-function renderBloomCard(title, bloom) {
++function renderBloomCard(title, bloom, colClass = "col-12") {
+   if (!bloom || typeof bloom.m !== "number" || !Array.isArray(bloom.bits)) {
+     return renderDebugCard(title, [["Статус", "нет данных"]]);
+   }
+@@ -737,7 +737,7 @@ function renderBloomCard(title, bloom) {
+     : "";
+ 
+   return `
+-    <div class="col-12">
++    <div class="${colClass}">
+       <div class="card shadow-sm h-100">
+         <div class="card-header py-2 fw-semibold d-flex justify-content-between align-items-center flex-wrap gap-2">
+           <span>${escapeHtml(title)}</span>
+@@ -747,7 +747,7 @@ function renderBloomCard(title, bloom) {
+         </div>
+         <div class="card-body d-flex flex-wrap gap-4 align-items-start">
+           <canvas id="${canvasId}" width="${cols * cellSize}" height="${rows * cellSize}" style="border:1px solid #dee2e6; border-radius:4px; flex-shrink:0;"></canvas>
+-          <div class="small text-secondary" style="min-width: 220px; max-width: 480px;">
++          <div class="small text-secondary" style="min-width: 200px; flex: 1 1 220px;">
+             <div class="mb-1"><strong>${knownValues.length}</strong> ${pluralRu(knownValues.length, "известное значение", "известных значения", "известных значений")} в индексе:</div>
+             <div>${knownPreview || "—"}</div>
+             ${fppHtml}
+@@ -842,8 +842,10 @@ async function loadDebug() {
+     ["Построен (Bloom + оси)", debugBoolBadge(idx.built === true)],
+     idx.built ? ["Записей", escapeHtml(idx.rows ?? "—")] : undefined,
+   ].filter(Boolean)));
+-  if (idx.built && idx.bloom_type) cards.push(renderBloomCard("Bloom-фильтр: тип вентилятора", idx.bloom_type));
+-  if (idx.built && idx.bloom_size) cards.push(renderBloomCard("Bloom-фильтр: типоразмер", idx.bloom_size));
++  // Две визуализации рядом: слева тип вентилятора, справа типоразмер
++  // (каждая — половина ширины на широком экране, стопкой на узком)
++  if (idx.built && idx.bloom_type) cards.push(renderBloomCard("Bloom-фильтр: тип вентилятора", idx.bloom_type, "col-12 col-xl-6"));
++  if (idx.built && idx.bloom_size) cards.push(renderBloomCard("Bloom-фильтр: типоразмер", idx.bloom_size, "col-12 col-xl-6"));
+ 
+   const sec = d.security || {};
+   const rl = sec.login_rate_limit || {};
+diff --git a/frontend/auth.html b/frontend/auth.html
+index 2e7fac5..0bc1298 100644
+--- a/frontend/auth.html
++++ b/frontend/auth.html
+@@ -13,7 +13,7 @@
+       rel="stylesheet"
+       crossorigin="anonymous"
+     />
+-    <link rel="stylesheet" href="style.css?v=20260717-2" />
++    <link rel="stylesheet" href="style.css?v=20260717-3" />
+   </head>
+   <body data-page="auth" class="auth-page">
+     <nav class="navbar navbar-expand-lg sticky-top">
+@@ -123,7 +123,7 @@
+     <script src="config.js?v=20260424-1"></script>
+     <script src="auth.js?v=20260524-4"></script>
+     <script src="auth-page.js?v=20260524-4"></script>
+-    <script src="script.js?v=20260717-2"></script>
++    <script src="script.js?v=20260717-3"></script>
+     <script src="site-layout.js?v=20260709-1"></script>
+   </body>
+ </html>
+diff --git a/frontend/compare.html b/frontend/compare.html
+index 5c9b519..1cbf8d8 100644
+--- a/frontend/compare.html
++++ b/frontend/compare.html
+@@ -13,7 +13,7 @@
+       rel="stylesheet"
+       crossorigin="anonymous"
+     />
+-    <link rel="stylesheet" href="style.css?v=20260717-2" />
++    <link rel="stylesheet" href="style.css?v=20260717-3" />
+ 
+ <!-- Yandex.Metrika counter -->
+ <script type="text/javascript">
+@@ -100,7 +100,7 @@
+           <button id="clearCompareBtn" class="btn btn-outline-danger btn-sm" type="button">Очистить</button>
+           <button id="exportPdfBtn" class="btn btn-pdf btn-sm px-3" type="button">
+             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline></svg>
+-            Документ для клиента (PDF)
++            Просмотр PDF
+           </button>
+         </div>
+       </div>
+@@ -173,7 +173,7 @@
+     <script src="config.js?v=20260424-1"></script>
+     <script src="auth.js?v=20260524-10"></script>
+     <script src="site-auth.js?v=20260524-10"></script>
+-    <script src="script.js?v=20260717-2"></script>
++    <script src="script.js?v=20260717-3"></script>
+     <script src="site-layout.js?v=20260709-1"></script>
+   </body>
+ </html>
+diff --git a/frontend/delivery.html b/frontend/delivery.html
+index cdf7835..1c1031d 100644
+--- a/frontend/delivery.html
++++ b/frontend/delivery.html
+@@ -13,7 +13,7 @@
+       rel="stylesheet"
+       crossorigin="anonymous"
+     />
+-    <link rel="stylesheet" href="style.css?v=20260717-2" />
++    <link rel="stylesheet" href="style.css?v=20260717-3" />
+   </head>
+   <body data-page="delivery">
+     <nav class="navbar navbar-expand-lg sticky-top">
+@@ -88,7 +88,7 @@
+     </header>
+ 
+     <main class="container-fluid px-3 px-lg-4 py-4">
+-      <div class="row g-4" data-demo-guard>
++      <div class="row g-4" data-locked-section="Недоступно в инсайдерской версии">
+         <div class="col-lg-8">
+           <div class="card p-4 mb-4 shadow-sm">
+             <h2 class="h5 fw-bold mb-3">Способы доставки</h2>
+@@ -180,7 +180,7 @@
+     <script src="config.js?v=20260424-1"></script>
+     <script src="auth.js?v=20260524-9"></script>
+     <script src="site-auth.js?v=20260524-9"></script>
+-    <script src="script.js?v=20260717-2"></script>
++    <script src="script.js?v=20260717-3"></script>
+     <script src="site-layout.js?v=20260709-1"></script>
+   </body>
+ </html>
+diff --git a/frontend/img/blueprint-vals-placeholder.svg b/frontend/img/blueprint-vals-placeholder.svg
+new file mode 100644
+index 0000000..7000f90
+--- /dev/null
++++ b/frontend/img/blueprint-vals-placeholder.svg
+@@ -0,0 +1,64 @@
++<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 800" role="img" aria-label="Шаблон таблицы значений чертежа">
++  <defs>
++    <pattern id="vgridSmall" width="20" height="20" patternUnits="userSpaceOnUse">
++      <path d="M 20 0 L 0 0 0 20" fill="none" stroke="#ffffff" stroke-opacity="0.06" stroke-width="1"/>
++    </pattern>
++  </defs>
++
++  <rect width="640" height="800" fill="#16437e"/>
++  <rect width="640" height="800" fill="url(#vgridSmall)"/>
++
++  <!-- Рамка листа -->
++  <rect x="24" y="24" width="592" height="752" fill="none" stroke="#ffffff" stroke-opacity="0.85" stroke-width="2.5"/>
++  <rect x="34" y="34" width="572" height="732" fill="none" stroke="#ffffff" stroke-opacity="0.3" stroke-width="1"/>
++
++  <!-- Заголовок таблицы -->
++  <g fill="#ffffff" font-family="Arial, Helvetica, sans-serif" text-anchor="middle">
++    <text x="320" y="86" font-size="26" fill-opacity="0.95" letter-spacing="1">ТАБЛИЦА ЗНАЧЕНИЙ</text>
++    <text x="320" y="116" font-size="15" fill-opacity="0.6">Присоединительные и габаритные размеры</text>
++  </g>
++
++  <!-- Строки таблицы (заглушка) -->
++  <g stroke="#ffffff" stroke-opacity="0.55" stroke-width="1.2">
++    <line x1="64" y1="150" x2="576" y2="150"/>
++    <line x1="64" y1="150" x2="64" y2="710"/>
++    <line x1="240" y1="150" x2="240" y2="710"/>
++    <line x1="576" y1="150" x2="576" y2="710"/>
++    <line x1="64" y1="710" x2="576" y2="710"/>
++  </g>
++  <g stroke="#ffffff" stroke-opacity="0.28" stroke-width="1">
++    <line x1="64" y1="190" x2="576" y2="190"/>
++    <line x1="64" y1="230" x2="576" y2="230"/>
++    <line x1="64" y1="270" x2="576" y2="270"/>
++    <line x1="64" y1="310" x2="576" y2="310"/>
++    <line x1="64" y1="350" x2="576" y2="350"/>
++    <line x1="64" y1="390" x2="576" y2="390"/>
++    <line x1="64" y1="430" x2="576" y2="430"/>
++    <line x1="64" y1="470" x2="576" y2="470"/>
++    <line x1="64" y1="510" x2="576" y2="510"/>
++    <line x1="64" y1="550" x2="576" y2="550"/>
++    <line x1="64" y1="590" x2="576" y2="590"/>
++    <line x1="64" y1="630" x2="576" y2="630"/>
++    <line x1="64" y1="670" x2="576" y2="670"/>
++  </g>
++
++  <!-- «Значения» скрыты пунктиром — placeholder -->
++  <g stroke="#ffffff" stroke-opacity="0.4" stroke-width="6" stroke-dasharray="14 10" stroke-linecap="round">
++    <line x1="90" y1="171" x2="200" y2="171"/>
++    <line x1="300" y1="171" x2="470" y2="171"/>
++    <line x1="90" y1="211" x2="180" y2="211"/>
++    <line x1="300" y1="211" x2="500" y2="211"/>
++    <line x1="90" y1="251" x2="210" y2="251"/>
++    <line x1="300" y1="251" x2="440" y2="251"/>
++    <line x1="90" y1="291" x2="170" y2="291"/>
++    <line x1="300" y1="291" x2="520" y2="291"/>
++    <line x1="90" y1="331" x2="200" y2="331"/>
++    <line x1="300" y1="331" x2="460" y2="331"/>
++    <line x1="90" y1="371" x2="190" y2="371"/>
++    <line x1="300" y1="371" x2="490" y2="371"/>
++  </g>
++
++  <g fill="#ffffff" font-family="Arial, Helvetica, sans-serif" text-anchor="middle">
++    <text x="320" y="748" font-size="15" fill-opacity="0.6">Замените файлом photos/blueprintVals_&lt;модель&gt;.png</text>
++  </g>
++</svg>
+diff --git a/frontend/index.html b/frontend/index.html
+index e17064d..585a2db 100644
+--- a/frontend/index.html
++++ b/frontend/index.html
+@@ -14,7 +14,7 @@
+       integrity="sha384-QWTKZyjpPEjISv5WaRU9OFeRpok6YctnYmDr5pNlyT2bRjXh0JMhjY6hW+ALEwIH"
+       crossorigin="anonymous"
+     />
+-    <link rel="stylesheet" href="style.css?v=20260717-2" />
++    <link rel="stylesheet" href="style.css?v=20260717-3" />
+         
+ <!-- Yandex.Metrika counter -->
+ <script type="text/javascript">
+@@ -112,7 +112,7 @@
+         <div class="d-flex flex-column flex-md-row align-items-md-center justify-content-between gap-3">
+           <div style="max-width: 800px;">
+             <h1 class="h3 mb-1">Подбор промышленных вентиляторов</h1>
+-            <div class="hero-subtitle">Точный поиск по параметрам, сравнение Q–P и документ для клиента.</div>
++            <div class="hero-subtitle">Точный поиск по параметрам, сравнение Q–P и просмотр PDF.</div>
+           </div>
+           <button
+             class="btn btn-primary btn-sm d-lg-none"
+@@ -391,7 +391,7 @@
+     <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
+     <script src="config.js?v=20260424-1"></script>
+     <script src="auth.js?v=20260524-9"></script>
+-    <script src="script.js?v=20260717-2"></script>
++    <script src="script.js?v=20260717-3"></script>
+     <script src="site-auth.js?v=20260524-9"></script>
+     <script src="site-layout.js?v=20260709-1"></script>
+   </body>
+diff --git a/frontend/product.html b/frontend/product.html
+index f4bd9ac..c25b801 100644
+--- a/frontend/product.html
++++ b/frontend/product.html
+@@ -14,7 +14,7 @@
+       integrity="sha384-QWTKZyjpPEjISv5WaRU9OFeRpok6YctnYmDr5pNlyT2bRjXh0JMhjY6hW+ALEwIH"
+       crossorigin="anonymous"
+     />
+-    <link rel="stylesheet" href="style.css?v=20260717-2" />
++    <link rel="stylesheet" href="style.css?v=20260717-3" />
+     
+     <!-- Yandex.Metrika counter -->
+ <script type="text/javascript">
+@@ -171,10 +171,16 @@
+                     <button id="compareOnProductBtn" type="button" class="btn btn-dark btn-sm">Сравнить</button>
+                     <button id="exportProductPdfBtn" type="button" class="btn btn-pdf btn-sm text-nowrap">
+                       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline></svg>
+-                      PDF для клиента
++                      Просмотр PDF
+                     </button>
+                   </div>
+                 </div>
++                <div id="showSiblingsWrap" class="form-check form-switch mb-2 d-none">
++                  <input class="form-check-input" type="checkbox" role="switch" id="showSiblingsToggle">
++                  <label class="form-check-label small text-secondary" for="showSiblingsToggle">
++                    Показать соседние по мощности типоразмеры ряда
++                  </label>
++                </div>
+                 <div class="product-chart-wrap flex-grow-1" data-demo-guard>
+                   <div id="productQpChart" class="qp-chart-box"></div>
+                 </div>
+@@ -184,14 +190,23 @@
+           </div>
+         </div>
+ 
+-        <!-- Чертёж из бумажного каталога: реальный скан кладётся в photos/
+-             как blueprint_<слаг-модели>.png (см. подсказку под блоком),
+-             пока файла нет — крупная шаблонная «синька»-заглушка. -->
++        <!-- Чертёж из бумажного каталога: слева сам чертёж (blueprint.png или
++             blueprint_<слаг>.png), справа — таблица значений (blueprintVals.png
++             или blueprintVals_<слаг>.png). Пока файлов нет — «синька»-заглушка. -->
+         <div id="blueprintCard" class="card shadow-sm border-0 mb-4 d-none" style="border-radius: 20px;">
+           <div class="card-body p-4">
+-            <h2 class="h6 fw-bold mb-3">Чертёж из каталога <span class="text-secondary fw-normal small">— нажмите, чтобы открыть на весь экран</span></h2>
+-            <div class="blueprint-frame" data-demo-guard>
+-              <img id="blueprintImage" class="blueprint-image" src="" alt="Чертёж" loading="lazy" decoding="async" />
++            <h2 class="h6 fw-bold mb-3">Чертёж из каталога <span class="text-secondary fw-normal small">— нажмите на изображение, чтобы открыть на весь экран</span></h2>
++            <div class="row g-3">
++              <div class="col-lg-7">
++                <div class="blueprint-frame" data-demo-guard>
++                  <img id="blueprintImage" class="blueprint-image" src="" alt="Чертёж" loading="lazy" decoding="async" />
++                </div>
++              </div>
++              <div class="col-lg-5">
++                <div class="blueprint-frame h-100" data-demo-guard>
++                  <img id="blueprintValsImage" class="blueprint-image" src="" alt="Значения чертежа" loading="lazy" decoding="async" />
++                </div>
++              </div>
+             </div>
+             <div id="blueprintHint" class="small text-secondary mt-2 d-none"></div>
+           </div>
+@@ -254,7 +269,7 @@
+     <script src="config.js?v=20260424-1"></script>
+     <script src="auth.js?v=20260524-10"></script>
+     <script src="site-auth.js?v=20260524-10"></script>
+-    <script src="script.js?v=20260717-2"></script>
++    <script src="script.js?v=20260717-3"></script>
+     <script src="site-layout.js?v=20260709-1"></script>
+   </body>
+ </html>
+diff --git a/frontend/project.html b/frontend/project.html
+index 32f7d95..1df39a7 100644
+--- a/frontend/project.html
++++ b/frontend/project.html
+@@ -13,7 +13,7 @@
+       rel="stylesheet"
+       crossorigin="anonymous"
+     />
+-    <link rel="stylesheet" href="style.css?v=20260717-2" />
++    <link rel="stylesheet" href="style.css?v=20260717-3" />
+ 
+ <!-- Yandex.Metrika counter -->
+ <script type="text/javascript">
+@@ -174,7 +174,7 @@
+                   <ol class="mb-2 ps-3">
+                     <li class="mb-1">Соберите оборудование: кнопка «В проект» в каталоге или на карточке модели.</li>
+                     <li class="mb-1">Заполните название объекта и комментарий — они попадут в запрос менеджеру.</li>
+-                    <li class="mb-1">«Документ для клиента (PDF)» — спецификация для отправки заказчику: можно задать свой заголовок документа и водяной знак компании (любой файл-картинка из папки <code>photos/</code>), посмотреть предпросмотр и скачать.</li>
++                    <li class="mb-1">«Просмотр PDF» — спецификация для отправки заказчику: можно задать свой заголовок документа и водяной знак компании (любой файл-картинка из папки <code>photos/</code>), посмотреть предпросмотр и скачать.</li>
+                     <li class="mb-0">«Отправить запрос» откроет письмо менеджеру с составом проекта и вашими контактами.</li>
+                   </ol>
+                 </div>
+@@ -223,7 +223,7 @@
+                 <button id="requestQuoteBtn" class="btn btn-primary w-100 py-3" style="border-radius: 10px; font-weight: 600;" type="button">Отправить запрос</button>
+                 <button id="exportProjectPdfBtn" class="btn btn-pdf w-100 py-3" style="border-radius: 10px;" type="button">
+                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline></svg>
+-                  Документ для клиента (PDF)
++                  Просмотр PDF
+                 </button>
+                 <div id="quoteSentNote" class="small text-secondary text-center d-none mt-1">
+                   Черновик письма открыт в вашем почтовом клиенте — после отправки менеджер свяжется с вами.
+@@ -241,7 +241,7 @@
+     <script src="config.js?v=20260424-1"></script>
+     <script src="auth.js?v=20260524-4"></script>
+     <script src="site-auth.js?v=20260524-4"></script>
+-    <script src="script.js?v=20260717-2"></script>
++    <script src="script.js?v=20260717-3"></script>
+     <script src="site-layout.js?v=20260709-1"></script>
+   </body>
+ </html>
+diff --git a/frontend/script.js b/frontend/script.js
+index 28660e5..da122f5 100644
+--- a/frontend/script.js
++++ b/frontend/script.js
+@@ -519,39 +519,63 @@ function revealAdminHintWhenAdmin(hintEl) {
+ // файла нет, показываем шаблон-заглушку «синьки» (frontend/img/blueprint-placeholder.svg).
+ const BLUEPRINT_EXTENSIONS = ["png", "jpg", "jpeg", "webp"];
+ 
++// Ищет в photos/ файл <base>_<slug>.<ext>, затем общий <base>.<ext>.
++// Возвращает готовый src (с ?v=mtime) или null.
++function findPhotoVariant(versions, base, slug) {
++  const candidates = [];
++  for (const ext of BLUEPRINT_EXTENSIONS) candidates.push(`${base}_${slug}.${ext}`);
++  for (const ext of BLUEPRINT_EXTENSIONS) candidates.push(`${base}.${ext}`);
++  for (const name of candidates) {
++    if (versions && Object.prototype.hasOwnProperty.call(versions, name)) {
++      const version = versions[name];
++      return { name, src: `${apiUrl(`/photos/${encodeURIComponent(name)}`)}${version ? `?v=${version}` : ""}` };
++    }
++  }
++  return null;
++}
++
+ async function renderProductBlueprint(product) {
+   const card = document.getElementById("blueprintCard");
+   const img = document.getElementById("blueprintImage");
++  const valsImg = document.getElementById("blueprintValsImage");
+   const hint = document.getElementById("blueprintHint");
+   if (!card || !img) return;
+ 
+   const slug = String(
+     product?._meta?.model_slug || product?.meta?.model_slug || slugify(product?.model) || product?.id || "",
+   ).trim().toLowerCase();
+-  const expectedName = `blueprint_${slug}.png`;
+ 
+   const versions = await ensurePhotosVersionLoaded();
+-  let found = null;
+-  for (const ext of BLUEPRINT_EXTENSIONS) {
+-    const name = `blueprint_${slug}.${ext}`;
+-    if (versions && Object.prototype.hasOwnProperty.call(versions, name)) {
+-      found = name;
+-      break;
+-    }
+-  }
++  const drawing = findPhotoVariant(versions, "blueprint", slug);
++  const vals = findPhotoVariant(versions, "blueprintVals", slug);
+ 
+-  if (found) {
+-    const version = versions[found];
+-    img.src = `${apiUrl(`/photos/${encodeURIComponent(found)}`)}${version ? `?v=${version}` : ""}`;
++  // Левая картинка — сам чертёж; заглушка-«синька», если файла ещё нет
++  if (drawing) {
++    img.src = drawing.src;
+     img.alt = `Чертёж ${product?.model || ""}`.trim();
+-    if (hint) hint.textContent = `Файл: photos/${found}`;
+   } else {
+     img.src = "img/blueprint-placeholder.svg";
+     img.alt = "Чертёж появится позже";
+-    if (hint) hint.textContent = `Чтобы заменить заглушку реальным чертежом, положите скан в photos/${expectedName}`;
+   }
+-  // Клик — полноэкранный просмотр; служебная подсказка видна только админам
+   img.addEventListener("click", () => openImageLightbox(img.src, img.alt));
++
++  // Правая картинка — таблица подробных значений (blueprintVals)
++  if (valsImg) {
++    if (vals) {
++      valsImg.src = vals.src;
++      valsImg.alt = `Значения чертежа ${product?.model || ""}`.trim();
++    } else {
++      valsImg.src = "img/blueprint-vals-placeholder.svg";
++      valsImg.alt = "Таблица значений появится позже";
++    }
++    valsImg.addEventListener("click", () => openImageLightbox(valsImg.src, valsImg.alt));
++  }
++
++  if (hint) {
++    hint.textContent =
++      `Чтобы заменить заглушки, положите в photos/ файлы blueprint_${slug}.png (чертёж) и ` +
++      `blueprintVals_${slug}.png (значения); подойдут и общие blueprint.png / blueprintVals.png.`;
++  }
+   revealAdminHintWhenAdmin(hint);
+   card.classList.remove("d-none");
+ }
+@@ -774,15 +798,17 @@ function buildQpDatasetsShared(products, targetRpm = null, targetPoint = null, o
+ 
+     const color = familyMode ? (isPrimary ? "#0d6efd" : "#c3ccd6") : colors[idx % colors.length];
+     const siblingLabel = p.size || p.model || p.id;
++    const curveName = familyMode && !isPrimary ? siblingLabel : (p.model || p.id);
+ 
+     series.push({
+       // В модельном ряду соседние типоразмеры подписаны коротко (по размеру) —
+       // полное имя модели остаётся только у выделенной кривой
+-      name: familyMode && !isPrimary ? siblingLabel : (p.model || p.id),
++      name: curveName,
+       type: 'line',
+-      // Точки уже лежат на квадратичной Безье (200 шт.) — дополнительное
+-      // сглаживание ECharts даёт «сплайн сплайна» и артефакты (QP_MODEL, п. 5.2)
+-      smooth: false,
++      // smoothMonotone:'x' — монотонный сплайн: гладкая поверхность без
++      // «отскока» на концах (обычный smooth даёт overshoot у qMin/qMax)
++      smooth: true,
++      smoothMonotone: 'x',
+       symbol: 'none',
+       data: points,
+       lineStyle: { width: familyMode ? (isPrimary ? 4 : 1.25) : 3, color, opacity: familyMode && !isPrimary ? 0.85 : 1 },
+@@ -817,9 +843,14 @@ function buildQpDatasetsShared(products, targetRpm = null, targetPoint = null, o
+       const lower = points.map(([q, pv]) => [q, Math.max(0, pv * (1 - TOL_P))]).reverse();
+       const outline = upper.concat(lower);
+       series.push({
+-        name: `tol-band-${idx}`,
++        // Та же name, что у кривой: одна запись легенды скрывает и линию, и
++        // её зону допуска (ECharts переключает все серии с этим именем).
++        // Маркеры ниже убирают полосу из подсказки и второй записи легенды.
++        name: curveName,
++        __isBand: true,
+         type: 'custom',
+         silent: true,
++        tooltip: { show: false },
+         z: 0,
+         clip: true,
+         renderItem: (params, api) => ({
+@@ -914,6 +945,53 @@ function buildQpDatasetsShared(products, targetRpm = null, targetPoint = null, o
+     });
+   }
+ 
++  // Пунктиры начала и конца рабочего диапазона выделенной кривой: вертикальные
++  // линии на qMin/qMax — сразу видно рабочую зону вентилятора по расходу.
++  const rangeCurve = products.length === 1
++    ? productCurves[0]
++    : (productCurves.find((c) => c.isPrimary) || (!familyMode ? null : productCurves[0]));
++  if (rangeCurve && rangeCurve.points.length >= 2) {
++    const qStart = rangeCurve.points[0][0];
++    const qEnd = rangeCurve.points[rangeCurve.points.length - 1][0];
++    const pStartTop = Math.max(...rangeCurve.points.map((pt) => pt[1]));
++    for (const [gname, qv] of [["guide-range-min", qStart], ["guide-range-max", qEnd]]) {
++      series.push({
++        name: gname,
++        type: 'line',
++        silent: true,
++        symbol: 'none',
++        lineStyle: { type: 'dashed', color: '#94a3b8', width: 1, opacity: 0.7 },
++        data: [[qv, 0], [qv, pStartTop]],
++        z: 1,
++      });
++    }
++  }
++
++  // Лёгкая анимация: полупрозрачный бегунок вдоль оси +Q (тип 'lines' с
++  // эффектом) — ненавязчивое «движение потока». Служебная серия guide-flow
++  // не попадает ни в легенду, ни в подсказку, ни в PDF.
++  const flowMaxQ = Math.max(0, ...productCurves.map((c) => c.points[c.points.length - 1][0]));
++  if (flowMaxQ > 0) {
++    series.push({
++      name: 'guide-flow',
++      type: 'lines',
++      coordinateSystem: 'cartesian2d',
++      silent: true,
++      z: 0,
++      polyline: true,
++      effect: {
++        show: true,
++        period: 6,
++        trailLength: 0.55,
++        symbol: 'arrow',
++        symbolSize: 5,
++        color: 'rgba(37, 99, 235, 0.28)',
++      },
++      lineStyle: { color: 'rgba(37, 99, 235, 0)', width: 0, opacity: 0 },
++      data: [{ coords: [[0, 0], [flowMaxQ, 0]] }],
++    });
++  }
++
+   return series;
+ }
+ 
+@@ -975,7 +1053,7 @@ function renderQpChartShared(container, chartRef, products, targetRpm = null, ta
+       // Служебные серии (зона допуска, курсорные линии) в подсказку не попадают
+       formatter: (params) => {
+         const list = (Array.isArray(params) ? params : [params])
+-          .filter((pr) => pr && pr.seriesName && !isServiceSeriesName(pr.seriesName));
++          .filter((pr) => pr && pr.seriesName && pr.seriesType !== 'custom' && !isServiceSeriesName(pr.seriesName));
+         if (!list.length) return '';
+         const first = Array.isArray(list[0].value) ? list[0].value[0] : null;
+         const head = first != null ? `Q = ${formatNumber(first)} м³/ч` : '';
+@@ -988,7 +1066,13 @@ function renderQpChartShared(container, chartRef, products, targetRpm = null, ta
+     },
+     legend: {
+       bottom: 0,
+-      data: series.filter((s) => s.name && !isServiceSeriesName(s.name) && !s.__hideLegend).map((s) => s.name),
++      // Полосы допуска (__isBand) делят имя с кривой — в легенду включаем имя
++      // один раз (dedupe), чтобы у него была одна запись, гасящая обе серии
++      data: [...new Set(
++        series
++          .filter((s) => s.name && !isServiceSeriesName(s.name) && !s.__hideLegend && !s.__isBand)
++          .map((s) => s.name),
++      )],
+       textStyle: { fontFamily: qpChartFontFamily, fontSize: 12 }
+     },
+     // Зум по X и Y независим: колесо мыши — по Q (основная ось), а по Y —
+@@ -1035,10 +1119,13 @@ function renderQpChartShared(container, chartRef, products, targetRpm = null, ta
+       type: 'value',
+       min: 0,
+       max: xMax,
+-      splitLine: { show: true, lineStyle: { type: 'dashed', color: '#eee' } },
+-      minorSplitLine: { show: true, lineStyle: { color: '#f5f5f5' } },
+-      axisLabel: { fontFamily: qpChartFontFamily, formatter: (val) => formatNumber(val) },
+-      nameTextStyle: { fontFamily: qpChartFontFamily, fontWeight: '600', fontSize: 13 }
++      axisLine: { show: true, lineStyle: { color: '#334155' } },
++      axisTick: { show: true, lineStyle: { color: '#334155' } },
++      splitLine: { show: true, lineStyle: { color: '#d5dde6', width: 1 } },
++      minorTick: { show: true, splitNumber: 2 },
++      minorSplitLine: { show: true, lineStyle: { type: 'dashed', color: '#eef2f6' } },
++      axisLabel: { fontFamily: qpChartFontFamily, color: '#475569', formatter: (val) => formatNumber(val) },
++      nameTextStyle: { fontFamily: qpChartFontFamily, fontWeight: '600', fontSize: 13, color: '#334155' }
+     },
+     yAxis: {
+       name: 'Давление (P), Па',
+@@ -1046,10 +1133,13 @@ function renderQpChartShared(container, chartRef, products, targetRpm = null, ta
+       type: 'value',
+       min: 0,
+       max: yMax,
+-      splitLine: { show: true, lineStyle: { color: '#e0e0e0' } },
+-      minorSplitLine: { show: true, lineStyle: { color: '#f5f5f5' } },
+-      axisLabel: { fontFamily: qpChartFontFamily, formatter: (val) => formatNumber(val) },
+-      nameTextStyle: { fontFamily: qpChartFontFamily, fontWeight: '600', fontSize: 13 }
++      axisLine: { show: true, lineStyle: { color: '#334155' } },
++      axisTick: { show: true, lineStyle: { color: '#334155' } },
++      splitLine: { show: true, lineStyle: { color: '#d5dde6', width: 1 } },
++      minorTick: { show: true, splitNumber: 2 },
++      minorSplitLine: { show: true, lineStyle: { type: 'dashed', color: '#eef2f6' } },
++      axisLabel: { fontFamily: qpChartFontFamily, color: '#475569', formatter: (val) => formatNumber(val) },
++      nameTextStyle: { fontFamily: qpChartFontFamily, fontWeight: '600', fontSize: 13, color: '#334155' }
+     },
+     series
+   };
+@@ -1158,6 +1248,12 @@ function captureChartPngForPdf(sourceChart) {
+     opts.animation = false;
+     opts.dataZoom = [];
+     opts.toolbox = [];
++    // Подсказка «Колесо — зум по Q…» и анимированный бегунок — только для
++    // экрана: в статичном PDF они не нужны и мешают
++    opts.graphic = [];
++    if (Array.isArray(opts.series)) {
++      opts.series = opts.series.filter((s) => !isServiceSeriesName(s && s.name) || !String(s.name).startsWith('guide-flow'));
++    }
+     if (Array.isArray(xExtent) && xExtent.length === 2 && Array.isArray(opts.xAxis) && opts.xAxis[0]) {
+       opts.xAxis[0].min = xExtent[0];
+       opts.xAxis[0].max = xExtent[1];
+@@ -1199,7 +1295,7 @@ function ensurePdfMakerModal() {
+     <div class="modal-dialog modal-dialog-centered modal-xl">
+       <div class="modal-content">
+         <div class="modal-header">
+-          <h2 class="modal-title h6">Документ для клиента (PDF)</h2>
++          <h2 class="modal-title h6">Просмотр PDF</h2>
+           <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Закрыть"></button>
+         </div>
+         <div class="modal-body">
+@@ -2471,26 +2567,56 @@ async function initProductPage() {
+       console.error("families fetch failed", err);
+     }
+ 
+-    // Показ ряда с выделенной моделью primaryId — переиспользуется при первой
+-    // отрисовке и при клике по серой кривой / выборе типоразмера в дропдауне
++    // Соседние по мощности типоразмеры ряда: сортируем ряд по мощности,
++    // берём выделенную модель и по паре ближайших с каждой стороны — вместо
++    // всех 20 «волосков» показываем только сопоставимые по мощности варианты.
++    const SIBLING_WINDOW = 2;
++    function powerAdjacentVariants(primaryId) {
++      if (!familyVariants) return [];
++      const sorted = [...familyVariants].sort(
++        (a, b) => (toNumber(a.power) ?? 0) - (toNumber(b.power) ?? 0),
++      );
++      const idx = sorted.findIndex((v) => String(v.id) === String(primaryId));
++      if (idx === -1) return [sorted.find((v) => String(v.id) === String(primaryId)) || currentProduct];
++      const from = Math.max(0, idx - SIBLING_WINDOW);
++      const to = Math.min(sorted.length, idx + SIBLING_WINDOW + 1);
++      return sorted.slice(from, to);
++    }
++
++    // Тумблер «показать соседние по мощности» — по умолчанию ВЫКЛ: сначала
++    // видна только выбранная модель, без серого «частокола» всего ряда.
++    const siblingsToggle = $("#showSiblingsToggle");
++    const siblingsToggleWrap = $("#showSiblingsWrap");
++
++    // Показ модели: либо одна кривая (тумблер выкл), либо выделенная +
++    // соседние по мощности (тумблер вкл). primaryId — какую выделить.
+     function renderFamilyView(primaryId) {
+-      const focused = familyVariants.find((v) => String(v.id) === String(primaryId)) || currentProduct;
+-      productChart = renderQpChartShared(chartCanvas, productChart, familyVariants, null, loadWorkingPoint(), {
+-        primaryId,
+-        onSelectFamilyMember: (pid) => renderFamilyView(pid),
+-      });
+-      const count = familyVariants.length;
+-      productCompareMeta.textContent =
+-        `Модельный ряд ${familyKey(currentProduct)}: ${count} ${pluralRu(count, "типоразмер", "типоразмера", "типоразмеров")}. ` +
+-        `Выделено: ${focused.size || focused.model || focused.id} — кликните по серой линии, чтобы выделить другой типоразмер.`;
++      const focused = familyVariants
++        ? (familyVariants.find((v) => String(v.id) === String(primaryId)) || currentProduct)
++        : currentProduct;
++      const showSiblings = !!siblingsToggle?.checked && familyVariants;
++
++      if (showSiblings) {
++        const shown = powerAdjacentVariants(primaryId);
++        productChart = renderQpChartShared(chartCanvas, productChart, shown, null, loadWorkingPoint(), {
++          primaryId,
++          onSelectFamilyMember: (pid) => renderFamilyView(pid),
++        });
++        productCompareMeta.textContent =
++          `Модельный ряд ${familyKey(currentProduct)}. Показаны соседние по мощности: ${shown.length} из ${familyVariants.length}. ` +
++          `Выделено: ${focused.size || focused.model || focused.id} — кликните по серой линии, чтобы выделить другой типоразмер.`;
++      } else {
++        productChart = renderQpChartShared(chartCanvas, productChart, [focused], null, loadWorkingPoint());
++        productCompareMeta.textContent = familyVariants
++          ? `Характеристика ${focused.model || focused.id}. Включите «соседние по мощности», чтобы сравнить с близкими типоразмерами ряда.`
++          : `Сейчас показана характеристика модели ${data.model || data.id}.`;
++      }
+     }
+ 
+-    if (familyVariants) {
+-      renderFamilyView(data.id);
+-    } else {
+-      productChart = renderQpChartShared(chartCanvas, productChart, [data], null, loadWorkingPoint());
+-      productCompareMeta.textContent = `Сейчас показана характеристика модели ${data.model || data.id}.`;
+-    }
++    if (familyVariants && siblingsToggleWrap) siblingsToggleWrap.classList.remove("d-none");
++    siblingsToggle?.addEventListener("change", () => renderFamilyView(currentProduct.id));
++
++    renderFamilyView(data.id);
+ 
+     $("#exportProductPdfBtn")?.addEventListener("click", () => {
+       const slug = currentProduct?._meta?.model_slug || currentProduct?.meta?.model_slug || currentProduct.id;
+@@ -2828,6 +2954,23 @@ async function applyDemoModeGuardIfNeeded() {
+   });
+ }
+ 
++// Разделы, которые ещё не готовы к показу клиенту (например, «Доставка»):
++// заливаем полупрозрачным серым и красной надписью ВСЕГДА, независимо от
++// DEMO_MODE. Помечаются атрибутом data-locked-section.
++function applyLockedSections() {
++  document.querySelectorAll("[data-locked-section]").forEach((el) => {
++    if (el.querySelector(":scope > .vs-locked-overlay")) return;
++    el.classList.add("vs-locked-wrap");
++    const overlay = document.createElement("div");
++    overlay.className = "vs-locked-overlay";
++    const label = document.createElement("div");
++    label.className = "vs-locked-label";
++    label.textContent = el.getAttribute("data-locked-section") || "Недоступно в инсайдерской версии";
++    overlay.appendChild(label);
++    el.appendChild(overlay);
++  });
++}
++
+ // Плавающий контакт-виджет (правый нижний угол): кому писать по вопросам.
+ // Данные — из data/credits.json через публичный /api/contacts; если файла
+ // нет или он пуст, показываем общий почтовый контакт проекта.
+@@ -2934,6 +3077,7 @@ function initShareLinkButton() {
+ 
+ document.addEventListener("DOMContentLoaded", () => {
+   applyDemoModeGuardIfNeeded();
++  applyLockedSections();
+   initShareLinkButton();
+   initContactWidget();
+   updateProjectNavBadge();
+diff --git a/frontend/style.css b/frontend/style.css
+index 4faab25..4601b8a 100644
+--- a/frontend/style.css
++++ b/frontend/style.css
+@@ -73,7 +73,10 @@ h1, h2, h3, h4, h5, h6 {
+   background: var(--vs-bg);
+ }
+ 
+-.nav-link.active {
++/* Активная ссылка ТОЛЬКО в верхней навигации: синяя заливка + белый текст.
++   Не трогаем .nav-tabs внутри страниц (админка) — там активная вкладка
++   остаётся тёмным текстом на белом (иначе белый текст на белом фоне). */
++.navbar .nav-link.active {
+   background: var(--vs-accent);
+   color: #FFFFFF !important;
+ }
+@@ -1060,6 +1063,40 @@ body[data-page="product"] .tabs-card .card-body {
+   user-select: none;
+ }
+ 
++/* Раздел «в разработке» (Доставка): серый оверлей + красная надпись,
++   всегда, независимо от DEMO_MODE */
++.vs-locked-wrap {
++  position: relative;
++}
++
++.vs-locked-overlay {
++  position: absolute;
++  inset: 0;
++  z-index: 5;
++  background: rgba(226, 232, 240, 0.82);
++  backdrop-filter: blur(2px);
++  border-radius: var(--vs-radius-sm, 8px);
++}
++
++.vs-locked-overlay .vs-locked-label {
++  position: sticky;
++  top: 38%;
++  display: flex;
++  justify-content: center;
++  text-align: center;
++  padding: 1rem;
++  color: #dc2626;
++  font-weight: 800;
++  font-size: 1.15rem;
++  letter-spacing: 0.01em;
++}
++
++.vs-locked-wrap > :not(.vs-locked-overlay) {
++  filter: grayscale(1) blur(1.5px);
++  pointer-events: none;
++  user-select: none;
++}
++
+ /* Плашка «в следующих обновлениях» — для разделов, которые видны в макете,
+    но ещё не реализованы (паспорт изделия, схема подключения и т.п.). */
+ .vs-soon-wrap {

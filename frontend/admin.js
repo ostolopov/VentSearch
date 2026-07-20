@@ -56,12 +56,21 @@ function _captureConsole(level, args) {
   });
   window.addEventListener("error", (e) => _captureConsole("error", [`${e.message} (${e.filename}:${e.lineno})`]));
   window.addEventListener("unhandledrejection", (e) => _captureConsole("error", [`Unhandled promise rejection: ${e.reason}`]));
+  // Стартовая строка — чтобы сразу было видно, что перехват консоли работает
+  console.log("Диагностическая консоль подключена: здесь видны сообщения console.log/warn/error этой вкладки.");
 })();
 
 function renderConsoleLogBuffer() {
   const el = $("#debugConsoleLog");
   if (!el) return;
   el.innerHTML = "";
+  if (!_consoleBuffer.length) {
+    const empty = document.createElement("div");
+    empty.className = "text-secondary";
+    empty.textContent = "Пока нет сообщений консоли (здесь появятся ошибки и предупреждения этой вкладки).";
+    el.appendChild(empty);
+    return;
+  }
   for (const entry of _consoleBuffer) {
     const cls = entry.level === "error" ? "text-danger" : entry.level === "warn" ? "text-warning" : "text-secondary";
     const line = document.createElement("div");
@@ -701,12 +710,14 @@ function renderDebugCard(title, rows) {
 // откладывает данные в _pendingBloomCanvases, реальная отрисовка в drawPendingBloomCanvases().
 let _pendingBloomCanvases = [];
 
-function renderBloomCard(title, bloom) {
+function renderBloomCard(title, bloom, colClass = "col-12") {
   if (!bloom || typeof bloom.m !== "number" || !Array.isArray(bloom.bits)) {
     return renderDebugCard(title, [["Статус", "нет данных"]]);
   }
   const canvasId = `bloomCanvas_${Math.random().toString(36).slice(2)}`;
-  const cols = Math.max(1, Math.round(Math.sqrt(bloom.m)));
+  // Более широкая сетка (не квадрат): при малом m занятые биты не выстраиваются
+  // в диагональную «лесенку», а распределяются по прямоугольнику читаемее
+  const cols = Math.max(8, Math.round(Math.sqrt(bloom.m) * 1.6));
   const rows = Math.ceil(bloom.m / cols);
   const cellSize = bloom.m <= 64 ? 20 : 8;
   _pendingBloomCanvases.push({ id: canvasId, bits: bloom.bits, cols, cellSize });
@@ -737,7 +748,7 @@ function renderBloomCard(title, bloom) {
     : "";
 
   return `
-    <div class="col-12">
+    <div class="${colClass}">
       <div class="card shadow-sm h-100">
         <div class="card-header py-2 fw-semibold d-flex justify-content-between align-items-center flex-wrap gap-2">
           <span>${escapeHtml(title)}</span>
@@ -747,7 +758,7 @@ function renderBloomCard(title, bloom) {
         </div>
         <div class="card-body d-flex flex-wrap gap-4 align-items-start">
           <canvas id="${canvasId}" width="${cols * cellSize}" height="${rows * cellSize}" style="border:1px solid #dee2e6; border-radius:4px; flex-shrink:0;"></canvas>
-          <div class="small text-secondary" style="min-width: 220px; max-width: 480px;">
+          <div class="small text-secondary" style="min-width: 200px; flex: 1 1 220px;">
             <div class="mb-1"><strong>${knownValues.length}</strong> ${pluralRu(knownValues.length, "известное значение", "известных значения", "известных значений")} в индексе:</div>
             <div>${knownPreview || "—"}</div>
             ${fppHtml}
@@ -842,8 +853,10 @@ async function loadDebug() {
     ["Построен (Bloom + оси)", debugBoolBadge(idx.built === true)],
     idx.built ? ["Записей", escapeHtml(idx.rows ?? "—")] : undefined,
   ].filter(Boolean)));
-  if (idx.built && idx.bloom_type) cards.push(renderBloomCard("Bloom-фильтр: тип вентилятора", idx.bloom_type));
-  if (idx.built && idx.bloom_size) cards.push(renderBloomCard("Bloom-фильтр: типоразмер", idx.bloom_size));
+  // Две визуализации рядом: слева тип вентилятора, справа типоразмер
+  // (каждая — половина ширины на широком экране, стопкой на узком)
+  if (idx.built && idx.bloom_type) cards.push(renderBloomCard("Bloom-фильтр: тип вентилятора", idx.bloom_type, "col-12 col-xl-6"));
+  if (idx.built && idx.bloom_size) cards.push(renderBloomCard("Bloom-фильтр: типоразмер", idx.bloom_size, "col-12 col-xl-6"));
 
   const sec = d.security || {};
   const rl = sec.login_rate_limit || {};

@@ -14,7 +14,7 @@
       integrity="sha384-QWTKZyjpPEjISv5WaRU9OFeRpok6YctnYmDr5pNlyT2bRjXh0JMhjY6hW+ALEwIH"
       crossorigin="anonymous"
     />
-    <link rel="stylesheet" href="style.css?v=20260717-2" />
+    <link rel="stylesheet" href="style.css?v=20260717-4" />
     
     <!-- Yandex.Metrika counter -->
 <script type="text/javascript">
@@ -75,6 +75,9 @@
                 <span id="navCompareBadge" class="nav-compare-badge d-none">0</span>
               </a>
             </li>
+            <li class="nav-item d-none" id="navAdminMenuItem">
+              <a class="nav-link vs-admin-link" href="admin.html" target="_blank" rel="noopener noreferrer">⚙ Админ-панель</a>
+            </li>
             <li class="nav-item" id="navAuthGuest">
               <a class="nav-link btn btn-link border-0 py-2 text-decoration-none" href="auth.html">Вход</a>
             </li>
@@ -84,16 +87,6 @@
                 <span class="d-md-none">ЛК</span>
               </a>
               <ul class="dropdown-menu dropdown-menu-end position-absolute">
-                <li><a class="dropdown-item" href="project.html">Мой проект</a></li>
-                <li class="d-none" id="navAdminMenuItem">
-                  <a
-                    class="dropdown-item"
-                    href="admin.html"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                  >Управление каталогом</a>
-                </li>
-                <li><hr class="dropdown-divider" /></li>
                 <li><button class="dropdown-item" type="button" id="navLogoutBtn">Выйти</button></li>
               </ul>
             </li>
@@ -171,9 +164,15 @@
                     <button id="compareOnProductBtn" type="button" class="btn btn-dark btn-sm">Сравнить</button>
                     <button id="exportProductPdfBtn" type="button" class="btn btn-pdf btn-sm text-nowrap">
                       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline></svg>
-                      PDF для клиента
+                      Просмотр PDF
                     </button>
                   </div>
+                </div>
+                <div id="showSiblingsWrap" class="form-check form-switch mb-2 d-none">
+                  <input class="form-check-input" type="checkbox" role="switch" id="showSiblingsToggle">
+                  <label class="form-check-label small text-secondary" for="showSiblingsToggle">
+                    Показать соседние по мощности типоразмеры ряда
+                  </label>
                 </div>
                 <div class="product-chart-wrap flex-grow-1" data-demo-guard>
                   <div id="productQpChart" class="qp-chart-box"></div>
@@ -184,14 +183,23 @@
           </div>
         </div>
 
-        <!-- Чертёж из бумажного каталога: реальный скан кладётся в photos/
-             как blueprint_<слаг-модели>.png (см. подсказку под блоком),
-             пока файла нет — крупная шаблонная «синька»-заглушка. -->
+        <!-- Чертёж из бумажного каталога: слева сам чертёж (blueprint.png или
+             blueprint_<слаг>.png), справа — таблица значений (blueprintVals.png
+             или blueprintVals_<слаг>.png). Пока файлов нет — «синька»-заглушка. -->
         <div id="blueprintCard" class="card shadow-sm border-0 mb-4 d-none" style="border-radius: 20px;">
           <div class="card-body p-4">
-            <h2 class="h6 fw-bold mb-3">Чертёж из каталога <span class="text-secondary fw-normal small">— нажмите, чтобы открыть на весь экран</span></h2>
-            <div class="blueprint-frame" data-demo-guard>
-              <img id="blueprintImage" class="blueprint-image" src="" alt="Чертёж" loading="lazy" decoding="async" />
+            <h2 class="h6 fw-bold mb-3">Чертёж из каталога <span class="text-secondary fw-normal small">— нажмите на изображение, чтобы открыть на весь экран</span></h2>
+            <div class="row g-3">
+              <div class="col-lg-7">
+                <div class="blueprint-frame" data-demo-guard>
+                  <img id="blueprintImage" class="blueprint-image" src="" alt="Чертёж" loading="lazy" decoding="async" />
+                </div>
+              </div>
+              <div class="col-lg-5">
+                <div class="blueprint-frame h-100" data-demo-guard>
+                  <img id="blueprintValsImage" class="blueprint-image" src="" alt="Значения чертежа" loading="lazy" decoding="async" />
+                </div>
+              </div>
             </div>
             <div id="blueprintHint" class="small text-secondary mt-2 d-none"></div>
           </div>
@@ -254,7 +262,7 @@
     <script src="config.js?v=20260424-1"></script>
     <script src="auth.js?v=20260524-10"></script>
     <script src="site-auth.js?v=20260524-10"></script>
-    <script src="script.js?v=20260717-2"></script>
+    <script src="script.js?v=20260717-4"></script>
     <script src="site-layout.js?v=20260709-1"></script>
   </body>
 </html>

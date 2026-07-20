@@ -1,0 +1,64 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 800" role="img" aria-label="Шаблон таблицы значений чертежа">
+  <defs>
+    <pattern id="vgridSmall" width="20" height="20" patternUnits="userSpaceOnUse">
+      <path d="M 20 0 L 0 0 0 20" fill="none" stroke="#ffffff" stroke-opacity="0.06" stroke-width="1"/>
+    </pattern>
+  </defs>
+
+  <rect width="640" height="800" fill="#16437e"/>
+  <rect width="640" height="800" fill="url(#vgridSmall)"/>
+
+  <!-- Рамка листа -->
+  <rect x="24" y="24" width="592" height="752" fill="none" stroke="#ffffff" stroke-opacity="0.85" stroke-width="2.5"/>
+  <rect x="34" y="34" width="572" height="732" fill="none" stroke="#ffffff" stroke-opacity="0.3" stroke-width="1"/>
+
+  <!-- Заголовок таблицы -->
+  <g fill="#ffffff" font-family="Arial, Helvetica, sans-serif" text-anchor="middle">
+    <text x="320" y="86" font-size="26" fill-opacity="0.95" letter-spacing="1">ТАБЛИЦА ЗНАЧЕНИЙ</text>
+    <text x="320" y="116" font-size="15" fill-opacity="0.6">Присоединительные и габаритные размеры</text>
+  </g>
+
+  <!-- Строки таблицы (заглушка) -->
+  <g stroke="#ffffff" stroke-opacity="0.55" stroke-width="1.2">
+    <line x1="64" y1="150" x2="576" y2="150"/>
+    <line x1="64" y1="150" x2="64" y2="710"/>
+    <line x1="240" y1="150" x2="240" y2="710"/>
+    <line x1="576" y1="150" x2="576" y2="710"/>
+    <line x1="64" y1="710" x2="576" y2="710"/>
+  </g>
+  <g stroke="#ffffff" stroke-opacity="0.28" stroke-width="1">
+    <line x1="64" y1="190" x2="576" y2="190"/>
+    <line x1="64" y1="230" x2="576" y2="230"/>
+    <line x1="64" y1="270" x2="576" y2="270"/>
+    <line x1="64" y1="310" x2="576" y2="310"/>
+    <line x1="64" y1="350" x2="576" y2="350"/>
+    <line x1="64" y1="390" x2="576" y2="390"/>
+    <line x1="64" y1="430" x2="576" y2="430"/>
+    <line x1="64" y1="470" x2="576" y2="470"/>
+    <line x1="64" y1="510" x2="576" y2="510"/>
+    <line x1="64" y1="550" x2="576" y2="550"/>
+    <line x1="64" y1="590" x2="576" y2="590"/>
+    <line x1="64" y1="630" x2="576" y2="630"/>
+    <line x1="64" y1="670" x2="576" y2="670"/>
+  </g>
+
+  <!-- «Значения» скрыты пунктиром — placeholder -->
+  <g stroke="#ffffff" stroke-opacity="0.4" stroke-width="6" stroke-dasharray="14 10" stroke-linecap="round">
+    <line x1="90" y1="171" x2="200" y2="171"/>
+    <line x1="300" y1="171" x2="470" y2="171"/>
+    <line x1="90" y1="211" x2="180" y2="211"/>
+    <line x1="300" y1="211" x2="500" y2="211"/>
+    <line x1="90" y1="251" x2="210" y2="251"/>
+    <line x1="300" y1="251" x2="440" y2="251"/>
+    <line x1="90" y1="291" x2="170" y2="291"/>
+    <line x1="300" y1="291" x2="520" y2="291"/>
+    <line x1="90" y1="331" x2="200" y2="331"/>
+    <line x1="300" y1="331" x2="460" y2="331"/>
+    <line x1="90" y1="371" x2="190" y2="371"/>
+    <line x1="300" y1="371" x2="490" y2="371"/>
+  </g>
+
+  <g fill="#ffffff" font-family="Arial, Helvetica, sans-serif" text-anchor="middle">
+    <text x="320" y="748" font-size="15" fill-opacity="0.6">Замените файлом photos/blueprintVals_&lt;модель&gt;.png</text>
+  </g>
+</svg>

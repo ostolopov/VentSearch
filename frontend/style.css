@@ -73,7 +73,10 @@ h1, h2, h3, h4, h5, h6 {
   background: var(--vs-bg);
 }
 
-.nav-link.active {
+/* Активная ссылка ТОЛЬКО в верхней навигации: синяя заливка + белый текст.
+   Не трогаем .nav-tabs внутри страниц (админка) — там активная вкладка
+   остаётся тёмным текстом на белом (иначе белый текст на белом фоне). */
+.navbar .nav-link.active {
   background: var(--vs-accent);
   color: #FFFFFF !important;
 }
@@ -1060,6 +1063,40 @@ body[data-page="product"] .tabs-card .card-body {
   user-select: none;
 }
 
+/* Раздел «в разработке» (Доставка): серый оверлей + красная надпись,
+   всегда, независимо от DEMO_MODE */
+.vs-locked-wrap {
+  position: relative;
+}
+
+.vs-locked-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  background: rgba(226, 232, 240, 0.82);
+  backdrop-filter: blur(2px);
+  border-radius: var(--vs-radius-sm, 8px);
+}
+
+.vs-locked-overlay .vs-locked-label {
+  position: sticky;
+  top: 38%;
+  display: flex;
+  justify-content: center;
+  text-align: center;
+  padding: 1rem;
+  color: #dc2626;
+  font-weight: 800;
+  font-size: 1.15rem;
+  letter-spacing: 0.01em;
+}
+
+.vs-locked-wrap > :not(.vs-locked-overlay) {
+  filter: grayscale(1) blur(1.5px);
+  pointer-events: none;
+  user-select: none;
+}
+
 /* Плашка «в следующих обновлениях» — для разделов, которые видны в макете,
    но ещё не реализованы (паспорт изделия, схема подключения и т.п.). */
 .vs-soon-wrap {
@@ -1523,4 +1560,135 @@ body[data-page="product"] .tabs-card .card-body {
   color: var(--vs-text-muted);
   margin-bottom: 0.25rem;
   display: block;
+}
+
+/* ============================================================
+   Каталог v2: мини-иконки, кнопки у названия, явные группы,
+   съёмные колонки
+   ============================================================ */
+
+.catalog-fan-thumb {
+  width: 40px;
+  height: 40px;
+  object-fit: contain;
+  border-radius: 8px;
+  background: var(--vs-bg);
+  border: 1px solid var(--vs-border);
+  flex-shrink: 0;
+  padding: 2px;
+}
+
+.catalog-fan-thumb-empty {
+  display: inline-block;
+}
+
+.catalog-row-actions .btn {
+  --bs-btn-padding-y: 0.2rem;
+  --bs-btn-padding-x: 0.5rem;
+  --bs-btn-font-size: 0.76rem;
+  width: auto;
+  padding: 0.2rem 0.5rem;
+  font-size: 0.76rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3em;
+  white-space: nowrap;
+}
+
+.catalog-row-actions .btn.btn-dark {
+  background: var(--vs-accent);
+  color: #fff;
+}
+
+.catalog-row-actions .btn.btn-outline-dark {
+  background: var(--vs-surface);
+  border: 1px solid var(--vs-border);
+  color: var(--vs-text);
+}
+
+/* Строка-заголовок модельного ряда — явно отличается от строк вентиляторов:
+   акцентная полоса слева, заливка, чуть выше */
+.catalog-group-row td {
+  background: #e7eefb;
+  border-top: 2px solid var(--vs-accent);
+  border-bottom: 1px solid #cdd9ef;
+  padding: 0.6rem 0.9rem;
+}
+
+.catalog-group-badge {
+  display: inline-block;
+  background: var(--vs-accent);
+  color: #fff;
+  font-size: 0.64rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  padding: 0.1rem 0.45rem;
+  border-radius: 5px;
+  margin-right: 0.5rem;
+  vertical-align: middle;
+}
+
+.catalog-table-controls .dropdown-menu {
+  font-size: 0.9rem;
+}
+
+/* Кнопка «в проект» в шапке сравнения — заметный фон (не блёклый outline) */
+.btn-compare-add-project {
+  background: #eef4ff;
+  border: 1px solid var(--vs-accent);
+  color: var(--vs-accent);
+  font-weight: 700;
+}
+
+.btn-compare-add-project:hover {
+  background: #dfeaff;
+  color: var(--vs-accent-hover);
+}
+
+.btn-compare-add-project.in {
+  background: var(--vs-accent);
+  color: #fff;
+  border-color: var(--vs-accent);
+}
+
+/* Кнопка «Админ-панель» в верхней навигации — отдельным цветом (янтарь),
+   чтобы явно отличалась от обычных пунктов меню */
+.vs-admin-link {
+  background: #b45309 !important;
+  color: #fff !important;
+  font-weight: 700;
+}
+
+.vs-admin-link:hover {
+  background: #92400e !important;
+  color: #fff !important;
+}
+
+/* Служебные [ДЕБАГ]-подписи (видны только администратору) */
+.vs-debug-note {
+  background: #fff7ed;
+  border: 1px dashed #fdba74;
+  border-radius: 8px;
+  padding: 0.5rem 0.75rem;
+  color: #7c2d12;
+  font-size: 0.82rem;
+}
+
+.vs-debug-note code {
+  background: #ffedd5;
+  color: #9a3412;
+  padding: 0 0.25rem;
+  border-radius: 4px;
+}
+
+.vs-debug-tag {
+  display: inline-block;
+  background: #b45309;
+  color: #fff;
+  font-weight: 800;
+  font-size: 0.68rem;
+  letter-spacing: 0.05em;
+  padding: 0.05rem 0.4rem;
+  border-radius: 4px;
+  margin-right: 0.35rem;
 }

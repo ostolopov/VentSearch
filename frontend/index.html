@@ -14,7 +14,7 @@
       integrity="sha384-QWTKZyjpPEjISv5WaRU9OFeRpok6YctnYmDr5pNlyT2bRjXh0JMhjY6hW+ALEwIH"
       crossorigin="anonymous"
     />
-    <link rel="stylesheet" href="style.css?v=20260717-2" />
+    <link rel="stylesheet" href="style.css?v=20260717-4" />
         
 <!-- Yandex.Metrika counter -->
 <script type="text/javascript">
@@ -68,6 +68,9 @@
                 <span id="navCompareBadge" class="nav-compare-badge d-none">0</span>
               </a>
             </li>
+            <li class="nav-item d-none" id="navAdminMenuItem">
+              <a class="nav-link vs-admin-link" href="admin.html" target="_blank" rel="noopener noreferrer">⚙ Админ-панель</a>
+            </li>
             <li class="nav-item" id="navAuthGuest">
               <button
                 class="nav-link btn btn-link border-0 py-2"
@@ -84,16 +87,6 @@
                 <span class="d-md-none">ЛК</span>
               </a>
               <ul class="dropdown-menu dropdown-menu-end position-absolute">
-                <li><a class="dropdown-item" href="project.html">Мой проект</a></li>
-                <li class="d-none" id="navAdminMenuItem">
-                  <a
-                    class="dropdown-item"
-                    href="admin.html"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                  >Управление каталогом</a>
-                </li>
-                <li><hr class="dropdown-divider" /></li>
                 <li><button class="dropdown-item" type="button" id="navLogoutBtn">Выйти</button></li>
               </ul>
             </li>
@@ -112,7 +105,7 @@
         <div class="d-flex flex-column flex-md-row align-items-md-center justify-content-between gap-3">
           <div style="max-width: 800px;">
             <h1 class="h3 mb-1">Подбор промышленных вентиляторов</h1>
-            <div class="hero-subtitle">Точный поиск по параметрам, сравнение Q–P и документ для клиента.</div>
+            <div class="hero-subtitle">Точный поиск по параметрам, сравнение Q–P и просмотр PDF.</div>
           </div>
           <button
             class="btn btn-primary btn-sm d-lg-none"
@@ -391,7 +384,7 @@
     <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
     <script src="config.js?v=20260424-1"></script>
     <script src="auth.js?v=20260524-9"></script>
-    <script src="script.js?v=20260717-2"></script>
+    <script src="script.js?v=20260717-4"></script>
     <script src="site-auth.js?v=20260524-9"></script>
     <script src="site-layout.js?v=20260709-1"></script>
   </body>
