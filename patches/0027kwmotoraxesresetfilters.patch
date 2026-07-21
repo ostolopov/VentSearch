@@ -1,0 +1,329 @@
+diff --git a/backend/presentation/app.py b/backend/presentation/app.py
+index 78a9822..e7e18a9 100644
+--- a/backend/presentation/app.py
++++ b/backend/presentation/app.py
+@@ -612,14 +612,22 @@ def _build_compare_pdf(
+     diameters = [f"{_format_num(p.get('diameter'))} мм" if p.get("diameter") is not None else "—" for p in products]
+     airflows = [_normalize_ws((p.get("airflow") or {}).get("raw") or "—") for p in products]
+     pressures = [_normalize_ws((p.get("pressure") or {}).get("raw") or "—") for p in products]
+-    powers = [f"{_format_num(p.get('power'))} Вт" if p.get("power") is not None else "—" for p in products]
++    # Мощность в кВт — как в бумажном каталоге завода («Установочная
++    # мощность, кВт»); без хвостовых нулей: 5,5 кВт, 3 кВт, 0,12 кВт
++    def _kw(value: Any) -> str:
++        w = _to_float(value)
++        if w is None:
++            return "—"
++        return f"{w / 1000:g}".replace(".", ",") + " кВт"
++
++    powers = [_kw(p.get("power")) for p in products]
+     noises = [f"{_format_num(p.get('noise_level'))} дБ" if p.get("noise_level") is not None else "—" for p in products]
+     prices = [f"{_format_num(p.get('price'))} ₽" if p.get("price") is not None else "по запросу" for p in products]
+ 
+     line("Технические характеристики:", step=6.5 * mm, bold=True, size=10)
+     draw_row("Модель", models)
+     draw_row("Тип", types)
+-    draw_row("Типоразмер", sizes)
++    draw_row("Электродвигатель", sizes)
+     draw_row("Диаметр", diameters)
+     draw_row("Расход", airflows)
+     draw_row("Давление", pressures)
+@@ -682,7 +690,7 @@ def _build_compare_pdf(
+         pdf.setFillColor(c_muted)
+         pdf.setFont(font_r, 8.5)
+         pdf.drawString(left + 3 * mm, y - 11 * mm,
+-                       f"Двигатель: {_normalize_ws(p.get('size') or '—')}   |   Частота вращения: {rpm_text}")
++                       f"Электродвигатель: {_normalize_ws(p.get('size') or '—')}   |   Частота вращения: {rpm_text}")
+         pdf.drawString(left + 3 * mm, y - 15.5 * mm,
+                        f"Тип: {_normalize_ws(p.get('type') or '—')}   |   Диаметр: {diameters[idx-1]}")
+         pdf.drawString(left + 3 * mm, y - 20 * mm,
+diff --git a/frontend/index.html b/frontend/index.html
+index 0eeedf3..3cc17a3 100644
+--- a/frontend/index.html
++++ b/frontend/index.html
+@@ -223,7 +223,7 @@
+                     </div>
+                     <div class="col-6">
+                       <label for="minPower" class="form-label text-secondary small mb-1 fw-medium">Мощность от</label>
+-                      <input id="minPower" name="minPower" type="number" min="0" class="form-control rounded-3" placeholder="Вт" />
++                      <input id="minPower" name="minPower" type="number" min="0" step="any" class="form-control rounded-3" placeholder="кВт" />
+                     </div>
+                   </div>
+ 
+diff --git a/frontend/script.js b/frontend/script.js
+index 2f13a17..814152e 100644
+--- a/frontend/script.js
++++ b/frontend/script.js
+@@ -264,7 +264,15 @@ function restoreCatalogFilters(form, sortSelect) {
+       }
+       const el = form.elements[k];
+       // Только пустые поля — явный ?q= из URL и введённое руками не трогаем
+-      if (el && !String(el.value || "").trim()) el.value = String(v);
++      if (el && !String(el.value || "").trim()) {
++        let value = String(v);
++        // Миграция: поле мощности раньше было в Вт, теперь в кВт.
++        // Каталожный максимум — 110 кВт, так что >1000 — это старые Вт.
++        if ((k === "minPower" || k === "maxPower") && Number(value) > 1000) {
++          value = String(Number(value) / 1000);
++        }
++        el.value = value;
++      }
+     }
+   } catch {
+     // повреждённое значение — игнорируем
+@@ -338,6 +346,13 @@ function formatPrice(price) {
+   return `${formatNumber(price)}\u00A0₽`;
+ }
+ 
++// Мощность храним в Вт (как в CSV), а инженеру показываем в кВт: «5,5 кВт»
++function formatPowerKw(watts) {
++  const w = Number(watts);
++  if (watts === null || watts === undefined || Number.isNaN(w)) return "\u2014";
++  return `${new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 2 }).format(w / 1000)}\u00A0кВт`;
++}
++
+ function slugify(value) {
+   return String(value || "")
+     .toLowerCase()
+@@ -883,6 +898,13 @@ function buildQpDatasetsShared(products, targetRpm = null, targetPoint = null, o
+       const upper = points.map(([q, pv]) => [q, pv * (1 + TOL_P)]);
+       const lower = points.map(([q, pv]) => [q, Math.max(0, pv * (1 - TOL_P))]).reverse();
+       const outline = upper.concat(lower);
++      // Полоса — custom-полигон. Стек из line-серий выглядел бы «живее»
++      // (анимируется зумом), но стек ECharts на value-оси X рисует полосу
++      // с грубыми артефактами (проверено на минимальном примере) — это
++      // ограничение движка: официальный пример confidence-band работает
++      // только с category-осью. Синхронность полосы с кривой при сбросе
++      // масштаба обеспечивает сам сброс: он перерисовывает график целиком
++      // (см. myReset), а не морфит оси под ногами у полигона.
+       series.push({
+         // Та же name, что у кривой: одна запись легенды скрывает и линию, и
+         // её зону допуска (ECharts переключает все серии с этим именем).
+@@ -1075,6 +1097,8 @@ function renderQpChartShared(container, chartRef, products, targetRpm = null, ta
+   let dataMaxP = 0;
+   let focusMaxQ = 0;
+   let focusMaxP = 0;
++  let focusMinQ = Infinity;
++  let focusMinP = Infinity;
+   for (const s of series) {
+     if (!s.__isProductCurve || !Array.isArray(s.data)) continue;
+     for (const d of s.data) {
+@@ -1086,6 +1110,8 @@ function renderQpChartShared(container, chartRef, products, targetRpm = null, ta
+       if (s.__isPrimary) {
+         if (q != null && q > focusMaxQ) focusMaxQ = q;
+         if (pv != null && pv > focusMaxP) focusMaxP = pv;
++        if (q != null && q < focusMinQ) focusMinQ = q;
++        if (pv != null && pv < focusMinP) focusMinP = pv;
+       }
+     }
+   }
+@@ -1093,6 +1119,8 @@ function renderQpChartShared(container, chartRef, products, targetRpm = null, ta
+   if (!focusMaxP) focusMaxP = dataMaxP;
+   if (targetPoint?.q > focusMaxQ) focusMaxQ = targetPoint.q;
+   if (targetPoint?.p > focusMaxP) focusMaxP = targetPoint.p;
++  if (targetPoint?.q > 0 && targetPoint.q < focusMinQ) focusMinQ = targetPoint.q;
++  if (targetPoint?.p > 0 && targetPoint.p < focusMinP) focusMinP = targetPoint.p;
+   if (targetPoint?.q > dataMaxQ) dataMaxQ = targetPoint.q;
+   if (targetPoint?.p > dataMaxP) dataMaxP = targetPoint.p;
+   const xMax = dataMaxQ > 0 ? Math.ceil(dataMaxQ * 1.15) : undefined;
+@@ -1100,21 +1128,47 @@ function renderQpChartShared(container, chartRef, products, targetRpm = null, ta
+   const xFocusEnd = focusMaxQ > 0 ? Math.ceil(focusMaxQ * 1.15) : undefined;
+   const yFocusEnd = focusMaxP > 0 ? Math.ceil(focusMaxP * 1.18) : undefined;
+ 
++  // Стартовое окно НЕ обязано начинаться с нуля: если кривые лежат, скажем,
++  // в 23 456–45 678 м³/ч, слева была бы мёртвая пустая зона. Начало осей
++  // округляем вниз (Q — к тысяче, P — к «инженерному» шагу), но ноль
++  // сохраняем, когда данные и так начинаются близко к нему — иначе обрезка
++  // почти ничего не даёт, а масштаб восприятия искажает.
++  const floorTo = (v, step) => Math.max(0, Math.floor(v / step) * step);
++  let xFocusStart = 0;
++  if (Number.isFinite(focusMinQ) && focusMaxQ > 0 && focusMinQ >= 0.18 * focusMaxQ) {
++    xFocusStart = floorTo(focusMinQ, 1000);
++  }
++  let yFocusStart = 0;
++  if (Number.isFinite(focusMinP) && focusMaxP > 0 && focusMinP >= 0.3 * focusMaxP) {
++    const stepP = focusMaxP > 500 ? 50 : focusMaxP > 150 ? 20 : 10;
++    // 0.9 — чтобы нижняя граница зоны допуска (-7,5% и больше) не легла
++    // ровно на край окна
++    yFocusStart = floorTo(focusMinP * 0.9, stepP);
++  }
++
+   const option = {
+     tooltip: {
+       trigger: 'axis',
+       axisPointer: { type: 'cross', label: { backgroundColor: '#6a7985' } },
+       textStyle: { fontFamily: qpChartFontFamily, fontSize: 12 },
+-      // Служебные серии (зона допуска, курсорные линии) в подсказку не попадают
++      // Служебные серии (зона допуска, курсорные линии) в подсказку не
++      // попадают: полосы допуска — line-серии с именем кривой, отсеиваем
++      // их по индексу серии (bandSeriesIdx), а не по имени
+       formatter: (params) => {
++        const bandSeriesIdx = new Set(series.map((s, i) => (s.__isBand ? i : -1)).filter((i) => i >= 0));
+         const list = (Array.isArray(params) ? params : [params])
+-          .filter((pr) => pr && pr.seriesName && pr.seriesType !== 'custom' && !isServiceSeriesName(pr.seriesName));
++          .filter((pr) => pr && pr.seriesName
++            && !bandSeriesIdx.has(pr.seriesIndex)
++            && pr.seriesType !== 'custom'
++            && !isServiceSeriesName(pr.seriesName));
+         if (!list.length) return '';
+         const first = Array.isArray(list[0].value) ? list[0].value[0] : null;
+         const head = first != null ? `Q = ${formatNumber(first)} м³/ч` : '';
+         const rows = list.map((pr) => {
+           const v = Array.isArray(pr.value) ? pr.value[1] : pr.value;
+-          return `${pr.marker} ${escapeHtml(pr.seriesName)}: <b>${formatNumber(v)} Па</b>`;
++          // Давление округляем до целых Па: «296,648 Па» читается как тысячи
++          const pInt = v != null ? Math.round(Number(v)) : null;
++          return `${pr.marker} ${escapeHtml(pr.seriesName)}: <b>${formatNumber(pInt)} Па</b>`;
+         });
+         return [head, ...rows].filter(Boolean).join('<br/>');
+       }
+@@ -1135,10 +1189,10 @@ function renderQpChartShared(container, chartRef, products, targetRpm = null, ta
+     // Стартовое окно зума — «фокус» по значимым кривым (см. расчёт выше):
+     // выбранная модель занимает весь график, а не зажата в углу полной шкалы
+     dataZoom: [
+-      { type: 'inside', xAxisIndex: 0, filterMode: 'none', zoomOnMouseWheel: true, moveOnMouseMove: true, startValue: 0, endValue: xFocusEnd },
+-      { type: 'inside', yAxisIndex: 0, filterMode: 'none', zoomOnMouseWheel: false, moveOnMouseMove: false, startValue: 0, endValue: yFocusEnd },
+-      { type: 'slider', xAxisIndex: 0, filterMode: 'none', height: 14, bottom: 26, brushSelect: false, startValue: 0, endValue: xFocusEnd },
+-      { type: 'slider', yAxisIndex: 0, filterMode: 'none', width: 14, right: 8, brushSelect: false, showDataShadow: false, startValue: 0, endValue: yFocusEnd }
++      { type: 'inside', xAxisIndex: 0, filterMode: 'none', zoomOnMouseWheel: true, moveOnMouseMove: true, startValue: xFocusStart, endValue: xFocusEnd },
++      { type: 'inside', yAxisIndex: 0, filterMode: 'none', zoomOnMouseWheel: false, moveOnMouseMove: false, startValue: yFocusStart, endValue: yFocusEnd },
++      { type: 'slider', xAxisIndex: 0, filterMode: 'none', height: 14, bottom: 26, brushSelect: false, startValue: xFocusStart, endValue: xFocusEnd },
++      { type: 'slider', yAxisIndex: 0, filterMode: 'none', width: 14, right: 8, brushSelect: false, showDataShadow: false, startValue: yFocusStart, endValue: yFocusEnd }
+     ],
+     toolbox: {
+       feature: {
+@@ -1150,21 +1204,12 @@ function renderQpChartShared(container, chartRef, products, targetRpm = null, ta
+           title: 'Исходный масштаб',
+           icon: 'path://M512 128a384 384 0 1 0 384 384h-80a304 304 0 1 1-89-215l-79 79h248V107l-90 90A382 382 0 0 0 512 128z',
+           onclick: () => {
+-            // ВАЖНО: адресуемся по dataZoomIndex, а не xAxisIndex/yAxisIndex.
+-            // У ECharts баг сопоставления — дозум-экшен с одним лишь yAxisIndex
+-            // (без xAxisIndex в payload) всё равно попадает и в X-компоненты
+-            // (см. индексы 0/2 в массиве dataZoom выше), затирая их диапазон
+-            // значением Y — график схлопывается в точку. dataZoomIndex
+-            // однозначно адресует нужный компонент и обходит эту путаницу.
+-            chartRef.dispatchAction({
+-              type: 'dataZoom',
+-              batch: [
+-                { dataZoomIndex: 0, startValue: 0, endValue: xFocusEnd },
+-                { dataZoomIndex: 1, startValue: 0, endValue: yFocusEnd },
+-                { dataZoomIndex: 2, startValue: 0, endValue: xFocusEnd },
+-                { dataZoomIndex: 3, startValue: 0, endValue: yFocusEnd }
+-              ]
+-            });
++            // Сброс = полная перерисовка в исходное окно, как при загрузке
++            // страницы. Морфить оси dataZoom-экшеном нельзя: кривые (line)
++            // анимировались бы, а полоса допуска (custom-полигон) прыгала бы
++            // в конечное положение мгновенно, отклеиваясь от своей кривой.
++            chartRef.clear();
++            chartRef.setOption(option, true);
+           },
+         },
+         saveAsImage: { title: 'Скачать PNG', name: 'ventsearch-chart' }
+@@ -1579,7 +1624,10 @@ function describeQuery(filters) {
+   if (filters.diameter) parts.push(`Диаметр: ${filters.diameter} мм`);
+   if (filters.minAirflow || filters.maxAirflow) parts.push(`Расход: ${filters.minAirflow || "—"}–${filters.maxAirflow || "—"} м³/ч`);
+   if (filters.minPressure || filters.maxPressure) parts.push(`Давление: ${filters.minPressure || "—"}–${filters.maxPressure || "—"} Па`);
+-  if (filters.minPower || filters.maxPower) parts.push(`Мощность: ${filters.minPower || "—"}–${filters.maxPower || "—"} Вт`);
++  if (filters.minPower || filters.maxPower) {
++    const kw = (v) => (v ? formatNumber(Number(v) / 1000) : "—");
++    parts.push(`Мощность: ${kw(filters.minPower)}–${kw(filters.maxPower)} кВт`);
++  }
+   if (filters.minPrice || filters.maxPrice) parts.push(`Цена: ${filters.minPrice || "—"}–${filters.maxPrice || "—"} ₽`);
+   return parts.length ? parts.join(" · ") : "Параметры запроса: не заданы";
+ }
+@@ -1592,6 +1640,14 @@ function parseFilters(form) {
+     const v = String(value || "").trim();
+     if (v) filters[key] = v;
+   }
++  // Поля мощности инженер заполняет в кВт (как в каталоге завода),
++  // а API и БД работают в Вт — конвертируем на выходе из формы
++  for (const key of ["minPower", "maxPower"]) {
++    if (filters[key]) {
++      const kw = Number(filters[key].replace(",", "."));
++      if (Number.isFinite(kw)) filters[key] = String(kw * 1000);
++    }
++  }
+   return filters;
+ }
+ 
+@@ -1802,11 +1858,11 @@ async function initCatalogPage() {
+     // отдельной колонкой справа — так понятнее, что кнопки относятся к строке.
+     const COLUMNS = [
+       { key: "model", label: "Модель", sortable: true },
+-      { key: "size", label: "Типоразмер", sortable: false, hideable: true },
++      { key: "size", label: "Электродвигатель", sortable: false, hideable: true },
+       { key: "diameter", label: "⌀, мм", sortable: true, numeric: true, hideable: true },
+       { key: "airflow", label: "Расход Q, м³/ч", sortable: true, numeric: true, hideable: true },
+       { key: "pressure", label: "Давление P, Па", sortable: true, numeric: true, hideable: true },
+-      { key: "power", label: "Мощность, Вт", sortable: true, numeric: true, hideable: true },
++      { key: "power", label: "Мощность, кВт", sortable: true, numeric: true, hideable: true },
+       { key: "noise", label: "Шум, дБ", sortable: true, numeric: true, hideable: true },
+       { key: "price", label: "Цена", sortable: true, numeric: true, hideable: true },
+     ];
+@@ -1928,7 +1984,7 @@ async function initCatalogPage() {
+         <td class="${cellClass("diameter", "text-end")}">${p.diameter != null ? escapeHtml(formatNumber(p.diameter)) : "—"}</td>
+         <td class="${cellClass("airflow", "text-end text-nowrap")}">${escapeHtml(p.airflow?.raw || "—")}</td>
+         <td class="${cellClass("pressure", "text-end text-nowrap")}">${escapeHtml(p.pressure?.raw || "—")}</td>
+-        <td class="${cellClass("power", "text-end")}">${p.power != null ? escapeHtml(formatNumber(p.power)) : "—"}</td>
++        <td class="${cellClass("power", "text-end")}">${p.power != null ? escapeHtml(formatNumber(Number(p.power) / 1000)) : "—"}</td>
+         <td class="${cellClass("noise", "text-end")}">${p.noise_level != null ? escapeHtml(p.noise_level) : "—"}</td>
+         <td class="${cellClass("price", "text-end text-nowrap fw-semibold")}">${escapeHtml(formatPrice(p.price))}</td>
+       `;
+@@ -2021,7 +2077,7 @@ async function initCatalogPage() {
+           <div class="analog-model">${escapeHtml(item.model || "Без названия")}</div>
+           <div class="analog-params">
+             ${escapeHtml(item.type || "—")} · Расход: ${escapeHtml(item.airflow?.raw || "—")} · Давление: ${escapeHtml(item.pressure?.raw || "—")} ·
+-            Мощность: ${item.power != null ? `${escapeHtml(item.power)} Вт` : "—"} · ${escapeHtml(formatPrice(item.price))}
++            Мощность: ${escapeHtml(formatPowerKw(item.power))} · ${escapeHtml(formatPrice(item.price))}
+           </div>
+         </div>
+         <a class="btn btn-sm btn-dark" href="product.html?id=${encodeURIComponent(item.id)}">Подробнее</a>
+@@ -2350,7 +2406,18 @@ async function initCatalogPage() {
+     if (headerSearchInput && filtersForm?.elements.q?.value && !headerSearchInput.value) {
+       headerSearchInput.value = filtersForm.elements.q.value;
+     }
+-    await loadPage(1);
++    // Применяем восстановленное, а не только показываем цифры в полях:
++    // если сохранена рабочая точка — повторяем подбор по точке (раньше
++    // после перезахода поля заполнялись, а список оставался полным
++    // каталогом — «фильтры сбрасывают применение»)
++    const rpq = toNumber(pointQInput?.value);
++    const rpp = toNumber(pointPInput?.value);
++    if (rpq > 0 && rpp > 0) {
++      const rtol = Math.min(Math.max(toNumber(pointTolInput?.value) || 0, 0), 50);
++      await runPointSearch(rpq, rpp, rtol);
++    } else {
++      await loadPage(1);
++    }
+     syncSelectionUi();
+     updateProjectNavBadge();
+     updateCompareNavBadge();
+@@ -2458,7 +2525,7 @@ async function initComparePage() {
+       { label: "Тип", pick: (p) => p.type || "—", best: "none" },
+       { label: "Расход, м³/ч", pick: (p) => getRangeNominal(p.airflow), display: (p) => p.airflow?.raw || "—", best: "max" },
+       { label: "Давление, Па", pick: (p) => getRangeNominal(p.pressure), display: (p) => p.pressure?.raw || "—", best: "max" },
+-      { label: "Мощность, Вт", pick: (p) => toNumber(p.power), display: (p) => (p.power != null ? `${p.power}` : "—"), best: "min" },
++      { label: "Мощность, кВт", pick: (p) => toNumber(p.power), display: (p) => (p.power != null ? formatNumber(Number(p.power) / 1000) : "—"), best: "min" },
+       { label: "Уровень шума, дБ", pick: (p) => toNumber(p.noise_level), display: (p) => (p.noise_level != null ? `${p.noise_level}` : "—"), best: "min" },
+       { label: "Цена, ₽", pick: (p) => toNumber(p.price), display: (p) => formatPrice(p.price), best: "min" },
+     ];
+@@ -2758,17 +2825,13 @@ async function initProductPage() {
+     const angleMatch = QP_MODEL_BLADE_ANGLE_RE.exec(String(data.model || ""));
+     const fanNumber = dims.Num || (angleMatch ? angleMatch[1] : null);
+     const powerVal = toNumber(data.power);
+-    const powerText = powerVal == null
+-      ? "—"
+-      : powerVal >= 1000
+-        ? `${formatNumber(powerVal / 1000)} кВт (${formatNumber(powerVal)} Вт)`
+-        : `${formatNumber(powerVal)} Вт`;
++    const powerText = formatPowerKw(powerVal);
+     const specBody = $("#specTableBody");
+     specBody.innerHTML = "";
+     const specs = [
+       ["Тип", data.type],
+       ["Модель", data.model],
+-      ["Двигатель (типоразмер)", data.size],
++      ["Электродвигатель", data.size],
+       ["Номер вентилятора", fanNumber || "—"],
+       ["Угол установки лопаток", angleMatch ? `${angleMatch[2]}°` : "—"],
+       ["Частота вращения", data.nominal_rpm != null ? `${formatNumber(data.nominal_rpm)} об/мин` : "—"],

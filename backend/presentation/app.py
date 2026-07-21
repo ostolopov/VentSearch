@@ -612,14 +612,22 @@ def _build_compare_pdf(
     diameters = [f"{_format_num(p.get('diameter'))} мм" if p.get("diameter") is not None else "—" for p in products]
     airflows = [_normalize_ws((p.get("airflow") or {}).get("raw") or "—") for p in products]
     pressures = [_normalize_ws((p.get("pressure") or {}).get("raw") or "—") for p in products]
-    powers = [f"{_format_num(p.get('power'))} Вт" if p.get("power") is not None else "—" for p in products]
+    # Мощность в кВт — как в бумажном каталоге завода («Установочная
+    # мощность, кВт»); без хвостовых нулей: 5,5 кВт, 3 кВт, 0,12 кВт
+    def _kw(value: Any) -> str:
+        w = _to_float(value)
+        if w is None:
+            return "—"
+        return f"{w / 1000:g}".replace(".", ",") + " кВт"
+
+    powers = [_kw(p.get("power")) for p in products]
     noises = [f"{_format_num(p.get('noise_level'))} дБ" if p.get("noise_level") is not None else "—" for p in products]
     prices = [f"{_format_num(p.get('price'))} ₽" if p.get("price") is not None else "по запросу" for p in products]
 
     line("Технические характеристики:", step=6.5 * mm, bold=True, size=10)
     draw_row("Модель", models)
     draw_row("Тип", types)
-    draw_row("Типоразмер", sizes)
+    draw_row("Электродвигатель", sizes)
     draw_row("Диаметр", diameters)
     draw_row("Расход", airflows)
     draw_row("Давление", pressures)
@@ -682,7 +690,7 @@ def _build_compare_pdf(
         pdf.setFillColor(c_muted)
         pdf.setFont(font_r, 8.5)
         pdf.drawString(left + 3 * mm, y - 11 * mm,
-                       f"Двигатель: {_normalize_ws(p.get('size') or '—')}   |   Частота вращения: {rpm_text}")
+                       f"Электродвигатель: {_normalize_ws(p.get('size') or '—')}   |   Частота вращения: {rpm_text}")
         pdf.drawString(left + 3 * mm, y - 15.5 * mm,
                        f"Тип: {_normalize_ws(p.get('type') or '—')}   |   Диаметр: {diameters[idx-1]}")
         pdf.drawString(left + 3 * mm, y - 20 * mm,
