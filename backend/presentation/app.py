@@ -210,11 +210,36 @@ def _pick_fonts() -> tuple[str, str]:
     return "Helvetica", "Helvetica-Bold"
 
 
-VENTSEARCH_ADDRESS = "Заречная ул., 1, Ивантеевка"
+# --- Фирменный бланк (шапка заказчика) --------------------------------------
+# Шапка воссоздана «модульно»: логотип — картинка, реквизиты — живой текст
+# с кликабельной ссылкой на сайт. Это чётче любого PNG при печати и легко
+# правится здесь при смене реквизитов. Логотип: photos/ШАПКА_ЛОГО.png
+# (вырезан из фирменного бланка); если файла нет, вырезаем логотип на лету
+# из полного бланка photos/ШАПКА_ВЕНТМАШ.png (левая часть до текста).
+LETTERHEAD_LOGO_FILENAME = "ШАПКА_ЛОГО.png"
+LETTERHEAD_FULL_FILENAME = "ШАПКА_ВЕНТМАШ.png"
+LETTERHEAD_ORG_FORM = "Общество с ограниченной ответственностью"
+LETTERHEAD_ORG_NAME = "\"Завод Вентмаш\""
+LETTERHEAD_ADDRESS = "141280, Московская обл., г. Ивантеевка, Заречная ул., д. 1"
+LETTERHEAD_PHONE = "Тел./факс: (+7 495) 662-30-42, 258-52-24 (многокан.)"
+LETTERHEAD_SITE_TEXT = "www.завод-вентмаш.рф"
+LETTERHEAD_SITE_URL = "http://www.завод-вентмаш.рф"
+LETTERHEAD_EMAIL = "info@moventa.ru"
+LETTERHEAD_INN_KPP = "ИНН\\КПП 5038093500\\503801001"
 
-# Фирменный бланк (шапка заказчика) для верха каждой страницы PDF — кладётся
-# в photos/ под этим именем; опция выключена, пока файла нет.
-LETTERHEAD_FILENAME = "ШАПКА_ВЕНТМАШ.png"
+
+def _ascii_url(url: str) -> str:
+    """URL с кириллическим доменом → ASCII (punycode) для PDF-аннотации:
+    формат PDF требует ASCII в /URI, иначе часть просмотрщиков не откроет."""
+    try:
+        from urllib.parse import urlsplit, urlunsplit
+        parts = urlsplit(url)
+        host = parts.hostname or ""
+        ascii_host = host.encode("idna").decode("ascii")
+        netloc = ascii_host if not parts.port else f"{ascii_host}:{parts.port}"
+        return urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
+    except Exception:
+        return url
 
 
 def _autocrop_whitespace(pil_img, pad_px: int = 10, threshold: int = 248, rule_row_frac: float = 0.85):
@@ -275,21 +300,32 @@ def _autocrop_whitespace(pil_img, pad_px: int = 10, threshold: int = 248, rule_r
     return rgb.crop((l, t, r, b))
 
 
-def _load_letterhead_reader(path: Path) -> Optional["ImageReader"]:
-    """ImageReader поверх автообрезанной картинки бланка (см. выше)."""
-    try:
-        from PIL import Image as _Image
-        with _Image.open(path) as im:
-            cropped = _autocrop_whitespace(im)
-            out = BytesIO()
-            cropped.save(out, format="PNG")
-            out.seek(0)
-            return ImageReader(out)
-    except Exception:
+def _load_letterhead_logo_reader() -> Optional["ImageReader"]:
+    """Логотип для модульной шапки: сначала готовый photos/ШАПКА_ЛОГО.png,
+    иначе вырезаем левую (логотипную) часть из полного бланка
+    photos/ШАПКА_ВЕНТМАШ.png и автообрезаем поля. Нет ни того ни другого —
+    шапка печатается без логотипа, только текстом."""
+    ready = PHOTOS_DIR / LETTERHEAD_LOGO_FILENAME
+    if ready.is_file():
         try:
-            return ImageReader(str(path))
+            return ImageReader(str(ready))
         except Exception:
-            return None
+            pass
+    full = PHOTOS_DIR / LETTERHEAD_FULL_FILENAME
+    if full.is_file():
+        try:
+            from PIL import Image as _Image
+            with _Image.open(full) as im:
+                rgb = im.convert("RGB")
+                left_part = rgb.crop((0, 0, max(1, int(rgb.width * 0.34)), rgb.height))
+                cropped = _autocrop_whitespace(left_part)
+                out = BytesIO()
+                cropped.save(out, format="PNG")
+                out.seek(0)
+                return ImageReader(out)
+        except Exception:
+            pass
+    return None
 
 # Фото по типу вентилятора — та же карта, что FAN_IMAGES_BY_TYPE на фронтенде
 _PDF_PHOTO_BY_TYPE = {
@@ -341,7 +377,8 @@ def _build_compare_pdf(
     chart_png: Optional[bytes] = None,
     header_text: Optional[str] = None,
     watermark_path: Optional[Path] = None,
-    letterhead_path: Optional[Path] = None,
+    letterhead: bool = False,
+    letterhead_all_pages: bool = False,
     show_title: bool = True,
 ) -> bytes:
     buf = BytesIO()
@@ -352,50 +389,95 @@ def _build_compare_pdf(
     width = right - left
     font_r, font_b = _pick_fonts()
 
-    # Фирменный бланк (шапка заказчика) — печатается ПЕРВЫМ на каждой
-    # странице, во всю ширину, сверху. Опция выключена по умолчанию.
-    letterhead_w = 0.0
-    letterhead_h = 0.0
-    letterhead_reader = None
-    if letterhead_path:
-        try:
-            letterhead_reader = _load_letterhead_reader(letterhead_path)
-            lw, lh = letterhead_reader.getSize()
-            letterhead_w = width
-            letterhead_h = letterhead_w * lh / lw
-            # Бланки — широкие и невысокие (логотип + пара строк реквизитов),
-            # поэтому потолок высокий: типичный бланк на всю ширину A4 в него
-            # укладывается. Если кап всё же сработал, ширину пересчитываем
-            # под ту же высоту — иначе drawImage вписывает картинку по
-            # меньшей стороне бокса и она сжимается в узкую полоску слева.
-            max_letterhead_h = 60 * mm
-            if letterhead_h > max_letterhead_h:
-                letterhead_h = max_letterhead_h
-                letterhead_w = letterhead_h * lw / lh
-        except Exception:
-            letterhead_reader = None
-
-    def draw_letterhead():
-        if not letterhead_reader:
-            return
-        try:
-            pdf.drawImage(
-                letterhead_reader,
-                left, page_h - 14 * mm - letterhead_h,
-                width=letterhead_w, height=letterhead_h,
-                preserveAspectRatio=True, mask="auto",
-            )
-        except Exception:
-            pass
-
-    top_margin = 14 * mm + (letterhead_h + 6 * mm if letterhead_reader else 0)
-    y = page_h - top_margin
     c_primary = colors.HexColor("#027bf3")
     c_surface = colors.HexColor("#f6f8fa")
     c_border = colors.HexColor("#e2e5e9")
     c_text = colors.HexColor("#111111")
     c_muted = colors.HexColor("#55595d")
-    c_best = colors.HexColor("#e8f7e8")
+    c_link = colors.HexColor("#0b0080")
+
+    # --- Фирменный бланк: модульная копия оригинала --------------------------
+    # Логотип картинкой слева, реквизиты — живым текстом по центру остальной
+    # ширины, сайт — кликабельная ссылка, снизу двойная линия во всю ширину.
+    lh_logo_reader = _load_letterhead_logo_reader() if letterhead else None
+    LH_TOP_PAD = 11 * mm       # от верхнего края листа до шапки
+    LH_LOGO_H = 26 * mm        # высота логотипа
+    LH_TEXT_H = 33.5 * mm      # высота текстового блока (6 строк с интервалами)
+    LH_RULE_GAP = 3 * mm       # зазор между блоком и двойной линией
+    LH_BOTTOM_PAD = 5.5 * mm   # от линии до начала содержимого страницы
+    lh_block_h = max(LH_LOGO_H if lh_logo_reader else 0, LH_TEXT_H)
+    lh_total_h = LH_TOP_PAD + lh_block_h + LH_RULE_GAP + 2.6 * mm + LH_BOTTOM_PAD
+
+    def draw_letterhead():
+        if not letterhead:
+            return
+        top = page_h - LH_TOP_PAD
+        logo_w = 0.0
+        if lh_logo_reader:
+            try:
+                liw, lih = lh_logo_reader.getSize()
+                logo_w = LH_LOGO_H * liw / lih
+                pdf.drawImage(
+                    lh_logo_reader, left, top - LH_LOGO_H,
+                    width=logo_w, height=LH_LOGO_H,
+                    preserveAspectRatio=True, mask="auto",
+                )
+            except Exception:
+                logo_w = 0.0
+        tx0 = left + (logo_w + 6 * mm if logo_w else 0)
+        cx = tx0 + (right - tx0) / 2
+        ty = top - 4.6 * mm
+        pdf.setFillColor(c_text)
+        pdf.setFont(font_b, 10.5)
+        pdf.drawCentredString(cx, ty, LETTERHEAD_ORG_FORM)
+        ty -= 8.6 * mm
+        pdf.setFont(font_b, 19)
+        pdf.drawCentredString(cx, ty, LETTERHEAD_ORG_NAME)
+        ty -= 6.8 * mm
+        pdf.setFont(font_b, 9)
+        pdf.drawCentredString(cx, ty, LETTERHEAD_ADDRESS)
+        ty -= 4.5 * mm
+        pdf.drawCentredString(cx, ty, LETTERHEAD_PHONE)
+        ty -= 4.5 * mm
+        # Сайт (синим, с подчёркиванием и ссылкой) + e-mail в одну строку
+        site = LETTERHEAD_SITE_TEXT
+        email_txt = f"e-mail: {LETTERHEAD_EMAIL}"
+        gap = 9 * mm
+        w_site = pdf.stringWidth(site, font_b, 9)
+        w_email = pdf.stringWidth(email_txt, font_b, 9)
+        sx = cx - (w_site + gap + w_email) / 2
+        pdf.setFillColor(c_link)
+        pdf.drawString(sx, ty, site)
+        pdf.setStrokeColor(c_link)
+        pdf.setLineWidth(0.6)
+        pdf.line(sx, ty - 1.2, sx + w_site, ty - 1.2)
+        pdf.linkURL(
+            _ascii_url(LETTERHEAD_SITE_URL),
+            (sx - 1, ty - 2.5, sx + w_site + 1, ty + 8.5),
+            relative=0, thickness=0,
+        )
+        pdf.setFillColor(c_text)
+        ex = sx + w_site + gap
+        pdf.drawString(ex, ty, email_txt)
+        pdf.linkURL(
+            f"mailto:{LETTERHEAD_EMAIL}",
+            (ex - 1, ty - 2.5, ex + w_email + 1, ty + 8.5),
+            relative=0, thickness=0,
+        )
+        ty -= 4.5 * mm
+        pdf.drawCentredString(cx, ty, LETTERHEAD_INN_KPP)
+        # Двойная линия во всю ширину листа (как на бланке)
+        rule_y = top - lh_block_h - LH_RULE_GAP
+        pdf.setStrokeColor(colors.black)
+        pdf.setLineWidth(3.4)
+        pdf.line(left, rule_y, right, rule_y)
+        pdf.setStrokeColor(colors.HexColor("#b0b0b0"))
+        pdf.setLineWidth(1.1)
+        pdf.line(left, rule_y - 2.2 * mm, right, rule_y - 2.2 * mm)
+
+    top_margin = lh_total_h if letterhead else 14 * mm
+    plain_top_margin = 14 * mm
+    y = page_h - top_margin
 
     def draw_watermark():
         """Полупрозрачный «призрак» по центру страницы + небольшая видимая
@@ -438,8 +520,13 @@ def _build_compare_pdf(
         nonlocal y
         pdf.showPage()
         draw_watermark()
-        draw_letterhead()
-        y = page_h - top_margin
+        # Шапка на продолжениях — по выбору пользователя: как классический
+        # бланк (только первый лист) или на каждой странице
+        if letterhead and letterhead_all_pages:
+            draw_letterhead()
+            y = page_h - top_margin
+        else:
+            y = page_h - plain_top_margin
 
     def line(text, step=5.6 * mm, bold=False, color=None, size=10):
         nonlocal y
@@ -463,11 +550,13 @@ def _build_compare_pdf(
         if subtitle:
             pdf.setFont(font_r, 9)
             pdf.drawString(left + 4 * mm, y - 12 * mm, subtitle)
-        y -= h + 4 * mm
+        y -= h + 3 * mm
 
-    def draw_row(label, values, highlights):
+    def draw_row(label, values):
+        # Без «зелёной подсветки лучшего»: документ инженерный, у параметров
+        # нет универсального «лучше» — оценку делает специалист под задачу
         nonlocal y
-        row_h = 7.4 * mm
+        row_h = 7.2 * mm
         label_w = 42 * mm
         model_count = max(1, len(values))
         value_w = (width - label_w) / model_count
@@ -478,14 +567,14 @@ def _build_compare_pdf(
         pdf.rect(left, y - row_h, label_w, row_h, stroke=1, fill=1)
         pdf.setFillColor(c_text)
         pdf.setFont(font_b, 8.5)
-        pdf.drawString(left + 1.8 * mm, y - 4.9 * mm, label)
+        pdf.drawString(left + 1.8 * mm, y - 4.8 * mm, label)
         for idx, text in enumerate(values):
             x = left + label_w + idx * value_w
-            pdf.setFillColor(c_best if idx in highlights else colors.white)
+            pdf.setFillColor(colors.white)
             pdf.rect(x, y - row_h, value_w, row_h, stroke=1, fill=1)
             pdf.setFillColor(c_text)
             pdf.setFont(font_r, 8)
-            pdf.drawString(x + 1.2 * mm, y - 4.9 * mm, (_normalize_ws(text))[:36] or "—")
+            pdf.drawString(x + 1.2 * mm, y - 4.8 * mm, (_normalize_ws(text))[:36] or "—")
         y -= row_h
 
     single = len(products) == 1
@@ -501,20 +590,19 @@ def _build_compare_pdf(
             f"Дата: {datetime.now().strftime('%d.%m.%Y %H:%M')}"
             + ("" if single else f"   |   Моделей: {len(products)}"),
         )
-    line(VENTSEARCH_ADDRESS, step=6.0 * mm, color=c_muted, size=8.5)
 
     if chart_png:
         try:
             image = ImageReader(BytesIO(chart_png))
             chart_h = 72 * mm
-            if y - chart_h < 20 * mm:
+            if y - (chart_h + 10 * mm) < 20 * mm:
                 new_page()
+            line("Аэродинамические характеристики (Q–P):", step=6.5 * mm, bold=True, size=10)
             pdf.setStrokeColor(c_border)
             pdf.setFillColor(colors.white)
             pdf.roundRect(left, y - chart_h - 3 * mm, width, chart_h + 3 * mm, 2 * mm, stroke=1, fill=1)
             pdf.drawImage(image, left, y - chart_h, width=width, height=chart_h, preserveAspectRatio=True, mask="auto")
-            y -= chart_h + 6 * mm
-            line("График Q-P из интерфейса сравнения.", step=6.5 * mm, color=c_muted, size=9)
+            y -= chart_h + 7 * mm
         except Exception:
             line("Не удалось встроить график Q-P.", step=6.5 * mm, color=c_muted, size=9)
 
@@ -528,36 +616,16 @@ def _build_compare_pdf(
     noises = [f"{_format_num(p.get('noise_level'))} дБ" if p.get("noise_level") is not None else "—" for p in products]
     prices = [f"{_format_num(p.get('price'))} ₽" if p.get("price") is not None else "по запросу" for p in products]
 
-    def min_idx(arr):
-        valid = [(i, v) for i, v in enumerate(arr) if v is not None]
-        if not valid:
-            return set()
-        t = min(v for _, v in valid)
-        return {i for i, v in valid if v == t}
-
-    def max_idx(arr):
-        valid = [(i, v) for i, v in enumerate(arr) if v is not None]
-        if not valid:
-            return set()
-        t = max(v for _, v in valid)
-        return {i for i, v in valid if v == t}
-
-    pvals = [_to_float(p.get("power")) for p in products]
-    nvals = [_to_float(p.get("noise_level")) for p in products]
-    prvals = [_to_float(p.get("price")) for p in products]
-    af_max = [_to_float((p.get("airflow") or {}).get("max")) for p in products]
-    pr_max = [_to_float((p.get("pressure") or {}).get("max")) for p in products]
-
-    line("Сравнительная таблица (лучшие значения выделены):", step=7.0 * mm, bold=True, size=10)
-    draw_row("Модель", models, set())
-    draw_row("Тип", types, set())
-    draw_row("Типоразмер", sizes, set())
-    draw_row("Диаметр", diameters, set())
-    draw_row("Расход", airflows, max_idx(af_max))
-    draw_row("Давление", pressures, max_idx(pr_max))
-    draw_row("Мощность", powers, min_idx(pvals))
-    draw_row("Шум", noises, min_idx(nvals))
-    draw_row("Цена", prices, min_idx(prvals))
+    line("Технические характеристики:", step=6.5 * mm, bold=True, size=10)
+    draw_row("Модель", models)
+    draw_row("Тип", types)
+    draw_row("Типоразмер", sizes)
+    draw_row("Диаметр", diameters)
+    draw_row("Расход", airflows)
+    draw_row("Давление", pressures)
+    draw_row("Мощность", powers)
+    draw_row("Шум", noises)
+    draw_row("Цена", prices)
 
     def wrap_to_width(text, font_name, font_size, max_width):
         """Разбивает текст на строки по ширине (в пунктах reportlab), не обрезая."""
@@ -575,7 +643,7 @@ def _build_compare_pdf(
         return lines
 
     y -= 4 * mm
-    line("Подробно по моделям:", step=7.0 * mm, bold=True)
+    line("Подробно по моделям:", step=6.5 * mm, bold=True)
     for idx, p in enumerate(products, start=1):
         dims = p.get("dimensions") or {}
         dims_size = 7.5
@@ -869,17 +937,13 @@ def create_app() -> FastAPI:
                 and candidate.resolve().parent == PHOTOS_DIR.resolve()
             ):
                 watermark_path = candidate
-        letterhead_path = None
-        if payload.letterhead:
-            candidate = PHOTOS_DIR / LETTERHEAD_FILENAME
-            if candidate.is_file():
-                letterhead_path = candidate
         pdf_bytes = _build_compare_pdf(
             products_list,
             chart_png=chart_png,
             header_text=payload.header_text,
             watermark_path=watermark_path,
-            letterhead_path=letterhead_path,
+            letterhead=payload.letterhead,
+            letterhead_all_pages=payload.letterhead_all_pages,
             show_title=payload.show_title,
         )
         filename = _safe_pdf_filename(payload.filename)

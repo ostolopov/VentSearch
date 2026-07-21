@@ -1284,6 +1284,7 @@ async function fetchClientPdfBlob(ids, options = {}) {
       watermark: options.watermark || undefined,
       show_title: !!options.showTitle,
       letterhead: !!options.letterhead,
+      letterhead_all_pages: !!options.letterheadAllPages,
     }),
   });
   if (!response.ok) {
@@ -1416,6 +1417,10 @@ function ensurePdfMakerModal() {
                 Фирменная шапка сверху (бланк заказчика)
               </label>
             </div>
+            <select id="pdfMakerLetterheadPages" class="form-select form-select-sm w-auto d-none">
+              <option value="first" selected>Шапка: только первая страница</option>
+              <option value="all">Шапка: на всех страницах</option>
+            </select>
           </div>
           <div class="d-flex gap-2 mt-3">
             <button id="pdfMakerPreviewBtn" class="btn btn-outline-secondary btn-sm" type="button">Предпросмотр</button>
@@ -1453,6 +1458,7 @@ function ensurePdfMakerModal() {
       watermark: String(modalEl.querySelector("#pdfMakerWatermark")?.value || "").trim(),
       showTitle: !!modalEl.querySelector("#pdfMakerShowTitle")?.checked,
       letterhead: !!modalEl.querySelector("#pdfMakerLetterhead")?.checked,
+      letterheadAllPages: modalEl.querySelector("#pdfMakerLetterheadPages")?.value === "all",
     };
   }
 
@@ -1520,7 +1526,15 @@ function ensurePdfMakerModal() {
     headerDebounce = setTimeout(() => autoRefreshIfPreviewOpen(), 700);
   });
   modalEl.querySelector("#pdfMakerShowTitle").addEventListener("change", autoRefreshIfPreviewOpen);
-  modalEl.querySelector("#pdfMakerLetterhead").addEventListener("change", autoRefreshIfPreviewOpen);
+  // Подвыбор «на первой / на всех страницах» показывается только при
+  // включённой шапке — иначе он не имеет смысла и путает
+  const letterheadCb = modalEl.querySelector("#pdfMakerLetterhead");
+  const letterheadPages = modalEl.querySelector("#pdfMakerLetterheadPages");
+  letterheadCb.addEventListener("change", () => {
+    letterheadPages.classList.toggle("d-none", !letterheadCb.checked);
+    autoRefreshIfPreviewOpen();
+  });
+  letterheadPages.addEventListener("change", autoRefreshIfPreviewOpen);
 
   downloadBtn.addEventListener("click", async () => {
     downloadBtn.disabled = true;

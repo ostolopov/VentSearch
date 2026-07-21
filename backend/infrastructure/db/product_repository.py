@@ -6,6 +6,7 @@ PostgreSQL-реализация репозитория вентиляторов.
 """
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, List, Optional, Tuple
 
 import psycopg2
@@ -109,6 +110,33 @@ def _row_to_product_dict(row: Dict[str, Any]) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Нестрогий поиск по названию
+# ---------------------------------------------------------------------------
+# Пользователи набирают модель «как получится»: «ВО 13 284 6 30» вместо
+# «ВО 13-284-6/30°», «132с8» кириллицей вместо «132S8». Обе стороны сравнения
+# приводим к одному виду: нижний регистр, кириллические двойники латиницы
+# сводятся к латинице (а→a, с→c, …; s→c, чтобы С и S совпадали), всё, кроме
+# букв и цифр, выбрасывается. Запрос бьётся на токены по пробелам: каждый
+# токен должен встретиться в свёрнутой строке (порядок не важен), поэтому
+# «13-284 132s8» находит модель, где между этими кусками стоят другие цифры.
+_FOLD_FROM = "авеёкмнорстухs"
+_FOLD_TO = "abeekmhopctyxc"
+_FOLD_TABLE = str.maketrans(_FOLD_FROM, _FOLD_TO)
+_Q_HAYSTACK_SQL = (
+    "REGEXP_REPLACE(TRANSLATE(LOWER("
+    "COALESCE(model,'') || ' ' || COALESCE(size,'') || ' ' || "
+    "COALESCE(type,'') || ' ' || COALESCE(number,'') || ' ' || "
+    "COALESCE(TO_CHAR(diameter, 'FM9999999999'),'')"
+    f"), '{_FOLD_FROM}', '{_FOLD_TO}'), '[^a-z0-9а-яё]', '', 'g')"
+)
+
+
+def _fold_search_token(token: str) -> str:
+    """Токен запроса в том же «свёрнутом» виде, что и _Q_HAYSTACK_SQL."""
+    return re.sub(r"[^a-z0-9а-яё]", "", token.lower().translate(_FOLD_TABLE))
+
+
+# ---------------------------------------------------------------------------
 # WHERE clause builder
 # ---------------------------------------------------------------------------
 
@@ -154,9 +182,12 @@ def _products_filter_sql(
         return "%s"
 
     if q and q.strip():
-        conditions.append("(LOWER(model) LIKE %s OR LOWER(size) LIKE %s OR LOWER(type) LIKE %s)")
-        t = f"%{q.strip().lower()}%"
-        params.extend([t, t, t])
+        # Нестрогое сопоставление: см. _Q_HAYSTACK_SQL/_fold_search_token выше.
+        # После свёртки в токенах остаются только буквы/цифры, поэтому
+        # спецсимволы LIKE (%, _) в параметры не попадают.
+        tokens = [t for t in (_fold_search_token(part) for part in q.split()) if t]
+        for tok in tokens:
+            conditions.append(_Q_HAYSTACK_SQL + " LIKE " + next_param(f"%{tok}%"))
     if type_:
         conditions.append("type = " + next_param(type_))
     if series:

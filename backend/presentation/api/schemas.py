@@ -376,5 +376,9 @@ class PdfExportRequest(BaseModel):
     )
     letterhead: bool = Field(
         default=False,
-        description="Показывать фирменную шапку (бланк заказчика) сверху каждой страницы PDF.",
+        description="Печатать фирменную шапку (бланк заказчика) сверху PDF.",
+    )
+    letterhead_all_pages: bool = Field(
+        default=False,
+        description="Шапка на каждой странице (по умолчанию — только на первой, как у бланка).",
     )
