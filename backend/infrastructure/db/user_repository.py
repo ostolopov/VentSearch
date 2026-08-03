@@ -27,6 +27,7 @@ def _public_user(row: Dict[str, Any]) -> Dict[str, Any]:
         "email": row["email"],
         "name": row.get("name") or "",
         "company": row.get("company") or "",
+        "position": row.get("position") or "",
         "phone": row.get("phone") or "",
         "role": row.get("role") or "user",
         "is_active": bool(row.get("is_active")),
@@ -37,10 +38,10 @@ def _public_user(row: Dict[str, Any]) -> Dict[str, Any]:
 
 
 _SELECT_COLS = (
-    "id, email, password_hash, name, company, phone, role, is_active, created_at, updated_at"
+    "id, email, password_hash, name, company, position, phone, role, is_active, created_at, updated_at"
 )
 _PUBLIC_COLS = (
-    "id, email, name, company, phone, role, is_active, created_at, updated_at"
+    "id, email, name, company, position, phone, role, is_active, created_at, updated_at"
 )
 
 
@@ -71,17 +72,25 @@ class PgUserRepository(AbstractUserRepository):
         self,
         *,
         q: Optional[str] = None,
+        role: Optional[str] = None,
         limit: int = 50,
         offset: int = 0,
     ) -> Tuple[List[Dict[str, Any]], int]:
         conditions = ["1=1"]
         params: List[Any] = []
+        # role="staff" — сотрудники (админы и модераторы) для вкладки «Команда»
+        if role == "staff":
+            conditions.append("role IN ('admin', 'moderator')")
+        elif role in ("user", "moderator", "admin"):
+            conditions.append("role = %s")
+            params.append(role)
         if q and q.strip():
             t = f"%{q.strip().lower()}%"
             conditions.append(
-                "(LOWER(email) LIKE %s OR LOWER(name) LIKE %s OR LOWER(company) LIKE %s)"
+                "(LOWER(email) LIKE %s OR LOWER(name) LIKE %s "
+                "OR LOWER(company) LIKE %s OR LOWER(position) LIKE %s)"
             )
-            params.extend([t, t, t])
+            params.extend([t, t, t, t])
         where_sql = " AND ".join(conditions)
         with self._conn.cursor() as cur:
             cur.execute(f"SELECT COUNT(*) FROM users WHERE {where_sql}", params)
@@ -107,17 +116,18 @@ class PgUserRepository(AbstractUserRepository):
         password_hash: str,
         name: str = "",
         company: str = "",
+        position: str = "",
         phone: str = "",
         role: str = "user",
     ) -> Dict[str, Any]:
         with self._conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute(
                 """
-                INSERT INTO users (email, password_hash, name, company, phone, role)
-                VALUES (%s, %s, %s, %s, %s, %s)
-                RETURNING id, email, name, company, phone, role, is_active, created_at, updated_at
+                INSERT INTO users (email, password_hash, name, company, position, phone, role)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                RETURNING id, email, name, company, position, phone, role, is_active, created_at, updated_at
                 """,
-                (email.strip().lower(), password_hash, name, company, phone, role),
+                (email.strip().lower(), password_hash, name, company, position, phone, role),
             )
             row = cur.fetchone()
         self._conn.commit()
@@ -128,7 +138,7 @@ class PgUserRepository(AbstractUserRepository):
         user_id: int,
         *,
         email=None, password_hash=None, name=None,
-        company=None, phone=None, role=None, is_active=None,
+        company=None, position=None, phone=None, role=None, is_active=None,
     ) -> Optional[Dict[str, Any]]:
         fields: List[str] = []
         params: List[Any] = []
@@ -144,6 +154,9 @@ class PgUserRepository(AbstractUserRepository):
         if company is not None:
             fields.append("company = %s")
             params.append(company)
+        if position is not None:
+            fields.append("position = %s")
+            params.append(position)
         if phone is not None:
             fields.append("phone = %s")
             params.append(phone)
@@ -160,7 +173,7 @@ class PgUserRepository(AbstractUserRepository):
         with self._conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute(
                 f"UPDATE users SET {', '.join(fields)} WHERE id = %s "
-                "RETURNING id, email, name, company, phone, role, is_active, created_at, updated_at",
+                "RETURNING id, email, name, company, position, phone, role, is_active, created_at, updated_at",
                 params,
             )
             row = cur.fetchone()
@@ -230,26 +243,26 @@ def get_user_by_email(conn, email: str) -> Optional[Dict[str, Any]]:
     return PgUserRepository(conn).get_by_email(email)
 
 
-def list_users(conn, *, q=None, limit=50, offset=0):
-    return PgUserRepository(conn).list_users(q=q, limit=limit, offset=offset)
+def list_users(conn, *, q=None, role=None, limit=50, offset=0):
+    return PgUserRepository(conn).list_users(q=q, role=role, limit=limit, offset=offset)
 
 
 def count_admins(conn) -> int:
     return PgUserRepository(conn).count_admins()
 
 
-def create_user(conn, *, email, password_hash, name="", company="", phone="", role="user"):
+def create_user(conn, *, email, password_hash, name="", company="", position="", phone="", role="user"):
     return PgUserRepository(conn).create(
         email=email, password_hash=password_hash,
-        name=name, company=company, phone=phone, role=role,
+        name=name, company=company, position=position, phone=phone, role=role,
     )
 
 
 def update_user(conn, user_id, *, email=None, password_hash=None, name=None,
-                company=None, phone=None, role=None, is_active=None):
+                company=None, position=None, phone=None, role=None, is_active=None):
     return PgUserRepository(conn).update(
         user_id, email=email, password_hash=password_hash,
-        name=name, company=company, phone=phone, role=role, is_active=is_active,
+        name=name, company=company, position=position, phone=phone, role=role, is_active=is_active,
     )
 
 

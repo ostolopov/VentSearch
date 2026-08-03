@@ -11,10 +11,11 @@ from typing import Annotated, Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from presentation.api.deps import db_session, require_admin
+from presentation.api.deps import db_session, require_admin, require_staff
 from presentation.api.schemas import (
     AdminProductIn,
     AdminUserIn,
+    AdminUserRoleIn,
     AdminUserUpdateIn,
     BulkDeleteOut,
     BulkDeleteProductsIn,
@@ -66,7 +67,7 @@ def _rebuild_catalog_index() -> None:
 
 @router.get("/products", response_model=ProductListPageOut, summary="Список вентиляторов (админ)")
 def admin_products(
-    _: Annotated[dict, Depends(require_admin)],
+    _: Annotated[dict, Depends(require_staff)],
     q: Optional[str] = Query(default=None),
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
@@ -80,7 +81,7 @@ def admin_products(
 
 
 @router.get("/products/{product_id}", response_model=ProductOut, summary="Карточка вентилятора (админ)")
-def admin_product_get(product_id: str, _: Annotated[dict, Depends(require_admin)]):
+def admin_product_get(product_id: str, _: Annotated[dict, Depends(require_staff)]):
     from infrastructure.db.product_repository import get_by_id
 
     with db_session() as conn:
@@ -91,7 +92,7 @@ def admin_product_get(product_id: str, _: Annotated[dict, Depends(require_admin)
 
 
 @router.post("/products", response_model=ProductOut, status_code=201, summary="Создать вентилятор")
-def admin_product_create(payload: AdminProductIn, _: Annotated[dict, Depends(require_admin)]):
+def admin_product_create(payload: AdminProductIn, _: Annotated[dict, Depends(require_staff)]):
     try:
         with db_session() as conn:
             product = create_product(conn, payload.model_dump())
@@ -103,7 +104,7 @@ def admin_product_create(payload: AdminProductIn, _: Annotated[dict, Depends(req
 
 @router.put("/products/{product_id}", response_model=ProductOut, summary="Обновить вентилятор")
 def admin_product_update(
-    product_id: str, payload: AdminProductIn, _: Annotated[dict, Depends(require_admin)]
+    product_id: str, payload: AdminProductIn, _: Annotated[dict, Depends(require_staff)]
 ):
     with db_session() as conn:
         product = update_product(conn, product_id, payload.model_dump())
@@ -114,7 +115,7 @@ def admin_product_update(
 
 
 @router.delete("/products/{product_id}", summary="Удалить вентилятор")
-def admin_product_delete(product_id: str, _: Annotated[dict, Depends(require_admin)]):
+def admin_product_delete(product_id: str, _: Annotated[dict, Depends(require_staff)]):
     with db_session() as conn:
         deleted = delete_product(conn, product_id)
     if not deleted:
@@ -124,7 +125,7 @@ def admin_product_delete(product_id: str, _: Annotated[dict, Depends(require_adm
 
 
 @router.post("/products/bulk-delete", response_model=BulkDeleteOut, summary="Удалить несколько вентиляторов")
-def admin_products_bulk_delete(payload: BulkDeleteProductsIn, _: Annotated[dict, Depends(require_admin)]):
+def admin_products_bulk_delete(payload: BulkDeleteProductsIn, _: Annotated[dict, Depends(require_staff)]):
     with db_session() as conn:
         deleted = delete_products_bulk(conn, payload.ids)
     if deleted:
@@ -136,15 +137,49 @@ def admin_products_bulk_delete(payload: BulkDeleteProductsIn, _: Annotated[dict,
 def admin_users(
     _: Annotated[dict, Depends(require_admin)],
     q: Optional[str] = Query(default=None),
+    role: Optional[str] = Query(
+        default=None,
+        pattern="^(staff|user|moderator|admin)$",
+        description="staff — только сотрудники (админы и модераторы).",
+    ),
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
 ):
     with db_session() as conn:
-        items, total = list_users(conn, q=q, limit=limit, offset=offset)
+        items, total = list_users(conn, q=q, role=role, limit=limit, offset=offset)
     return UserListPageOut(
         items=[UserOut.model_validate(u) for u in items],
         total=total, limit=limit, offset=offset,
     )
+
+
+@router.post("/users/{user_id}/role", response_model=UserOut, summary="Назначить роль (админ)")
+def admin_user_set_role(
+    user_id: int,
+    payload: AdminUserRoleIn,
+    admin: Annotated[dict, Depends(require_admin)],
+):
+    """Назначение/снятие роли — вкладка «Команда».
+
+    Раздавать права может только администратор. Защиты: нельзя менять
+    собственную роль (иначе легко «выйти» из админов и потерять доступ),
+    нельзя трогать защищённый аккаунт из ADMIN_EMAIL и нельзя снять
+    последнего администратора."""
+    new_role = payload.role
+    if admin["id"] == user_id:
+        raise HTTPException(status_code=400, detail={"error": "Cannot change your own role"})
+    with db_session() as conn:
+        existing = get_user_by_id(conn, user_id)
+        if not existing:
+            raise HTTPException(status_code=404, detail={"error": "User not found"})
+        if is_protected_admin_account(existing):
+            raise HTTPException(status_code=400, detail={"error": "Cannot change role of protected admin"})
+        if existing.get("role") == "admin" and new_role != "admin" and count_admins(conn) <= 1:
+            raise HTTPException(status_code=400, detail={"error": "Cannot demote the last admin"})
+        user = update_user(conn, user_id, role=new_role)
+    if not user:
+        raise HTTPException(status_code=404, detail={"error": "User not found"})
+    return UserOut.model_validate(user)
 
 
 @router.post("/users", response_model=UserOut, status_code=201, summary="Создать пользователя")
@@ -152,7 +187,7 @@ def admin_user_create(payload: AdminUserIn, _: Annotated[dict, Depends(require_a
     email = payload.email.strip().lower()
     if len(payload.password) < 6:
         raise HTTPException(status_code=422, detail={"error": "Password must be at least 6 characters"})
-    role = payload.role if payload.role in ("user", "admin") else "user"
+    role = payload.role if payload.role in ("user", "moderator", "admin") else "user"
     with db_session() as conn:
         if get_user_by_email(conn, email):
             raise HTTPException(status_code=409, detail={"error": "Email already exists"})
@@ -162,6 +197,7 @@ def admin_user_create(payload: AdminUserIn, _: Annotated[dict, Depends(require_a
             password_hash=hash_password(payload.password),
             name=payload.name.strip(),
             company=payload.company.strip(),
+            position=payload.position.strip(),
             phone=payload.phone.strip(),
             role=role,
         )
@@ -190,7 +226,7 @@ def admin_user_update(
         if is_protected_admin_account(existing):
             if data.get("email") and data["email"].strip().lower() != existing["email"].lower():
                 raise HTTPException(status_code=400, detail={"error": "Cannot change email of protected admin"})
-            if data.get("role") == "user":
+            if data.get("role") is not None and data["role"] != "admin":
                 raise HTTPException(status_code=400, detail={"error": "Cannot change role of protected admin"})
             if data.get("is_active") is False:
                 raise HTTPException(status_code=400, detail={"error": "Cannot deactivate protected admin"})
@@ -201,7 +237,7 @@ def admin_user_update(
                 raise HTTPException(status_code=409, detail={"error": "Email already exists"})
 
         new_role = data.get("role")
-        if new_role == "user" and existing.get("role") == "admin":
+        if new_role is not None and new_role != "admin" and existing.get("role") == "admin":
             if count_admins(conn) <= 1:
                 raise HTTPException(status_code=400, detail={"error": "Cannot demote the last admin"})
 
@@ -213,6 +249,7 @@ def admin_user_update(
             password_hash=password_hash,
             name=data.get("name"),
             company=data.get("company"),
+            position=data.get("position"),
             phone=data.get("phone"),
             role=new_role,
             is_active=data.get("is_active"),
@@ -464,7 +501,7 @@ def _debug_resources_section() -> Dict[str, Any]:
 
 
 @router.get("/debug", summary="Диагностика системы (админ)")
-def admin_debug(_: Annotated[dict, Depends(require_admin)]) -> Dict[str, Any]:
+def admin_debug(_: Annotated[dict, Depends(require_staff)]) -> Dict[str, Any]:
     """
     Состояние сервера, БД, каталога и поискового индекса + проверки безопасности.
     Секретные значения (пароли, ключи) в ответ не попадают — только флаги.
@@ -496,7 +533,7 @@ def admin_debug(_: Annotated[dict, Depends(require_admin)]) -> Dict[str, Any]:
 
 
 @router.post("/reload-csv", summary="Принудительно перечитать CSV (админ)")
-def admin_reload_csv(_: Annotated[dict, Depends(require_admin)]) -> Dict[str, Any]:
+def admin_reload_csv(_: Annotated[dict, Depends(require_staff)]) -> Dict[str, Any]:
     """
     Форсирует перезагрузку каталога из CSV прямо сейчас (не дожидаясь изменения
     mtime/размера файла) и возвращает отчёт: что распозналось, что пропущено,
@@ -536,7 +573,7 @@ def admin_reload_csv(_: Annotated[dict, Depends(require_admin)]) -> Dict[str, An
 
 @router.post("/load-test", summary="Синтетическая нагрузка на поиск (админ)")
 def admin_load_test(
-    _: Annotated[dict, Depends(require_admin)],
+    _: Annotated[dict, Depends(require_staff)],
     requests: Annotated[int, Query(ge=1, le=20000)] = 2000,
 ) -> Dict[str, Any]:
     """
@@ -584,7 +621,7 @@ def admin_load_test(
 
 
 @router.get("/credits", summary="О команде проекта (админ)")
-def admin_credits(_: Annotated[dict, Depends(require_admin)]) -> Dict[str, Any]:
+def admin_credits(_: Annotated[dict, Depends(require_staff)]) -> Dict[str, Any]:
     """
     Информация о создателях — читается из data/credits.json при каждом запросе
     (без перезапуска сервера). Редактируется командой напрямую в файле; формат

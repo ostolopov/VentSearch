@@ -1,0 +1,2507 @@
+diff --git a/PRESENTATION_CHECKLIST.txt b/PRESENTATION_CHECKLIST.txt
+index 9c4fcb8..385ea6a 100644
+--- a/PRESENTATION_CHECKLIST.txt
++++ b/PRESENTATION_CHECKLIST.txt
+@@ -37,6 +37,22 @@
+   клиентская спецификация. Если нужен отдельный кабинет сотрудника —
+   это отдельная доработка (см. TROUBLESHOOTING.txt / раздел «Проект»).
+ 
++---------------------------------------------------------------------------
++3-БИС. РОЛИ СОТРУДНИКОВ И ОНЛАЙН-ДОСТУП
++---------------------------------------------------------------------------
++- Роли: КЛИЕНТ / МЕНЕДЖЕР / АДМИНИСТРАТОР. Одна общая админская учётка на
++  нескольких менеджеров НЕ нужна: коллега регистрируется сам, затем
++  администратор в админ-панели -> вкладка «Команда» -> «Назначить
++  менеджером». Там же видно ФИО, должность, телефон и роль каждого.
++- Менеджеру доступны каталог, диагностика и вкладка «Сборки»; списки
++  пользователей и раздача ролей — только администратору.
++- Вкладка «Сборки» (исполнение под заказчика: своё название, двигатель,
++  габариты, примечания -> PDF) видна только сотрудникам.
++- ПЕРЕД ПУБЛИКАЦИЕЙ В ИНТЕРНЕТ обязательно пройти отдельный файл
++  SECURITY.txt (APP_ENV=production, свои JWT_SECRET и ADMIN_PASSWORD,
++  HTTPS, бэкапы). При APP_ENV=production сервер не стартует со
++  стандартными секретами — это защита, а не ошибка.
++
+ ---------------------------------------------------------------------------
+ 4. КАРТИНКИ И БРЕНДИНГ (папка photos\)
+ ---------------------------------------------------------------------------
+diff --git a/SECURITY.txt b/SECURITY.txt
+new file mode 100644
+index 0000000..f39d10a
+--- /dev/null
++++ b/SECURITY.txt
+@@ -0,0 +1,113 @@
++БЕЗОПАСНОСТЬ VENTSEARCH — ЧТО СДЕЛАНО И ЧТО НУЖНО ПЕРЕД ОНЛАЙН-ДОСТУПОМ
++=========================================================================
++
++Документ отвечает на два вопроса: «что уже защищает данные пользователей»
++и «что обязательно сделать руками перед публикацией сайта в интернет».
++
++
++-------------------------------------------------------------------------
++1. РОЛИ: КТО ЧТО МОЖЕТ
++-------------------------------------------------------------------------
++В системе три роли. Роль хранится в базе, а НЕ в токене браузера: даже если
++у сотрудника на руках старый токен, права проверяются по базе при каждом
++запросе — понижение роли действует мгновенно, перевыпуск токена не нужен.
++
++  КЛИЕНТ (user) — по умолчанию у всех, кто зарегистрировался сам.
++      Каталог, подбор, сравнение, свой проект. Ничего чужого не видит.
++
++  МЕНЕДЖЕР (moderator) — рабочий доступ сотрудника.
++      Всё, что у клиента, плюс: вкладка «Сборки», админ-панель в части
++      каталога (правка карточек, перечитать CSV, диагностика).
++      НЕ может: смотреть список пользователей, менять чужие учётки,
++      раздавать роли. Проверено: эти запросы возвращают 403.
++
++  АДМИНИСТРАТОР (admin) — всё вышеперечисленное плюс люди:
++      учётные записи, вкладка «Команда», назначение и снятие ролей.
++
++Ответ на вопрос «хватит ли одной админской учётки на трёх менеджеров»:
++НЕТ, так делать не надо. Общий логин — это потеря следов (непонятно, кто
++что поменял), общий пароль, который нельзя отозвать при увольнении одного
++человека, и лишние права у всех сразу. Правильный порядок:
++  1) каждый коллега регистрируется сам на сайте (обычная регистрация);
++  2) главный менеджер входит как администратор → админ-панель →
++     вкладка «Команда» → «Назначить сотрудника» → находит коллегу по
++     ФИО/e-mail → «Назначить менеджером».
++Снять доступ — там же, кнопкой «Снять доступ». Никакие файлы править не
++нужно, всё делается из интерфейса.
++
++Встроенные защиты от типовых ошибок (проверены тестами):
++  - нельзя менять СВОЮ роль (иначе легко случайно потерять админку);
++  - нельзя снять последнего администратора;
++  - системный аккаунт из ADMIN_EMAIL защищён от смены роли и удаления.
++
++
++-------------------------------------------------------------------------
++2. ЧТО УЖЕ РЕАЛИЗОВАНО В КОДЕ
++-------------------------------------------------------------------------
++Пароли          - bcrypt с солью. В базе хранится только хеш; в ответах
++                  API поля password_hash нет вообще (проверено).
++Вход            - JWT (HS256), срок жизни задаётся JWT_EXPIRE_HOURS.
++Перебор пароля  - ограничитель попыток по паре «IP + e-mail», при
++                  превышении 429 с заголовком Retry-After.
++Отключение      - у аккаунта есть флаг is_active: отключённый сотрудник
++                  не войдёт и не сможет пользоваться старым токеном.
++Права           - проверяются на сервере на каждом эндпоинте, а не в
++                  браузере. Спрятанная в интерфейсе кнопка — не защита;
++                  здесь закрыт сам API.
++SQL-инъекции    - все запросы параметризованы (psycopg2), пользовательский
++                  ввод никогда не склеивается со строкой SQL.
++XSS             - значения, попадающие в HTML, экранируются.
++Заголовки       - X-Content-Type-Options: nosniff, X-Frame-Options: DENY
++                  (защита от кликджекинга), Referrer-Policy,
++                  Permissions-Policy; в production ещё и HSTS.
++Документация    - /docs, /redoc, /openapi.json автоматически отключаются
++                  при APP_ENV=production (не отдаём карту API наружу).
++Секреты         - при APP_ENV=production сервер ОТКАЗЫВАЕТСЯ стартовать,
++                  если JWT_SECRET или ADMIN_PASSWORD остались
++                  стандартными. Лучше не подняться, чем работать с дырой.
++
++
++-------------------------------------------------------------------------
++3. ОБЯЗАТЕЛЬНО ПЕРЕД ПУБЛИКАЦИЕЙ В ИНТЕРНЕТ
++-------------------------------------------------------------------------
++[ ] В secrets\.env.prod задать:
++        APP_ENV=production
++        JWT_SECRET=<длинная случайная строка, минимум 32 символа>
++        ADMIN_PASSWORD=<стойкий пароль администратора>
++        ADMIN_EMAIL=<реальная почта главного менеджера>
++        DATABASE_URL=<строка подключения с отдельным паролем>
++        CORS_ORIGINS=https://<ваш-домен>
++    Сгенерировать секрет можно так:
++        python -c "import secrets; print(secrets.token_urlsafe(48))"
++
++[ ] Поставить HTTPS (сертификат Let's Encrypt) и закрыть доступ по http.
++    Без HTTPS пароли и токены идут по сети открытым текстом.
++
++[ ] Не публиковать сервер напрямую: поставить перед ним nginx (или
++    аналог), а uvicorn слушать только на 127.0.0.1.
++
++[ ] Закрыть PostgreSQL от внешней сети (слушать localhost), пароль базы
++    отличный от админского.
++
++[ ] Сменить пароль встроенного администратора после первого входа и
++    убедиться, что secrets\ не попал в git (он в .gitignore).
++
++[ ] Настроить резервное копирование базы (pg_dump по расписанию):
++    учётные записи и проекты клиентов живут только там.
++
++[ ] Проверить, что каталог и цены действительно можно показывать наружу.
++    Если нет — использовать DEMO_MODE=1 либо оставить сайт во внутренней
++    сети / за VPN.
++
++
++-------------------------------------------------------------------------
++4. ЧТО СТОИТ СДЕЛАТЬ ДАЛЬШЕ (не блокирует запуск)
++-------------------------------------------------------------------------
++- Подтверждение e-mail при регистрации: сейчас зарегистрироваться может
++  любой с любым адресом. Роль у него будет «клиент», но если сайт
++  публичный — почту лучше подтверждать.
++- Восстановление пароля («забыли пароль») — сейчас пароль меняет админ.
++- Журнал действий сотрудников (кто и когда правил карточку, менял роли).
++- Двухфакторная аутентификация для администратора.
++- Ограничение частоты запросов не только на вход, но и на API в целом
++  (проще всего — на уровне nginx).
+diff --git a/backend/config.py b/backend/config.py
+index 42bb5ca..c4c5549 100644
+--- a/backend/config.py
++++ b/backend/config.py
+@@ -64,6 +64,13 @@ CORS_ORIGINS = [
+     if o.strip()
+ ]
+ 
++# Режим работы приложения. В «production» действуют строгие правила для
++# публичного доступа: интерактивная документация API (/docs, /redoc,
++# /openapi.json) отключается, а запуск с секретами по умолчанию запрещён —
++# сервер не поднимется, вместо того чтобы молча работать с дырой.
++APP_ENV = os.environ.get("APP_ENV", "development").strip().lower()
++IS_PRODUCTION = APP_ENV in ("prod", "production")
++
+ # Инсайдерский/демо-режим: каталог отображается, но данные скрыты (для показа
+ # интерфейса внешним людям без раскрытия реальных цен/характеристик завода).
+ DEMO_MODE = os.environ.get("DEMO_MODE", "").strip().lower() in ("1", "true", "yes", "on")
+diff --git a/backend/domain/interfaces/user_repository.py b/backend/domain/interfaces/user_repository.py
+index eef3f91..7705a5b 100644
+--- a/backend/domain/interfaces/user_repository.py
++++ b/backend/domain/interfaces/user_repository.py
+@@ -26,10 +26,13 @@ class AbstractUserRepository(ABC):
+         self,
+         *,
+         q: Optional[str] = None,
++        role: Optional[str] = None,
+         limit: int = 50,
+         offset: int = 0,
+     ) -> Tuple[List[Dict[str, Any]], int]:
+-        """Список пользователей с поиском; возвращает (строки, total)."""
++        """Список пользователей с поиском; возвращает (строки, total).
++
++        role: 'staff' — только админы и модераторы, либо конкретная роль."""
+ 
+     @abstractmethod
+     def count_admins(self) -> int:
+@@ -43,6 +46,7 @@ class AbstractUserRepository(ABC):
+         password_hash: str,
+         name: str = "",
+         company: str = "",
++        position: str = "",
+         phone: str = "",
+         role: str = "user",
+     ) -> Dict[str, Any]:
+@@ -57,6 +61,7 @@ class AbstractUserRepository(ABC):
+         password_hash: Optional[str] = None,
+         name: Optional[str] = None,
+         company: Optional[str] = None,
++        position: Optional[str] = None,
+         phone: Optional[str] = None,
+         role: Optional[str] = None,
+         is_active: Optional[bool] = None,
+diff --git a/backend/infrastructure/db/init_db.py b/backend/infrastructure/db/init_db.py
+index 84e650c..7f70435 100644
+--- a/backend/infrastructure/db/init_db.py
++++ b/backend/infrastructure/db/init_db.py
+@@ -121,7 +121,8 @@ CREATE TABLE IF NOT EXISTS users (
+     name TEXT NOT NULL DEFAULT '',
+     company TEXT NOT NULL DEFAULT '',
+     phone TEXT NOT NULL DEFAULT '',
+-    role TEXT NOT NULL DEFAULT 'user' CHECK (role IN ('user', 'admin')),
++    position TEXT NOT NULL DEFAULT '',
++    role TEXT NOT NULL DEFAULT 'user' CHECK (role IN ('user', 'moderator', 'admin')),
+     is_active BOOLEAN NOT NULL DEFAULT TRUE,
+     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+@@ -130,6 +131,29 @@ CREATE TABLE IF NOT EXISTS users (
+ CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+ CREATE INDEX IF NOT EXISTS idx_users_role ON users(role);
+ 
++-- Миграции для БД, созданных прежними версиями: CREATE TABLE IF NOT EXISTS
++-- не меняет уже существующую таблицу, поэтому колонку «должность» и роль
++-- «модератор» добавляем отдельными идемпотентными шагами.
++ALTER TABLE users ADD COLUMN IF NOT EXISTS position TEXT NOT NULL DEFAULT '';
++
++DO $$
++DECLARE
++    con_name TEXT;
++BEGIN
++    SELECT conname INTO con_name
++    FROM pg_constraint
++    WHERE conrelid = 'users'::regclass
++      AND contype = 'c'
++      AND pg_get_constraintdef(oid) ILIKE '%role%'
++      AND pg_get_constraintdef(oid) NOT ILIKE '%moderator%'
++    LIMIT 1;
++    IF con_name IS NOT NULL THEN
++        EXECUTE format('ALTER TABLE users DROP CONSTRAINT %I', con_name);
++        ALTER TABLE users ADD CONSTRAINT users_role_check
++            CHECK (role IN ('user', 'moderator', 'admin'));
++    END IF;
++END $$;
++
+ DO $$
+ BEGIN
+     IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'trg_users_updated_at') THEN
+diff --git a/backend/infrastructure/db/user_repository.py b/backend/infrastructure/db/user_repository.py
+index bef6f85..0a10f49 100644
+--- a/backend/infrastructure/db/user_repository.py
++++ b/backend/infrastructure/db/user_repository.py
+@@ -27,6 +27,7 @@ def _public_user(row: Dict[str, Any]) -> Dict[str, Any]:
+         "email": row["email"],
+         "name": row.get("name") or "",
+         "company": row.get("company") or "",
++        "position": row.get("position") or "",
+         "phone": row.get("phone") or "",
+         "role": row.get("role") or "user",
+         "is_active": bool(row.get("is_active")),
+@@ -37,10 +38,10 @@ def _public_user(row: Dict[str, Any]) -> Dict[str, Any]:
+ 
+ 
+ _SELECT_COLS = (
+-    "id, email, password_hash, name, company, phone, role, is_active, created_at, updated_at"
++    "id, email, password_hash, name, company, position, phone, role, is_active, created_at, updated_at"
+ )
+ _PUBLIC_COLS = (
+-    "id, email, name, company, phone, role, is_active, created_at, updated_at"
++    "id, email, name, company, position, phone, role, is_active, created_at, updated_at"
+ )
+ 
+ 
+@@ -71,17 +72,25 @@ class PgUserRepository(AbstractUserRepository):
+         self,
+         *,
+         q: Optional[str] = None,
++        role: Optional[str] = None,
+         limit: int = 50,
+         offset: int = 0,
+     ) -> Tuple[List[Dict[str, Any]], int]:
+         conditions = ["1=1"]
+         params: List[Any] = []
++        # role="staff" — сотрудники (админы и модераторы) для вкладки «Команда»
++        if role == "staff":
++            conditions.append("role IN ('admin', 'moderator')")
++        elif role in ("user", "moderator", "admin"):
++            conditions.append("role = %s")
++            params.append(role)
+         if q and q.strip():
+             t = f"%{q.strip().lower()}%"
+             conditions.append(
+-                "(LOWER(email) LIKE %s OR LOWER(name) LIKE %s OR LOWER(company) LIKE %s)"
++                "(LOWER(email) LIKE %s OR LOWER(name) LIKE %s "
++                "OR LOWER(company) LIKE %s OR LOWER(position) LIKE %s)"
+             )
+-            params.extend([t, t, t])
++            params.extend([t, t, t, t])
+         where_sql = " AND ".join(conditions)
+         with self._conn.cursor() as cur:
+             cur.execute(f"SELECT COUNT(*) FROM users WHERE {where_sql}", params)
+@@ -107,17 +116,18 @@ class PgUserRepository(AbstractUserRepository):
+         password_hash: str,
+         name: str = "",
+         company: str = "",
++        position: str = "",
+         phone: str = "",
+         role: str = "user",
+     ) -> Dict[str, Any]:
+         with self._conn.cursor(cursor_factory=RealDictCursor) as cur:
+             cur.execute(
+                 """
+-                INSERT INTO users (email, password_hash, name, company, phone, role)
+-                VALUES (%s, %s, %s, %s, %s, %s)
+-                RETURNING id, email, name, company, phone, role, is_active, created_at, updated_at
++                INSERT INTO users (email, password_hash, name, company, position, phone, role)
++                VALUES (%s, %s, %s, %s, %s, %s, %s)
++                RETURNING id, email, name, company, position, phone, role, is_active, created_at, updated_at
+                 """,
+-                (email.strip().lower(), password_hash, name, company, phone, role),
++                (email.strip().lower(), password_hash, name, company, position, phone, role),
+             )
+             row = cur.fetchone()
+         self._conn.commit()
+@@ -128,7 +138,7 @@ class PgUserRepository(AbstractUserRepository):
+         user_id: int,
+         *,
+         email=None, password_hash=None, name=None,
+-        company=None, phone=None, role=None, is_active=None,
++        company=None, position=None, phone=None, role=None, is_active=None,
+     ) -> Optional[Dict[str, Any]]:
+         fields: List[str] = []
+         params: List[Any] = []
+@@ -144,6 +154,9 @@ class PgUserRepository(AbstractUserRepository):
+         if company is not None:
+             fields.append("company = %s")
+             params.append(company)
++        if position is not None:
++            fields.append("position = %s")
++            params.append(position)
+         if phone is not None:
+             fields.append("phone = %s")
+             params.append(phone)
+@@ -160,7 +173,7 @@ class PgUserRepository(AbstractUserRepository):
+         with self._conn.cursor(cursor_factory=RealDictCursor) as cur:
+             cur.execute(
+                 f"UPDATE users SET {', '.join(fields)} WHERE id = %s "
+-                "RETURNING id, email, name, company, phone, role, is_active, created_at, updated_at",
++                "RETURNING id, email, name, company, position, phone, role, is_active, created_at, updated_at",
+                 params,
+             )
+             row = cur.fetchone()
+@@ -230,26 +243,26 @@ def get_user_by_email(conn, email: str) -> Optional[Dict[str, Any]]:
+     return PgUserRepository(conn).get_by_email(email)
+ 
+ 
+-def list_users(conn, *, q=None, limit=50, offset=0):
+-    return PgUserRepository(conn).list_users(q=q, limit=limit, offset=offset)
++def list_users(conn, *, q=None, role=None, limit=50, offset=0):
++    return PgUserRepository(conn).list_users(q=q, role=role, limit=limit, offset=offset)
+ 
+ 
+ def count_admins(conn) -> int:
+     return PgUserRepository(conn).count_admins()
+ 
+ 
+-def create_user(conn, *, email, password_hash, name="", company="", phone="", role="user"):
++def create_user(conn, *, email, password_hash, name="", company="", position="", phone="", role="user"):
+     return PgUserRepository(conn).create(
+         email=email, password_hash=password_hash,
+-        name=name, company=company, phone=phone, role=role,
++        name=name, company=company, position=position, phone=phone, role=role,
+     )
+ 
+ 
+ def update_user(conn, user_id, *, email=None, password_hash=None, name=None,
+-                company=None, phone=None, role=None, is_active=None):
++                company=None, position=None, phone=None, role=None, is_active=None):
+     return PgUserRepository(conn).update(
+         user_id, email=email, password_hash=password_hash,
+-        name=name, company=company, phone=phone, role=role, is_active=is_active,
++        name=name, company=company, position=position, phone=phone, role=role, is_active=is_active,
+     )
+ 
+ 
+diff --git a/backend/presentation/api/deps.py b/backend/presentation/api/deps.py
+index 3603363..e6085f1 100644
+--- a/backend/presentation/api/deps.py
++++ b/backend/presentation/api/deps.py
+@@ -51,3 +51,16 @@ def require_admin(
+     if user.get("role") != "admin":
+         raise HTTPException(status_code=403, detail={"error": "Admin access required"})
+     return user
++
++
++def require_staff(
++    user: Annotated[dict, Depends(get_current_user)],
++) -> dict:
++    """Сотрудник: администратор ИЛИ модератор.
++
++    Модератор ведёт каталог (правка карточек, синхронизация CSV, диагностика),
++    но НЕ управляет людьми — учётные записи, роли и удаление пользователей
++    остаются только за администратором (см. require_admin)."""
++    if user.get("role") not in ("admin", "moderator"):
++        raise HTTPException(status_code=403, detail={"error": "Staff access required"})
++    return user
+diff --git a/backend/presentation/api/routes/admin.py b/backend/presentation/api/routes/admin.py
+index 8a0ee8e..23205e4 100644
+--- a/backend/presentation/api/routes/admin.py
++++ b/backend/presentation/api/routes/admin.py
+@@ -11,10 +11,11 @@ from typing import Annotated, Any, Dict, Optional
+ 
+ from fastapi import APIRouter, Depends, HTTPException, Query
+ 
+-from presentation.api.deps import db_session, require_admin
++from presentation.api.deps import db_session, require_admin, require_staff
+ from presentation.api.schemas import (
+     AdminProductIn,
+     AdminUserIn,
++    AdminUserRoleIn,
+     AdminUserUpdateIn,
+     BulkDeleteOut,
+     BulkDeleteProductsIn,
+@@ -66,7 +67,7 @@ def _rebuild_catalog_index() -> None:
+ 
+ @router.get("/products", response_model=ProductListPageOut, summary="Список вентиляторов (админ)")
+ def admin_products(
+-    _: Annotated[dict, Depends(require_admin)],
++    _: Annotated[dict, Depends(require_staff)],
+     q: Optional[str] = Query(default=None),
+     limit: int = Query(default=50, ge=1, le=200),
+     offset: int = Query(default=0, ge=0),
+@@ -80,7 +81,7 @@ def admin_products(
+ 
+ 
+ @router.get("/products/{product_id}", response_model=ProductOut, summary="Карточка вентилятора (админ)")
+-def admin_product_get(product_id: str, _: Annotated[dict, Depends(require_admin)]):
++def admin_product_get(product_id: str, _: Annotated[dict, Depends(require_staff)]):
+     from infrastructure.db.product_repository import get_by_id
+ 
+     with db_session() as conn:
+@@ -91,7 +92,7 @@ def admin_product_get(product_id: str, _: Annotated[dict, Depends(require_admin)
+ 
+ 
+ @router.post("/products", response_model=ProductOut, status_code=201, summary="Создать вентилятор")
+-def admin_product_create(payload: AdminProductIn, _: Annotated[dict, Depends(require_admin)]):
++def admin_product_create(payload: AdminProductIn, _: Annotated[dict, Depends(require_staff)]):
+     try:
+         with db_session() as conn:
+             product = create_product(conn, payload.model_dump())
+@@ -103,7 +104,7 @@ def admin_product_create(payload: AdminProductIn, _: Annotated[dict, Depends(req
+ 
+ @router.put("/products/{product_id}", response_model=ProductOut, summary="Обновить вентилятор")
+ def admin_product_update(
+-    product_id: str, payload: AdminProductIn, _: Annotated[dict, Depends(require_admin)]
++    product_id: str, payload: AdminProductIn, _: Annotated[dict, Depends(require_staff)]
+ ):
+     with db_session() as conn:
+         product = update_product(conn, product_id, payload.model_dump())
+@@ -114,7 +115,7 @@ def admin_product_update(
+ 
+ 
+ @router.delete("/products/{product_id}", summary="Удалить вентилятор")
+-def admin_product_delete(product_id: str, _: Annotated[dict, Depends(require_admin)]):
++def admin_product_delete(product_id: str, _: Annotated[dict, Depends(require_staff)]):
+     with db_session() as conn:
+         deleted = delete_product(conn, product_id)
+     if not deleted:
+@@ -124,7 +125,7 @@ def admin_product_delete(product_id: str, _: Annotated[dict, Depends(require_adm
+ 
+ 
+ @router.post("/products/bulk-delete", response_model=BulkDeleteOut, summary="Удалить несколько вентиляторов")
+-def admin_products_bulk_delete(payload: BulkDeleteProductsIn, _: Annotated[dict, Depends(require_admin)]):
++def admin_products_bulk_delete(payload: BulkDeleteProductsIn, _: Annotated[dict, Depends(require_staff)]):
+     with db_session() as conn:
+         deleted = delete_products_bulk(conn, payload.ids)
+     if deleted:
+@@ -136,23 +137,57 @@ def admin_products_bulk_delete(payload: BulkDeleteProductsIn, _: Annotated[dict,
+ def admin_users(
+     _: Annotated[dict, Depends(require_admin)],
+     q: Optional[str] = Query(default=None),
++    role: Optional[str] = Query(
++        default=None,
++        pattern="^(staff|user|moderator|admin)$",
++        description="staff — только сотрудники (админы и модераторы).",
++    ),
+     limit: int = Query(default=50, ge=1, le=200),
+     offset: int = Query(default=0, ge=0),
+ ):
+     with db_session() as conn:
+-        items, total = list_users(conn, q=q, limit=limit, offset=offset)
++        items, total = list_users(conn, q=q, role=role, limit=limit, offset=offset)
+     return UserListPageOut(
+         items=[UserOut.model_validate(u) for u in items],
+         total=total, limit=limit, offset=offset,
+     )
+ 
+ 
++@router.post("/users/{user_id}/role", response_model=UserOut, summary="Назначить роль (админ)")
++def admin_user_set_role(
++    user_id: int,
++    payload: AdminUserRoleIn,
++    admin: Annotated[dict, Depends(require_admin)],
++):
++    """Назначение/снятие роли — вкладка «Команда».
++
++    Раздавать права может только администратор. Защиты: нельзя менять
++    собственную роль (иначе легко «выйти» из админов и потерять доступ),
++    нельзя трогать защищённый аккаунт из ADMIN_EMAIL и нельзя снять
++    последнего администратора."""
++    new_role = payload.role
++    if admin["id"] == user_id:
++        raise HTTPException(status_code=400, detail={"error": "Cannot change your own role"})
++    with db_session() as conn:
++        existing = get_user_by_id(conn, user_id)
++        if not existing:
++            raise HTTPException(status_code=404, detail={"error": "User not found"})
++        if is_protected_admin_account(existing):
++            raise HTTPException(status_code=400, detail={"error": "Cannot change role of protected admin"})
++        if existing.get("role") == "admin" and new_role != "admin" and count_admins(conn) <= 1:
++            raise HTTPException(status_code=400, detail={"error": "Cannot demote the last admin"})
++        user = update_user(conn, user_id, role=new_role)
++    if not user:
++        raise HTTPException(status_code=404, detail={"error": "User not found"})
++    return UserOut.model_validate(user)
++
++
+ @router.post("/users", response_model=UserOut, status_code=201, summary="Создать пользователя")
+ def admin_user_create(payload: AdminUserIn, _: Annotated[dict, Depends(require_admin)]):
+     email = payload.email.strip().lower()
+     if len(payload.password) < 6:
+         raise HTTPException(status_code=422, detail={"error": "Password must be at least 6 characters"})
+-    role = payload.role if payload.role in ("user", "admin") else "user"
++    role = payload.role if payload.role in ("user", "moderator", "admin") else "user"
+     with db_session() as conn:
+         if get_user_by_email(conn, email):
+             raise HTTPException(status_code=409, detail={"error": "Email already exists"})
+@@ -162,6 +197,7 @@ def admin_user_create(payload: AdminUserIn, _: Annotated[dict, Depends(require_a
+             password_hash=hash_password(payload.password),
+             name=payload.name.strip(),
+             company=payload.company.strip(),
++            position=payload.position.strip(),
+             phone=payload.phone.strip(),
+             role=role,
+         )
+@@ -190,7 +226,7 @@ def admin_user_update(
+         if is_protected_admin_account(existing):
+             if data.get("email") and data["email"].strip().lower() != existing["email"].lower():
+                 raise HTTPException(status_code=400, detail={"error": "Cannot change email of protected admin"})
+-            if data.get("role") == "user":
++            if data.get("role") is not None and data["role"] != "admin":
+                 raise HTTPException(status_code=400, detail={"error": "Cannot change role of protected admin"})
+             if data.get("is_active") is False:
+                 raise HTTPException(status_code=400, detail={"error": "Cannot deactivate protected admin"})
+@@ -201,7 +237,7 @@ def admin_user_update(
+                 raise HTTPException(status_code=409, detail={"error": "Email already exists"})
+ 
+         new_role = data.get("role")
+-        if new_role == "user" and existing.get("role") == "admin":
++        if new_role is not None and new_role != "admin" and existing.get("role") == "admin":
+             if count_admins(conn) <= 1:
+                 raise HTTPException(status_code=400, detail={"error": "Cannot demote the last admin"})
+ 
+@@ -213,6 +249,7 @@ def admin_user_update(
+             password_hash=password_hash,
+             name=data.get("name"),
+             company=data.get("company"),
++            position=data.get("position"),
+             phone=data.get("phone"),
+             role=new_role,
+             is_active=data.get("is_active"),
+@@ -464,7 +501,7 @@ def _debug_resources_section() -> Dict[str, Any]:
+ 
+ 
+ @router.get("/debug", summary="Диагностика системы (админ)")
+-def admin_debug(_: Annotated[dict, Depends(require_admin)]) -> Dict[str, Any]:
++def admin_debug(_: Annotated[dict, Depends(require_staff)]) -> Dict[str, Any]:
+     """
+     Состояние сервера, БД, каталога и поискового индекса + проверки безопасности.
+     Секретные значения (пароли, ключи) в ответ не попадают — только флаги.
+@@ -496,7 +533,7 @@ def admin_debug(_: Annotated[dict, Depends(require_admin)]) -> Dict[str, Any]:
+ 
+ 
+ @router.post("/reload-csv", summary="Принудительно перечитать CSV (админ)")
+-def admin_reload_csv(_: Annotated[dict, Depends(require_admin)]) -> Dict[str, Any]:
++def admin_reload_csv(_: Annotated[dict, Depends(require_staff)]) -> Dict[str, Any]:
+     """
+     Форсирует перезагрузку каталога из CSV прямо сейчас (не дожидаясь изменения
+     mtime/размера файла) и возвращает отчёт: что распозналось, что пропущено,
+@@ -536,7 +573,7 @@ def admin_reload_csv(_: Annotated[dict, Depends(require_admin)]) -> Dict[str, An
+ 
+ @router.post("/load-test", summary="Синтетическая нагрузка на поиск (админ)")
+ def admin_load_test(
+-    _: Annotated[dict, Depends(require_admin)],
++    _: Annotated[dict, Depends(require_staff)],
+     requests: Annotated[int, Query(ge=1, le=20000)] = 2000,
+ ) -> Dict[str, Any]:
+     """
+@@ -584,7 +621,7 @@ def admin_load_test(
+ 
+ 
+ @router.get("/credits", summary="О команде проекта (админ)")
+-def admin_credits(_: Annotated[dict, Depends(require_admin)]) -> Dict[str, Any]:
++def admin_credits(_: Annotated[dict, Depends(require_staff)]) -> Dict[str, Any]:
+     """
+     Информация о создателях — читается из data/credits.json при каждом запросе
+     (без перезапуска сервера). Редактируется командой напрямую в файле; формат
+diff --git a/backend/presentation/api/schemas.py b/backend/presentation/api/schemas.py
+index d3af494..afaf62f 100644
+--- a/backend/presentation/api/schemas.py
++++ b/backend/presentation/api/schemas.py
+@@ -229,6 +229,7 @@ class UserOut(BaseModel):
+     email: str
+     name: str = ""
+     company: str = ""
++    position: str = ""
+     phone: str = ""
+     role: str = "user"
+     is_active: bool = True
+@@ -255,8 +256,9 @@ class AdminUserIn(BaseModel):
+     password: str = Field(..., min_length=6, max_length=128)
+     name: str = Field(default="", max_length=200)
+     company: str = Field(default="", max_length=200)
++    position: str = Field(default="", max_length=120)
+     phone: str = Field(default="", max_length=50)
+-    role: str = Field(default="user", pattern="^(user|admin)$")
++    role: str = Field(default="user", pattern="^(user|moderator|admin)$")
+ 
+ 
+ class AdminUserUpdateIn(BaseModel):
+@@ -264,11 +266,18 @@ class AdminUserUpdateIn(BaseModel):
+     password: Optional[str] = Field(default=None, min_length=6, max_length=128)
+     name: Optional[str] = Field(default=None, max_length=200)
+     company: Optional[str] = Field(default=None, max_length=200)
++    position: Optional[str] = Field(default=None, max_length=120)
+     phone: Optional[str] = Field(default=None, max_length=50)
+-    role: Optional[str] = Field(default=None, pattern="^(user|admin)$")
++    role: Optional[str] = Field(default=None, pattern="^(user|moderator|admin)$")
+     is_active: Optional[bool] = None
+ 
+ 
++class AdminUserRoleIn(BaseModel):
++    """Назначение роли сотруднику (вкладка «Команда»)."""
++
++    role: str = Field(..., pattern="^(user|moderator|admin)$")
++
++
+ class BulkDeleteProductsIn(BaseModel):
+     ids: List[str] = Field(..., min_length=1, max_length=500)
+ 
+@@ -336,6 +345,32 @@ class AdminProductIn(BaseModel):
+         return self
+ 
+ 
++class PdfBuildIn(BaseModel):
++    """Кастомная сборка: карточка из каталога, доработанная менеджером.
++
++    Название, двигатель и габариты предзаполняются на фронтенде из базовой
++    модели и остаются обычными строками — их можно свободно править под
++    исполнение заказчика, а base_id нужен лишь для кривой Q-P на графике."""
++
++    title: str = Field(..., min_length=1, max_length=200)
++    base_id: Optional[str] = Field(default=None, max_length=120)
++    base_model: Optional[str] = Field(default=None, max_length=200)
++    motor: Optional[str] = Field(default=None, max_length=120)
++    power_kw: Optional[str] = Field(default=None, max_length=40)
++    rpm: Optional[str] = Field(default=None, max_length=40)
++    dimensions: Dict[str, str] = Field(default_factory=dict)
++    notes: Optional[str] = Field(default=None, max_length=4000)
++
++    @model_validator(mode="after")
++    def _limit_dimensions(self):
++        if len(self.dimensions) > 60:
++            raise ValueError("dimensions: слишком много позиций (максимум 60)")
++        for key, value in self.dimensions.items():
++            if len(str(key)) > 40 or len(str(value)) > 80:
++                raise ValueError("dimensions: слишком длинный ключ или значение")
++        return self
++
++
+ class PdfExportRequest(BaseModel):
+     model_config = ConfigDict(
+         json_schema_extra={
+@@ -348,10 +383,14 @@ class PdfExportRequest(BaseModel):
+     )
+ 
+     ids: List[str] = Field(
+-        ...,
+-        min_length=1,
++        default_factory=list,
++        max_length=20,
++        description="Список id/моделей каталога для включения в PDF (до 20 элементов).",
++    )
++    builds: List[PdfBuildIn] = Field(
++        default_factory=list,
+         max_length=20,
+-        description="Список id/моделей для включения в PDF (1-20 элементов).",
++        description="Кастомные сборки (вкладка «Сборки»); можно вместе с ids или отдельно.",
+     )
+     filename: Optional[str] = Field(
+         default=None,
+@@ -382,3 +421,9 @@ class PdfExportRequest(BaseModel):
+         default=False,
+         description="Шапка на каждой странице (по умолчанию — только на первой, как у бланка).",
+     )
++
++    @model_validator(mode="after")
++    def _require_content(self):
++        if not self.ids and not self.builds:
++            raise ValueError("Нужно передать хотя бы одну модель (ids) или сборку (builds)")
++        return self
+diff --git a/backend/presentation/app.py b/backend/presentation/app.py
+index e7e18a9..93ca760 100644
+--- a/backend/presentation/app.py
++++ b/backend/presentation/app.py
+@@ -39,7 +39,7 @@ from reportlab.pdfbase.ttfonts import TTFont
+ from reportlab.pdfgen import canvas as rl_canvas
+ from starlette.exceptions import HTTPException as StarletteHTTPException
+ 
+-from config import CORS_ORIGINS, CSV_PATH, PORT
++from config import APP_ENV, CORS_ORIGINS, CSV_PATH, IS_PRODUCTION, PORT
+ from infrastructure.db.connection import get_connection, put_connection, init_pool, close_pool
+ from infrastructure.db.init_db import init_db
+ from infrastructure.db.bootstrap_admin import ensure_default_admin
+@@ -104,9 +104,23 @@ def _startup_db() -> None:
+ 
+ 
+ def _warn_insecure_defaults() -> None:
+-    """Громко предупредить, если секреты не изменены с дефолтных значений."""
++    """Проверить секреты. В production — отказ запуска, в разработке — warning."""
+     from config import ADMIN_PASSWORD, JWT_SECRET
+ 
++    problems = []
++    if JWT_SECRET == "change-me-in-production":
++        problems.append("JWT_SECRET")
++    if ADMIN_PASSWORD == "admin123":
++        problems.append("ADMIN_PASSWORD")
++    if problems and IS_PRODUCTION:
++        # Публичный сервер с дефолтным секретом — это не «предупреждение»,
++        # а открытая дверь: любой подделает админский токен. Падаем сразу.
++        raise RuntimeError(
++            "APP_ENV=production, но секреты остались по умолчанию: "
++            + ", ".join(problems)
++            + ". Задайте их в secrets/.env.prod и перезапустите."
++        )
++
+     if JWT_SECRET == "change-me-in-production":
+         logger.warning(
+             "SECURITY: JWT_SECRET имеет значение по умолчанию — любой в сети "
+@@ -375,6 +389,7 @@ def _find_product_blueprint(product: dict[str, Any]) -> Optional[Path]:
+ def _build_compare_pdf(
+     products: list[dict[str, Any]],
+     chart_png: Optional[bytes] = None,
++    builds: Optional[list[dict[str, Any]]] = None,
+     header_text: Optional[str] = None,
+     watermark_path: Optional[Path] = None,
+     letterhead: bool = False,
+@@ -577,7 +592,8 @@ def _build_compare_pdf(
+             pdf.drawString(x + 1.2 * mm, y - 4.8 * mm, (_normalize_ws(text))[:36] or "—")
+         y -= row_h
+ 
+-    single = len(products) == 1
++    builds = builds or []
++    single = len(products) == 1 and not builds
+     pdf.setAuthor("VENTSEARCH API")
+     pdf.setTitle("VENTSEARCH Карточка модели" if single else "VENTSEARCH Сравнение моделей")
+     draw_watermark()
+@@ -606,6 +622,21 @@ def _build_compare_pdf(
+         except Exception:
+             line("Не удалось встроить график Q-P.", step=6.5 * mm, color=c_muted, size=9)
+ 
++    def wrap_to_width(text, font_name, font_size, max_width):
++        """Разбивает текст на строки по ширине (в пунктах reportlab), не обрезая."""
++        words = text.split(" ")
++        lines, cur = [], ""
++        for w in words:
++            candidate = f"{cur} {w}".strip()
++            if pdf.stringWidth(candidate, font_name, font_size) <= max_width or not cur:
++                cur = candidate
++            else:
++                lines.append(cur)
++                cur = w
++        if cur:
++            lines.append(cur)
++        return lines
++
+     models = [_normalize_ws(p.get("model") or p.get("id") or "—") for p in products]
+     types = [_normalize_ws(p.get("type") or "—") for p in products]
+     sizes = [_normalize_ws(p.get("size") or "—") for p in products]
+@@ -624,34 +655,21 @@ def _build_compare_pdf(
+     noises = [f"{_format_num(p.get('noise_level'))} дБ" if p.get("noise_level") is not None else "—" for p in products]
+     prices = [f"{_format_num(p.get('price'))} ₽" if p.get("price") is not None else "по запросу" for p in products]
+ 
+-    line("Технические характеристики:", step=6.5 * mm, bold=True, size=10)
+-    draw_row("Модель", models)
+-    draw_row("Тип", types)
+-    draw_row("Электродвигатель", sizes)
+-    draw_row("Диаметр", diameters)
+-    draw_row("Расход", airflows)
+-    draw_row("Давление", pressures)
+-    draw_row("Мощность", powers)
+-    draw_row("Шум", noises)
+-    draw_row("Цена", prices)
+-
+-    def wrap_to_width(text, font_name, font_size, max_width):
+-        """Разбивает текст на строки по ширине (в пунктах reportlab), не обрезая."""
+-        words = text.split(" ")
+-        lines, cur = [], ""
+-        for w in words:
+-            candidate = f"{cur} {w}".strip()
+-            if pdf.stringWidth(candidate, font_name, font_size) <= max_width or not cur:
+-                cur = candidate
+-            else:
+-                lines.append(cur)
+-                cur = w
+-        if cur:
+-            lines.append(cur)
+-        return lines
+-
+-    y -= 4 * mm
+-    line("Подробно по моделям:", step=6.5 * mm, bold=True)
++    if products:
++        line("Технические характеристики:", step=6.5 * mm, bold=True, size=10)
++        draw_row("Модель", models)
++        draw_row("Тип", types)
++        draw_row("Электродвигатель", sizes)
++        draw_row("Диаметр", diameters)
++        draw_row("Расход", airflows)
++        draw_row("Давление", pressures)
++        draw_row("Мощность", powers)
++        draw_row("Шум", noises)
++        draw_row("Цена", prices)
++
++    if products:
++        y -= 4 * mm
++        line("Подробно по моделям:", step=6.5 * mm, bold=True)
+     for idx, p in enumerate(products, start=1):
+         dims = p.get("dimensions") or {}
+         dims_size = 7.5
+@@ -703,6 +721,91 @@ def _build_compare_pdf(
+                 pdf.drawString(left + 3 * mm, y - (29.5 + i * 4) * mm, dl)
+         y -= card_h + 3.5 * mm
+ 
++    # --- Кастомные сборки -----------------------------------------------
++    # Менеджер собирает исполнение на базе каталожной модели: правит название,
++    # двигатель, габариты и добавляет примечания. Печатаем каждую сборку
++    # отдельной карточкой: шапка, параметры, таблица размеров, примечания.
++    if builds:
++        if products:
++            y -= 2 * mm
++        line("Состав сборки:", step=6.5 * mm, bold=True, size=10)
++
++    for b_idx, build in enumerate(builds, start=1):
++        title = _normalize_ws(build.get("title") or f"Сборка {b_idx}")
++        base_model = _normalize_ws(build.get("base_model") or "")
++        motor = _normalize_ws(build.get("motor") or "")
++        power_kw = _normalize_ws(build.get("power_kw") or "")
++        rpm_val = _normalize_ws(build.get("rpm") or "")
++        dims = build.get("dimensions") or {}
++        notes = _normalize_ws(build.get("notes") or "")
++
++        params: list[str] = []
++        if motor:
++            params.append(f"Электродвигатель: {motor}")
++        if power_kw:
++            params.append(f"Мощность: {power_kw} кВт")
++        if rpm_val:
++            params.append(f"Частота вращения: {rpm_val} об/мин")
++        params_line = "   |   ".join(params)
++
++        dims_lines: list[str] = []
++        if dims:
++            dims_text = "Размеры (мм): " + "   ·   ".join(
++                f"{_normalize_ws(k)}={_normalize_ws(v)}" for k, v in dims.items() if str(v).strip()
++            )
++            dims_lines = wrap_to_width(dims_text, font_r, 7.5, width - 6 * mm)
++        notes_lines = wrap_to_width(notes, font_r, 8.5, width - 6 * mm) if notes else []
++
++        # высота карточки: шапка + база + параметры + размеры + примечания
++        card_h = 9 * mm
++        if base_model:
++            card_h += 4.5 * mm
++        if params_line:
++            card_h += 4.5 * mm
++        if dims_lines:
++            card_h += (len(dims_lines) * 4 + 1.5) * mm
++        if notes_lines:
++            card_h += (len(notes_lines) * 4.4 + 5) * mm
++        if y - card_h < 14 * mm:
++            new_page()
++
++        pdf.setStrokeColor(c_border)
++        pdf.setFillColor(colors.white)
++        pdf.roundRect(left, y - card_h, width, card_h, 2 * mm, stroke=1, fill=1)
++        cy = y - 6 * mm
++        pdf.setFillColor(c_text)
++        pdf.setFont(font_b, 10)
++        pdf.drawString(left + 3 * mm, cy, f"{b_idx}. {title}"[:95])
++        cy -= 4.5 * mm
++        if base_model:
++            pdf.setFillColor(c_muted)
++            pdf.setFont(font_r, 8.5)
++            pdf.drawString(left + 3 * mm, cy, f"На базе каталожной модели: {base_model}"[:110])
++            cy -= 4.5 * mm
++        if params_line:
++            pdf.setFillColor(c_muted)
++            pdf.setFont(font_r, 8.5)
++            pdf.drawString(left + 3 * mm, cy, params_line[:110])
++            cy -= 4.5 * mm
++        if dims_lines:
++            pdf.setFillColor(c_text)
++            pdf.setFont(font_r, 7.5)
++            for dl in dims_lines:
++                pdf.drawString(left + 3 * mm, cy, dl)
++                cy -= 4 * mm
++        if notes_lines:
++            cy -= 1.5 * mm
++            pdf.setFillColor(c_text)
++            pdf.setFont(font_b, 8.5)
++            pdf.drawString(left + 3 * mm, cy, "Примечания:")
++            cy -= 4.4 * mm
++            pdf.setFont(font_r, 8.5)
++            pdf.setFillColor(c_muted)
++            for nl in notes_lines:
++                pdf.drawString(left + 3 * mm, cy, nl)
++                cy -= 4.4 * mm
++        y -= card_h + 3.5 * mm
++
+     # Чертёж из каталога печатаем ОДИН РАЗ (общий для ряда), крупно, во всю
+     # ширину страницы. Одинаковые для разных моделей файлы не дублируем.
+     # Таблицу присоединительных размеров (blueprintVals) в PDF не выводим —
+@@ -733,7 +836,12 @@ def _build_compare_pdf(
+             pass
+ 
+     seen_bp: set[str] = set()
+-    for p in products:
++    # Чертёж ищем и для каталожных моделей, и для базовых моделей сборок
++    bp_sources = list(products) + [
++        {"model": b.get("base_model") or b.get("title") or "", "_meta": {}}
++        for b in builds
++    ]
++    for p in bp_sources:
+         bp_path = _find_product_blueprint(p)
+         if not bp_path or str(bp_path) in seen_bp:
+             continue
+@@ -759,9 +867,11 @@ def create_app() -> FastAPI:
+         ),
+         version="0.3.0",
+         lifespan=lifespan,
+-        docs_url="/docs",
+-        redoc_url="/redoc",
+-        openapi_url="/openapi.json",
++        # В production схему API наружу не отдаём: она перечисляет все
++        # админские маршруты и формы запросов — лишняя карта для чужих.
++        docs_url=None if IS_PRODUCTION else "/docs",
++        redoc_url=None if IS_PRODUCTION else "/redoc",
++        openapi_url=None if IS_PRODUCTION else "/openapi.json",
+     )
+ 
+     app.add_middleware(
+@@ -772,6 +882,25 @@ def create_app() -> FastAPI:
+         allow_headers=["*"],
+     )
+ 
++    @app.middleware("http")
++    async def security_headers(request: Request, call_next):
++        """Базовые защитные заголовки для публичного доступа.
++
++        nosniff — браузер не «додумывает» тип файла; DENY во фрейме — защита
++        от кликджекинга (чужой сайт не вставит панель в невидимый iframe);
++        Referrer-Policy — адрес страницы с параметрами не утекает на сторону;
++        HSTS — только в production, где сайт уже за HTTPS."""
++        response = await call_next(request)
++        response.headers.setdefault("X-Content-Type-Options", "nosniff")
++        response.headers.setdefault("X-Frame-Options", "DENY")
++        response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
++        response.headers.setdefault("Permissions-Policy", "geolocation=(), microphone=(), camera=()")
++        if IS_PRODUCTION:
++            response.headers.setdefault(
++                "Strict-Transport-Security", "max-age=31536000; includeSubDomains"
++            )
++        return response
++
+     if PHOTOS_DIR.exists():
+         app.mount("/photos", StaticFiles(directory=str(PHOTOS_DIR)), name="photos")
+ 
+@@ -911,10 +1040,11 @@ def create_app() -> FastAPI:
+         _ensure_catalog_sync(CSV_PATH)
+ 
+         ids = [_normalize_ws(v) for v in payload.ids if _normalize_ws(v)]
+-        if not ids:
++        builds_list = [b.model_dump() for b in payload.builds]
++        if not ids and not builds_list:
+             raise HTTPException(
+                 status_code=422,
+-                detail={"detail": [{"loc": ["body", "ids"], "msg": "ids must not be empty", "type": "value_error"}]},
++                detail={"detail": [{"loc": ["body", "ids"], "msg": "ids or builds required", "type": "value_error"}]},
+             )
+         products_list: list[dict[str, Any]] = []
+         missing: list[str] = []
+@@ -948,6 +1078,7 @@ def create_app() -> FastAPI:
+         pdf_bytes = _build_compare_pdf(
+             products_list,
+             chart_png=chart_png,
++            builds=builds_list,
+             header_text=payload.header_text,
+             watermark_path=watermark_path,
+             letterhead=payload.letterhead,
+@@ -968,10 +1099,10 @@ def create_app() -> FastAPI:
+ 
+     for name in [
+         "index.html", "product.html", "compare.html", "project.html",
+-        "admin.html", "auth.html", "delivery.html",
++        "admin.html", "auth.html", "delivery.html", "builds.html",
+         "admin-page.js", "auth-page.js", "site-auth.js",
+         "admin.js", "auth.js", "style.css", "script.js", "config.js",
+-        "site-layout.js",
++        "site-layout.js", "builds.js",
+         # Иконки сайта: без явных маршрутов браузер получал 404 даже при
+         # правильно сгенерированных файлах в frontend/ (список — белый)
+         "favicon.ico", "favicon-16x16.png", "favicon-32x32.png",
+diff --git a/frontend/404.html b/frontend/404.html
+index 46c1af2..0a56ae5 100644
+--- a/frontend/404.html
++++ b/frontend/404.html
+@@ -22,13 +22,17 @@
+           <img src="../photos/logo.png" alt="VENTSEARCH" height="40" class="me-2" style="object-fit: contain;">
+           <span style="color: var(--vs-accent);">VENT</span><span style="color: var(--vs-text);">SEARCH</span>
+         </a>
+-        <div class="d-flex align-items-center gap-2" id="nav">
+-          <ul class="navbar-nav flex-row align-items-center gap-2 ms-auto mb-0">
+-            <li class="nav-item d-none d-md-block">
+-              <a class="nav-link" href="index.html">Каталог</a>
++        <div class="d-flex align-items-center gap-2 flex-grow-1" id="nav">
++          <ul class="navbar-nav flex-row align-items-center gap-2 mb-0 vs-nav-primary">
++            <li class="nav-item">
++              <a class="nav-link" href="index.html">
++                Каталог
++              </a>
+             </li>
+-            <li class="nav-item d-none d-md-block">
+-              <a class="nav-link" href="delivery.html">Доставка</a>
++            <li class="nav-item">
++              <a class="nav-link" href="delivery.html">
++                Доставка
++              </a>
+             </li>
+             <li class="nav-item">
+               <a class="nav-link nav-link-project" href="project.html">
+@@ -42,6 +46,17 @@
+                 <span id="navCompareBadge" class="nav-compare-badge d-none">0</span>
+               </a>
+             </li>
++            <li class="nav-item">
++              <a class="nav-link nav-link-compare vs-nav-staff d-none" href="builds.html">
++                Сборки
++                <span id="navBuildsBadge" class="nav-compare-badge d-none">0</span>
++              </a>
++            </li>
++          </ul>
++          <ul class="navbar-nav flex-row align-items-center gap-2 mb-0 ms-auto vs-nav-account">
++            <li class="nav-item d-none" id="navAdminMenuItem">
++              <a class="nav-link vs-admin-link" href="admin.html" target="_blank" rel="noopener noreferrer">⚙ Админ-панель</a>
++            </li>
+             <li class="nav-item" id="navAuthGuest">
+               <a class="nav-link btn btn-link border-0 py-2 text-decoration-none" href="auth.html">Вход</a>
+             </li>
+@@ -51,14 +66,14 @@
+                 <span class="d-md-none">ЛК</span>
+               </a>
+               <ul class="dropdown-menu dropdown-menu-end position-absolute">
+-                <li><a class="dropdown-item" href="project.html">Мой проект</a></li>
+-                <li class="d-none" id="navAdminMenuItem">
+-                  <a class="dropdown-item" href="admin.html" target="_blank" rel="noopener noreferrer">Управление каталогом</a>
+-                </li>
+-                <li><hr class="dropdown-divider" /></li>
++                <li><span class="dropdown-item-text small text-secondary" id="navAuthRole">Клиент</span></li>
++                <li><hr class="dropdown-divider"></li>
+                 <li><button class="dropdown-item" type="button" id="navLogoutBtn">Выйти</button></li>
+               </ul>
+             </li>
++            <li class="nav-item d-none d-md-block">
++              <button id="shareLinkBtn" class="btn btn-sm btn-dark" type="button" style="display: none;">Поделиться</button>
++            </li>
+           </ul>
+         </div>
+       </div>
+diff --git a/frontend/500.html b/frontend/500.html
+index 9176e8f..641339c 100644
+--- a/frontend/500.html
++++ b/frontend/500.html
+@@ -22,13 +22,17 @@
+           <img src="../photos/logo.png" alt="VENTSEARCH" height="40" class="me-2" style="object-fit: contain;">
+           <span style="color: var(--vs-accent);">VENT</span><span style="color: var(--vs-text);">SEARCH</span>
+         </a>
+-        <div class="d-flex align-items-center gap-2" id="nav">
+-          <ul class="navbar-nav flex-row align-items-center gap-2 ms-auto mb-0">
+-            <li class="nav-item d-none d-md-block">
+-              <a class="nav-link" href="index.html">Каталог</a>
++        <div class="d-flex align-items-center gap-2 flex-grow-1" id="nav">
++          <ul class="navbar-nav flex-row align-items-center gap-2 mb-0 vs-nav-primary">
++            <li class="nav-item">
++              <a class="nav-link" href="index.html">
++                Каталог
++              </a>
+             </li>
+-            <li class="nav-item d-none d-md-block">
+-              <a class="nav-link" href="delivery.html">Доставка</a>
++            <li class="nav-item">
++              <a class="nav-link" href="delivery.html">
++                Доставка
++              </a>
+             </li>
+             <li class="nav-item">
+               <a class="nav-link nav-link-project" href="project.html">
+@@ -42,6 +46,17 @@
+                 <span id="navCompareBadge" class="nav-compare-badge d-none">0</span>
+               </a>
+             </li>
++            <li class="nav-item">
++              <a class="nav-link nav-link-compare vs-nav-staff d-none" href="builds.html">
++                Сборки
++                <span id="navBuildsBadge" class="nav-compare-badge d-none">0</span>
++              </a>
++            </li>
++          </ul>
++          <ul class="navbar-nav flex-row align-items-center gap-2 mb-0 ms-auto vs-nav-account">
++            <li class="nav-item d-none" id="navAdminMenuItem">
++              <a class="nav-link vs-admin-link" href="admin.html" target="_blank" rel="noopener noreferrer">⚙ Админ-панель</a>
++            </li>
+             <li class="nav-item" id="navAuthGuest">
+               <a class="nav-link btn btn-link border-0 py-2 text-decoration-none" href="auth.html">Вход</a>
+             </li>
+@@ -51,14 +66,14 @@
+                 <span class="d-md-none">ЛК</span>
+               </a>
+               <ul class="dropdown-menu dropdown-menu-end position-absolute">
+-                <li><a class="dropdown-item" href="project.html">Мой проект</a></li>
+-                <li class="d-none" id="navAdminMenuItem">
+-                  <a class="dropdown-item" href="admin.html" target="_blank" rel="noopener noreferrer">Управление каталогом</a>
+-                </li>
+-                <li><hr class="dropdown-divider" /></li>
++                <li><span class="dropdown-item-text small text-secondary" id="navAuthRole">Клиент</span></li>
++                <li><hr class="dropdown-divider"></li>
+                 <li><button class="dropdown-item" type="button" id="navLogoutBtn">Выйти</button></li>
+               </ul>
+             </li>
++            <li class="nav-item d-none d-md-block">
++              <button id="shareLinkBtn" class="btn btn-sm btn-dark" type="button" style="display: none;">Поделиться</button>
++            </li>
+           </ul>
+         </div>
+       </div>
+diff --git a/frontend/admin-page.js b/frontend/admin-page.js
+index fd30b3d..b826abe 100644
+--- a/frontend/admin-page.js
++++ b/frontend/admin-page.js
+@@ -107,10 +107,21 @@
+     try {
+       const me = await apiAuthFetch("/api/auth/me");
+       setAuthSession(token, me);
+-      if (me.role !== "admin") {
+-        showGateError("Доступ только для администраторов.");
++      // Менеджера (модератора) в панель пускаем — он ведёт каталог, но
++      // вкладки с учётными записями ему не показываем (сервер их всё равно
++      // закрывает: см. require_admin в backend/presentation/api/deps.py)
++      const STAFF = ["admin", "moderator"];
++      if (!STAFF.includes(me.role)) {
++        showGateError("Доступ только для сотрудников завода.");
+         return;
+       }
++      document.body.dataset.role = me.role;
++      if (me.role !== "admin") {
++        for (const sel of ['button[data-bs-target="#tabUsers"]', "#teamTabItem"]) {
++          document.querySelector(sel)?.closest("li")?.classList.add("d-none");
++          document.querySelector(sel)?.classList.add("d-none");
++        }
++      }
+       $("adminGate")?.classList.add("d-none");
+       const section = $("adminAppSection");
+       section?.classList.remove("d-none");
+diff --git a/frontend/admin.html b/frontend/admin.html
+index 94ce8d8..3f8ab65 100644
+--- a/frontend/admin.html
++++ b/frontend/admin.html
+@@ -98,6 +98,9 @@
+           <li class="nav-item" role="presentation">
+             <button class="nav-link" data-bs-toggle="tab" data-bs-target="#tabUsers" type="button">Пользователи</button>
+           </li>
++          <li class="nav-item" id="teamTabItem">
++            <button class="nav-link" id="teamTabBtn" data-bs-toggle="tab" data-bs-target="#tabTeam" type="button">Команда</button>
++          </li>
+           <li class="nav-item" role="presentation">
+             <button class="nav-link" id="debugTabBtn" data-bs-toggle="tab" data-bs-target="#tabDebug" type="button">Диагностика</button>
+           </li>
+@@ -189,6 +192,58 @@
+               </div>
+             </div>
+           </div>
++          <div class="tab-pane fade" id="tabTeam" role="tabpanel">
++            <div class="alert alert-secondary small">
++              <strong>Команда завода.</strong> Здесь видно, у кого есть рабочий доступ.
++              <span class="d-block mt-1">
++                <strong>Администратор</strong> — полный доступ, включая учётные записи и назначение ролей.
++                <strong>Менеджер</strong> — каталог, диагностика, сборки и выгрузка документов; чужие учётные записи ему недоступны.
++              </span>
++            </div>
++            <div class="d-flex flex-wrap gap-2 align-items-center mb-2">
++              <input id="teamSearch" class="form-control form-control-sm" style="max-width: 280px" placeholder="ФИО, должность, e-mail..." />
++              <button id="teamSearchBtn" class="btn btn-outline-dark btn-sm" type="button">Найти</button>
++              <span id="teamMeta" class="small text-secondary ms-auto"></span>
++            </div>
++            <div class="table-responsive card shadow-sm mb-4">
++              <table class="table table-sm align-middle mb-0 admin-table">
++                <thead>
++                  <tr>
++                    <th>#</th>
++                    <th>ФИО</th>
++                    <th>Должность</th>
++                    <th>E-mail</th>
++                    <th>Телефон</th>
++                    <th>Роль</th>
++                    <th>Статус</th>
++                    <th class="text-end">Действия</th>
++                  </tr>
++                </thead>
++                <tbody id="teamTableBody"></tbody>
++              </table>
++            </div>
++
++            <h3 class="h6 fw-bold mb-2">Назначить сотрудника</h3>
++            <p class="small text-secondary mb-2">
++              Найдите зарегистрированного коллегу по e-mail или ФИО и выдайте ему роль менеджера.
++            </p>
++            <div class="d-flex flex-wrap gap-2 align-items-center mb-2">
++              <input id="teamCandidateSearch" class="form-control form-control-sm" style="max-width: 280px" placeholder="Поиск среди клиентов..." />
++              <button id="teamCandidateSearchBtn" class="btn btn-outline-dark btn-sm" type="button">Найти</button>
++            </div>
++            <div class="table-responsive card shadow-sm">
++              <table class="table table-sm align-middle mb-0 admin-table">
++                <thead>
++                  <tr>
++                    <th>#</th><th>ФИО</th><th>Должность</th><th>E-mail</th><th class="text-end">Действия</th>
++                  </tr>
++                </thead>
++                <tbody id="teamCandidatesBody">
++                  <tr><td colspan="5" class="text-secondary text-center py-3">Введите запрос выше…</td></tr>
++                </tbody>
++              </table>
++            </div>
++          </div>
+           <div class="tab-pane fade" id="tabDebug" role="tabpanel">
+             <div class="d-flex flex-wrap gap-2 align-items-center mb-2">
+               <button id="debugRefreshBtn" class="btn btn-outline-dark btn-sm" type="button">Обновить</button>
+diff --git a/frontend/admin.js b/frontend/admin.js
+index dec6e89..9667c97 100644
+--- a/frontend/admin.js
++++ b/frontend/admin.js
+@@ -1002,8 +1002,140 @@ function openUserModal(user, isCreate) {
+   userModal.show();
+ }
+ 
++
++// ---------------------------------------------------------------------------
++// Вкладка «Команда»: кто из коллег имеет рабочий доступ
++// ---------------------------------------------------------------------------
++
++const ROLE_TITLES = { admin: "Администратор", moderator: "Менеджер", user: "Клиент" };
++
++function roleBadge(role) {
++  const cls = role === "admin" ? "bg-dark" : role === "moderator" ? "bg-primary" : "bg-secondary";
++  return `<span class="badge ${cls}">${escapeHtml(ROLE_TITLES[role] || role)}</span>`;
++}
++
++async function loadTeam() {
++  const tbody = $("#teamTableBody");
++  if (!tbody) return;
++  const params = new URLSearchParams({ role: "staff", limit: "200" });
++  const q = String($("#teamSearch")?.value || "").trim();
++  if (q) params.set("q", q);
++  const data = await va().apiAuthFetch(`/api/admin/users?${params}`);
++  const items = Array.isArray(data?.items) ? data.items : [];
++  const meta = $("#teamMeta");
++  if (meta) meta.textContent = items.length ? `Сотрудников: ${items.length}` : "";
++  if (!items.length) {
++    tbody.innerHTML = '<tr><td colspan="8" class="text-secondary text-center py-3">Сотрудники не найдены.</td></tr>';
++    return;
++  }
++  tbody.innerHTML = items
++    .map((u) => {
++      // Защищённый системный админ и понижение последнего админа —
++      // на сервере тоже запрещены, здесь просто не рисуем кнопку
++      const actions = u.is_protected
++        ? '<span class="text-secondary small">системный аккаунт</span>'
++        : u.role === "admin"
++          ? `<button type="button" class="btn btn-outline-secondary btn-sm" data-action="set-role" data-id="${u.id}" data-role="moderator">Сделать менеджером</button>`
++          : `<button type="button" class="btn btn-outline-dark btn-sm me-1" data-action="set-role" data-id="${u.id}" data-role="admin">Сделать админом</button>
++             <button type="button" class="btn btn-outline-danger btn-sm" data-action="set-role" data-id="${u.id}" data-role="user">Снять доступ</button>`;
++      return `<tr>
++        <td class="text-secondary">${u.id}</td>
++        <td class="fw-semibold">${escapeHtml(u.name || "—")}</td>
++        <td>${escapeHtml(u.position || "—")}</td>
++        <td>${escapeHtml(u.email)}</td>
++        <td>${escapeHtml(u.phone || "—")}</td>
++        <td>${roleBadge(u.role)}</td>
++        <td>${u.is_active ? '<span class="text-success small">активен</span>' : '<span class="text-danger small">отключён</span>'}</td>
++        <td class="text-end">${actions}</td>
++      </tr>`;
++    })
++    .join("");
++}
++
++async function loadTeamCandidates() {
++  const tbody = $("#teamCandidatesBody");
++  if (!tbody) return;
++  const q = String($("#teamCandidateSearch")?.value || "").trim();
++  if (!q) {
++    tbody.innerHTML = '<tr><td colspan="5" class="text-secondary text-center py-3">Введите запрос выше…</td></tr>';
++    return;
++  }
++  const params = new URLSearchParams({ role: "user", limit: "50", q });
++  const data = await va().apiAuthFetch(`/api/admin/users?${params}`);
++  const items = Array.isArray(data?.items) ? data.items : [];
++  if (!items.length) {
++    tbody.innerHTML = '<tr><td colspan="5" class="text-secondary text-center py-3">Никого не найдено.</td></tr>';
++    return;
++  }
++  tbody.innerHTML = items
++    .map(
++      (u) => `<tr>
++      <td class="text-secondary">${u.id}</td>
++      <td class="fw-semibold">${escapeHtml(u.name || "—")}</td>
++      <td>${escapeHtml(u.position || "—")}</td>
++      <td>${escapeHtml(u.email)}</td>
++      <td class="text-end">
++        <button type="button" class="btn btn-dark btn-sm" data-action="set-role" data-id="${u.id}" data-role="moderator">Назначить менеджером</button>
++      </td>
++    </tr>`,
++    )
++    .join("");
++}
++
++async function setUserRole(userId, role) {
++  hideAdminMessages();
++  const titles = { admin: "администратором", moderator: "менеджером", user: "клиентом (доступ снят)" };
++  if (!window.confirm(`Сделать пользователя ${titles[role] || role}?`)) return;
++  try {
++    await va().apiAuthFetch(`/api/admin/users/${encodeURIComponent(userId)}/role`, {
++      method: "POST",
++      body: JSON.stringify({ role }),
++    });
++    showAdminSuccess("Роль обновлена.");
++    await loadTeam();
++    await loadTeamCandidates();
++    if (document.getElementById("usersTableBody")) await loadUsers();
++  } catch (err) {
++    showAdminError(err.message || "Не удалось изменить роль.");
++  }
++}
++
++
++let teamEventsBound = false;
++function bindTeamEvents() {
++  if (teamEventsBound) return;
++  teamEventsBound = true;
++  $("#teamTabBtn")?.addEventListener("shown.bs.tab", () => {
++    void loadTeam().catch((err) => showAdminError(err.message || "Не удалось загрузить команду."));
++  });
++  $("#teamSearchBtn")?.addEventListener("click", () => {
++    void loadTeam().catch((err) => showAdminError(err.message || "Ошибка поиска."));
++  });
++  $("#teamSearch")?.addEventListener("keydown", (e) => {
++    if (e.key === "Enter") {
++      e.preventDefault();
++      void loadTeam().catch(() => {});
++    }
++  });
++  $("#teamCandidateSearchBtn")?.addEventListener("click", () => {
++    void loadTeamCandidates().catch((err) => showAdminError(err.message || "Ошибка поиска."));
++  });
++  $("#teamCandidateSearch")?.addEventListener("keydown", (e) => {
++    if (e.key === "Enter") {
++      e.preventDefault();
++      void loadTeamCandidates().catch(() => {});
++    }
++  });
++  document.addEventListener("click", (e) => {
++    const btn = e.target.closest('button[data-action="set-role"]');
++    if (!btn) return;
++    void setUserRole(btn.dataset.id, btn.dataset.role);
++  });
++}
++
+ async function bootAdmin(user) {
+   bindAdminEvents();
++  bindTeamEvents();
+   ensureAdminModals();
+   const label = $("#adminUserLabel");
+   if (label) label.textContent = user?.email || "—";
+@@ -1012,14 +1144,16 @@ async function bootAdmin(user) {
+   }
+   try {
+     await loadProducts();
+-    await loadUsers();
++    // Список учётных записей — только для администратора: у менеджера
++    // этот запрос вернул бы 403 и «сломал» бы загрузку панели
++    if (user?.role === "admin") await loadUsers();
+   } catch (err) {
+     console.error(err);
+     showAdminError(err.message || "Не удалось загрузить данные. Проверьте вход и API.");
+   }
+ }
+ 
+-window.VentAdmin = { boot: bootAdmin, ensureAdminModals, bindAdminEvents };
++window.VentAdmin = { boot: bootAdmin, ensureAdminModals, bindAdminEvents, loadTeam };
+ 
+ document.addEventListener("DOMContentLoaded", () => {
+   if (document.body.dataset.page === "admin") {
+diff --git a/frontend/builds.html b/frontend/builds.html
+new file mode 100644
+index 0000000..e2a593d
+--- /dev/null
++++ b/frontend/builds.html
+@@ -0,0 +1,214 @@
++<!doctype html>
++<html lang="ru">
++  <head>
++    <meta charset="utf-8" />
++    <meta name="viewport" content="width=device-width, initial-scale=1" />
++    <title>Сборки — VENTSEARCH</title>
++    <link rel="icon" type="image/x-icon" href="favicon.ico">
++    <link rel="icon" type="image/png" sizes="32x32" href="favicon-32x32.png">
++    <link rel="icon" type="image/png" sizes="16x16" href="favicon-16x16.png">
++    <link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png">
++    <link
++      href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css"
++      rel="stylesheet"
++      crossorigin="anonymous"
++    />
++    <link rel="stylesheet" href="style.css?v=20260717-4" />
++
++<!-- Yandex.Metrika counter -->
++<script type="text/javascript">
++    (function(m,e,t,r,i,k,a){
++        m[i]=m[i]||function(){(m[i].a=m[i].a||[]).push(arguments)};
++        m[i].l=1*new Date();
++        for (var j = 0; j < document.scripts.length; j++) {if (document.scripts[j].src === r) { return; }}
++        k=e.createElement(t),a=e.getElementsByTagName(t)[0],k.async=1,k.src=r,a.parentNode.insertBefore(k,a)
++    })(window, document,'script','https://mc.yandex.ru/metrika/tag.js?id=109006784', 'ym');
++
++    ym(109006784, 'init', {ssr:true, webvisor:true, clickmap:true, ecommerce:"dataLayer", referrer: document.referrer, url: location.href, accurateTrackBounce:true, trackLinks:true});
++</script>
++<noscript><div><img src="https://mc.yandex.ru/watch/109006784" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
++<!-- /Yandex.Metrika counter -->
++
++
++  </head>
++  <body data-page="builds">
++    <nav class="navbar navbar-expand-lg sticky-top">
++      <div class="container-fluid px-3 px-lg-4">
++        <a class="navbar-brand fw-semibold d-flex align-items-center" href="index.html">
++          <img src="../photos/logo.png" alt="VENTSEARCH" height="40" class="me-2" style="object-fit: contain;">
++          <span style="color: var(--vs-accent);">VENT</span><span style="color: var(--vs-text);">SEARCH</span>
++        </a>
++        <div class="d-flex align-items-center gap-2 flex-grow-1" id="nav">
++          <ul class="navbar-nav flex-row align-items-center gap-2 mb-0 vs-nav-primary">
++            <li class="nav-item">
++              <a class="nav-link" href="index.html">
++                Каталог
++              </a>
++            </li>
++            <li class="nav-item">
++              <a class="nav-link" href="delivery.html">
++                Доставка
++              </a>
++            </li>
++            <li class="nav-item">
++              <a class="nav-link nav-link-project" href="project.html">
++                Мой проект
++                <span id="navProjectBadge" class="nav-project-badge d-none">0</span>
++              </a>
++            </li>
++            <li class="nav-item">
++              <a class="nav-link nav-link-compare" href="compare.html">
++                Сравнение
++                <span id="navCompareBadge" class="nav-compare-badge d-none">0</span>
++              </a>
++            </li>
++            <li class="nav-item">
++              <a class="nav-link nav-link-compare vs-nav-staff d-none active" href="builds.html" aria-current="page">
++                Сборки
++                <span id="navBuildsBadge" class="nav-compare-badge d-none">0</span>
++              </a>
++            </li>
++          </ul>
++          <ul class="navbar-nav flex-row align-items-center gap-2 mb-0 ms-auto vs-nav-account">
++            <li class="nav-item d-none" id="navAdminMenuItem">
++              <a class="nav-link vs-admin-link" href="admin.html" target="_blank" rel="noopener noreferrer">⚙ Админ-панель</a>
++            </li>
++            <li class="nav-item" id="navAuthGuest">
++              <a class="nav-link btn btn-link border-0 py-2 text-decoration-none" href="auth.html">Вход</a>
++            </li>
++            <li class="nav-item dropdown d-none" id="navAuthUser">
++              <a class="nav-link dropdown-toggle" href="#" role="button" data-bs-toggle="dropdown" aria-expanded="false">
++                <span id="navAuthEmail" class="d-none d-md-inline">Аккаунт</span>
++                <span class="d-md-none">ЛК</span>
++              </a>
++              <ul class="dropdown-menu dropdown-menu-end position-absolute">
++                <li><span class="dropdown-item-text small text-secondary" id="navAuthRole">Клиент</span></li>
++                <li><hr class="dropdown-divider"></li>
++                <li><button class="dropdown-item" type="button" id="navLogoutBtn">Выйти</button></li>
++              </ul>
++            </li>
++            <li class="nav-item d-none d-md-block">
++              <button id="shareLinkBtn" class="btn btn-sm btn-dark" type="button">Поделиться</button>
++            </li>
++          </ul>
++        </div>
++      </div>
++    </nav>
++
++    <header class="page-hero mb-3">
++      <div class="container-fluid px-3 px-lg-4 d-flex flex-wrap justify-content-between align-items-center gap-3">
++        <div style="max-width: 820px;">
++          <h1 class="h3 mb-1">Сборки под заказчика</h1>
++          <div id="buildsMeta" class="hero-subtitle">
++            Возьмите модель каталога за основу, поправьте название, двигатель и размеры, добавьте примечания — и выгрузите в PDF.
++          </div>
++        </div>
++        <div class="d-flex gap-2">
++          <button id="clearBuildsBtn" class="btn btn-outline-danger btn-sm" type="button">Очистить</button>
++          <button id="exportBuildsPdfBtn" class="btn btn-pdf btn-sm px-3" type="button">
++            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline></svg>
++            Просмотр PDF
++          </button>
++        </div>
++      </div>
++    </header>
++
++    <main class="container-fluid px-3 px-lg-4 py-4">
++      <div id="alertBox" class="alert alert-danger d-none mb-3" role="alert"></div>
++
++      <div class="alert alert-secondary d-none" id="buildsStaffOnly" role="alert">
++        Раздел доступен сотрудникам завода. Войдите под учётной записью менеджера или администратора.
++      </div>
++
++      <div id="buildsWorkspace">
++        <div class="card shadow-sm border-0 mb-4" style="border-radius: 20px;">
++          <div class="card-body p-4">
++            <h2 class="h6 fw-bold mb-3">Взять модель за основу</h2>
++            <input id="buildBaseSearch" class="form-control mb-2" type="search"
++                   placeholder="Поиск по модели, типу, размеру…" />
++            <div class="table-responsive" style="max-height: 280px; overflow-y: auto;">
++              <table class="table table-hover table-sm align-middle mb-0 compare-mini-table">
++                <thead class="bg-light">
++                  <tr>
++                    <th>Модель</th><th>Тип</th><th class="text-end">Расход</th>
++                    <th class="text-end">Давление</th><th class="text-end">Мощность</th><th></th>
++                  </tr>
++                </thead>
++                <tbody id="buildBaseResults">
++                  <tr><td colspan="6" class="text-secondary text-center py-3">Введите запрос выше…</td></tr>
++                </tbody>
++              </table>
++            </div>
++            <div class="mt-3">
++              <button id="addBlankBuildBtn" class="btn btn-outline-secondary btn-sm" type="button">
++                + Пустая сборка (без базовой модели)
++              </button>
++            </div>
++          </div>
++        </div>
++
++        <div class="row g-4 align-items-stretch mb-4">
++          <div class="col-12 col-xxl-7">
++            <div class="card shadow-sm border-0 h-100" style="border-radius: 20px; overflow: hidden;">
++              <div class="card-header bg-white border-bottom-0 pt-4 px-4 pb-0">
++                <h2 class="h5 fw-bold mb-0">Аэродинамика базовых моделей (Q–P)</h2>
++              </div>
++              <div class="card-body p-4">
++                <div class="chart-canvas-wrap bg-light rounded-4 p-3 border h-100">
++                  <div id="buildsQpChart" class="qp-chart-box"></div>
++                </div>
++              </div>
++            </div>
++          </div>
++          <div class="col-12 col-xxl-5">
++            <div class="card shadow-sm border-0 h-100" style="border-radius: 20px;">
++              <div class="card-body p-4">
++                <h2 class="h6 fw-bold mb-3">Рабочая точка</h2>
++                <form id="buildsPointForm" class="row g-2 align-items-end">
++                  <div class="col-6">
++                    <label for="buildsPointQ" class="form-label text-secondary small mb-1 fw-medium">Расход Q, м³/ч</label>
++                    <input id="buildsPointQ" type="number" min="1" step="any" class="form-control" placeholder="м³/ч" />
++                  </div>
++                  <div class="col-6">
++                    <label for="buildsPointP" class="form-label text-secondary small mb-1 fw-medium">Давление P, Па</label>
++                    <input id="buildsPointP" type="number" min="1" step="any" class="form-control" placeholder="Па" />
++                  </div>
++                  <div class="col-6">
++                    <label for="buildsPointTol" class="form-label text-secondary small mb-1 fw-medium">Допуск, %</label>
++                    <input id="buildsPointTol" type="number" min="0" max="50" step="any" class="form-control" placeholder="± %" />
++                  </div>
++                  <div class="col-6 d-flex gap-2">
++                    <button type="submit" class="btn btn-primary flex-grow-1">Показать</button>
++                    <button type="button" id="buildsPointResetBtn" class="btn btn-outline-secondary">Сброс</button>
++                  </div>
++                </form>
++                <hr class="my-3">
++                <p class="small text-secondary mb-0">
++                  На графике — паспортные кривые базовых моделей выбранных сборок.
++                  Изменённые вручную размеры и примечания на кривую не влияют:
++                  аэродинамика остаётся заводской.
++                </p>
++              </div>
++            </div>
++          </div>
++        </div>
++
++        <h2 class="h6 fw-bold mb-3">Состав сборки <span id="buildsCount" class="text-secondary fw-normal"></span></h2>
++        <div id="buildsList" class="vstack gap-3"></div>
++      </div>
++
++      <div id="siteFooterMount" class="container-fluid px-0 mt-5"></div>
++    </main>
++
++    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js" crossorigin="anonymous"></script>
++    <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
++    <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
++    <script src="config.js?v=20260424-1"></script>
++    <script src="auth.js?v=20260524-10"></script>
++    <script src="site-auth.js?v=20260524-10"></script>
++    <script src="script.js?v=20260717-4"></script>
++    <script src="builds.js?v=20260802-1"></script>
++    <script src="site-layout.js?v=20260709-1"></script>
++  </body>
++</html>
++
+diff --git a/frontend/builds.js b/frontend/builds.js
+new file mode 100644
+index 0000000..130b55d
+--- /dev/null
++++ b/frontend/builds.js
+@@ -0,0 +1,421 @@
++/**
++ * Вкладка «Сборки»: исполнение под заказчика на базе каталожной модели.
++ *
++ * Менеджер берёт модель из каталога, правит название/двигатель/габариты,
++ * дописывает примечания — и выгружает всё в PDF через ОБЩИЙ конвейер
++ * (openPdfMaker из script.js), тот же, что у сравнения и карточки.
++ *
++ * Аэродинамика остаётся заводской: на графике рисуются паспортные кривые
++ * базовых моделей. Правки размеров и текстов — это про исполнение
++ * (корпус, клапан, фланец), а не про характеристики вентилятора.
++ */
++(function () {
++  if (document.body.dataset.page !== "builds") return;
++
++  const BUILDS_KEY = "ventsearch.builds";
++  const $ = (sel) => document.querySelector(sel);
++
++  // Значения по умолчанию берём из базовой модели, но храним как СТРОКИ:
++  // менеджеру нужно писать «АИР 112MA6 (взрывозащищённый)», а не число.
++  function buildFromProduct(product) {
++    const dims = (product && product.dimensions && typeof product.dimensions === "object")
++      ? { ...product.dimensions }
++      : {};
++    const powerKw = product && product.power != null
++      ? String(Number(product.power) / 1000).replace(".", ",")
++      : "";
++    return {
++      id: `b${Date.now()}${Math.random().toString(16).slice(2, 6)}`,
++      title: product ? String(product.model || product.id || "Сборка") : "Новая сборка",
++      baseId: product ? String(product.id) : "",
++      baseModel: product ? String(product.model || "") : "",
++      motor: product ? String(product.size || "") : "",
++      powerKw,
++      rpm: product && product.nominal_rpm != null ? String(product.nominal_rpm) : "",
++      dimensions: dims,
++      notes: "",
++    };
++  }
++
++  function loadBuilds() {
++    try {
++      const raw = localStorage.getItem(BUILDS_KEY);
++      const list = raw ? JSON.parse(raw) : [];
++      return Array.isArray(list) ? list : [];
++    } catch {
++      return [];
++    }
++  }
++
++  function saveBuilds(list) {
++    try {
++      localStorage.setItem(BUILDS_KEY, JSON.stringify(list));
++    } catch {
++      // приватный режим — просто не сохраняем
++    }
++    updateBuildsBadge(list.length);
++  }
++
++  function updateBuildsBadge(count) {
++    const badge = document.getElementById("navBuildsBadge");
++    if (!badge) return;
++    badge.textContent = String(count);
++    badge.classList.toggle("d-none", count === 0);
++  }
++
++  function escapeAttr(value) {
++    return String(value == null ? "" : value)
++      .replaceAll("&", "&amp;")
++      .replaceAll('"', "&quot;")
++      .replaceAll("<", "&lt;")
++      .replaceAll(">", "&gt;");
++  }
++
++  let builds = loadBuilds();
++  let chart = null;
++  const alertBox = $("#alertBox");
++
++  function showError(message) {
++    if (!alertBox) return;
++    alertBox.textContent = message;
++    alertBox.classList.remove("d-none");
++  }
++  function hideError() {
++    alertBox?.classList.add("d-none");
++  }
++
++  // --- Рабочая точка (общее хранилище с каталогом и сравнением) ------------
++  function currentPoint() {
++    const q = Number($("#buildsPointQ")?.value);
++    const p = Number($("#buildsPointP")?.value);
++    const tol = Number($("#buildsPointTol")?.value);
++    if (!(q > 0) || !(p > 0)) return null;
++    return { q, p, tol: tol > 0 ? tol : undefined };
++  }
++
++  // --- График: паспортные кривые базовых моделей ---------------------------
++  async function renderChart() {
++    const container = $("#buildsQpChart");
++    if (!container || typeof renderQpChartShared !== "function") return;
++    const ids = [...new Set(builds.map((b) => b.baseId).filter(Boolean))].slice(0, 8);
++    if (!ids.length) {
++      if (chart) {
++        chart.dispose();
++        chart = null;
++      }
++      container.innerHTML =
++        '<div class="text-secondary small p-3">Добавьте сборку на базе модели каталога — здесь появится её кривая Q–P.</div>';
++      return;
++    }
++    try {
++      const products = [];
++      for (const id of ids) {
++        const data = await fetchJson(apiUrl(`/api/products/${encodeURIComponent(id)}`));
++        if (data) products.push(data);
++      }
++      if (!products.length) return;
++      // Чистим контейнер только когда живого графика ещё нет (в нём лежит
++      // текст-заглушка). Иначе innerHTML снёс бы DOM работающего инстанса
++      // ECharts, а сам инстанс остался бы «висеть» — и перерисовка по
++      // рабочей точке уходила бы в пустоту.
++      if (!chart) container.innerHTML = "";
++      chart = renderQpChartShared(container, chart, products, null, currentPoint());
++    } catch (err) {
++      console.error(err);
++      showError("Не удалось загрузить кривые базовых моделей.");
++    }
++  }
++
++  // --- Карточка сборки -----------------------------------------------------
++  function dimensionRows(build) {
++    const entries = Object.entries(build.dimensions || {});
++    if (!entries.length) {
++      return '<div class="text-secondary small">Размеры не заданы.</div>';
++    }
++    return (
++      '<div class="row g-2">' +
++      entries
++        .map(
++          ([key, value]) => `
++        <div class="col-6 col-md-3">
++          <label class="form-label text-secondary small mb-1">${escapeAttr(key)}</label>
++          <input class="form-control form-control-sm build-dim" data-dim-key="${escapeAttr(key)}"
++                 value="${escapeAttr(value)}" />
++        </div>`,
++        )
++        .join("") +
++      "</div>"
++    );
++  }
++
++  function renderBuilds() {
++    const list = $("#buildsList");
++    const countEl = $("#buildsCount");
++    if (!list) return;
++    if (countEl) countEl.textContent = builds.length ? `(${builds.length})` : "";
++    updateBuildsBadge(builds.length);
++
++    if (!builds.length) {
++      list.innerHTML =
++        '<div class="card border-0 shadow-sm" style="border-radius: 16px;"><div class="card-body p-4 text-secondary">' +
++        "Пока пусто. Найдите модель выше и нажмите «Взять за основу»." +
++        "</div></div>";
++      return;
++    }
++
++    list.innerHTML = builds
++      .map(
++        (b, idx) => `
++      <div class="card border-0 shadow-sm build-card" data-build-id="${escapeAttr(b.id)}" style="border-radius: 16px;">
++        <div class="card-body p-4">
++          <div class="d-flex justify-content-between align-items-start gap-3 mb-3">
++            <div class="flex-grow-1">
++              <label class="form-label text-secondary small mb-1">Название в документе</label>
++              <input class="form-control fw-semibold build-title" value="${escapeAttr(b.title)}" />
++              ${b.baseModel
++                ? `<div class="small text-secondary mt-1">На базе: ${escapeAttr(b.baseModel)}</div>`
++                : '<div class="small text-secondary mt-1">Без базовой модели каталога</div>'}
++            </div>
++            <button class="btn btn-sm btn-outline-danger build-remove" type="button" title="Удалить сборку">✕</button>
++          </div>
++
++          <div class="row g-2 mb-3">
++            <div class="col-12 col-md-6">
++              <label class="form-label text-secondary small mb-1">Электродвигатель</label>
++              <input class="form-control form-control-sm build-motor" value="${escapeAttr(b.motor)}" />
++            </div>
++            <div class="col-6 col-md-3">
++              <label class="form-label text-secondary small mb-1">Мощность, кВт</label>
++              <input class="form-control form-control-sm build-power" value="${escapeAttr(b.powerKw)}" />
++            </div>
++            <div class="col-6 col-md-3">
++              <label class="form-label text-secondary small mb-1">Обороты, об/мин</label>
++              <input class="form-control form-control-sm build-rpm" value="${escapeAttr(b.rpm)}" />
++            </div>
++          </div>
++
++          <div class="mb-2 d-flex justify-content-between align-items-center">
++            <span class="form-label text-secondary small mb-0">Габаритные и присоединительные размеры, мм</span>
++            <button class="btn btn-sm btn-outline-secondary build-add-dim" type="button">+ размер</button>
++          </div>
++          <div class="build-dims mb-3">${dimensionRows(b)}</div>
++
++          <label class="form-label text-secondary small mb-1">Примечания к исполнению</label>
++          <textarea class="form-control build-notes" rows="3"
++            placeholder="Например: корпус оцинкованный, обратный клапан, гибкая вставка, комплектация по опросному листу…">${escapeAttr(b.notes)}</textarea>
++        </div>
++      </div>`,
++      )
++      .join("");
++  }
++
++  function findBuild(el) {
++    const card = el.closest(".build-card");
++    if (!card) return null;
++    return builds.find((b) => b.id === card.dataset.buildId) || null;
++  }
++
++  // Правки применяем сразу в модель и в localStorage — без кнопки «сохранить»
++  $("#buildsList")?.addEventListener("input", (event) => {
++    const el = event.target;
++    const build = findBuild(el);
++    if (!build) return;
++    if (el.classList.contains("build-title")) build.title = el.value;
++    else if (el.classList.contains("build-motor")) build.motor = el.value;
++    else if (el.classList.contains("build-power")) build.powerKw = el.value;
++    else if (el.classList.contains("build-rpm")) build.rpm = el.value;
++    else if (el.classList.contains("build-notes")) build.notes = el.value;
++    else if (el.classList.contains("build-dim")) {
++      build.dimensions = build.dimensions || {};
++      build.dimensions[el.dataset.dimKey] = el.value;
++    } else return;
++    saveBuilds(builds);
++  });
++
++  $("#buildsList")?.addEventListener("click", (event) => {
++    const removeBtn = event.target.closest(".build-remove");
++    if (removeBtn) {
++      const build = findBuild(removeBtn);
++      if (!build) return;
++      builds = builds.filter((b) => b.id !== build.id);
++      saveBuilds(builds);
++      renderBuilds();
++      void renderChart();
++      return;
++    }
++    const addDimBtn = event.target.closest(".build-add-dim");
++    if (addDimBtn) {
++      const build = findBuild(addDimBtn);
++      if (!build) return;
++      const key = window.prompt("Обозначение размера (например, L2 или «Патрубок»):", "");
++      if (!key || !key.trim()) return;
++      build.dimensions = build.dimensions || {};
++      build.dimensions[key.trim()] = "";
++      saveBuilds(builds);
++      renderBuilds();
++    }
++  });
++
++  // --- Поиск базовой модели (тот же нестрогий поиск, что в каталоге) -------
++  let searchTimer = null;
++  async function searchBase(query) {
++    const tbody = $("#buildBaseResults");
++    if (!tbody) return;
++    const q = String(query || "").trim();
++    if (!q) {
++      tbody.innerHTML =
++        '<tr><td colspan="6" class="text-secondary text-center py-3">Введите запрос выше…</td></tr>';
++      return;
++    }
++    try {
++      const data = await fetchJson(apiUrl(`/api/products?q=${encodeURIComponent(q)}&limit=25`));
++      const items = Array.isArray(data?.items) ? data.items : [];
++      if (!items.length) {
++        tbody.innerHTML =
++          '<tr><td colspan="6" class="text-secondary text-center py-3">Ничего не найдено.</td></tr>';
++        return;
++      }
++      tbody.innerHTML = items
++        .map(
++          (p) => `
++        <tr>
++          <td class="fw-semibold">${escapeAttr(p.model || p.id)}</td>
++          <td>${escapeAttr(p.type || "—")}</td>
++          <td class="text-end">${escapeAttr(p.airflow?.raw || "—")}</td>
++          <td class="text-end">${escapeAttr(p.pressure?.raw || "—")}</td>
++          <td class="text-end">${p.power != null ? escapeAttr(String(Number(p.power) / 1000).replace(".", ",")) : "—"}</td>
++          <td class="text-end">
++            <button class="btn btn-sm btn-dark build-take" type="button"
++                    data-product-id="${escapeAttr(p.id)}">Взять за основу</button>
++          </td>
++        </tr>`,
++        )
++        .join("");
++    } catch (err) {
++      console.error(err);
++      showError("Не удалось выполнить поиск по каталогу.");
++    }
++  }
++
++  $("#buildBaseSearch")?.addEventListener("input", (event) => {
++    hideError();
++    clearTimeout(searchTimer);
++    const value = event.target.value;
++    searchTimer = setTimeout(() => void searchBase(value), 350);
++  });
++
++  $("#buildBaseResults")?.addEventListener("click", async (event) => {
++    const btn = event.target.closest(".build-take");
++    if (!btn) return;
++    btn.disabled = true;
++    try {
++      const product = await fetchJson(
++        apiUrl(`/api/products/${encodeURIComponent(btn.dataset.productId)}`),
++      );
++      builds.push(buildFromProduct(product));
++      saveBuilds(builds);
++      renderBuilds();
++      void renderChart();
++    } catch (err) {
++      console.error(err);
++      showError("Не удалось загрузить модель каталога.");
++    } finally {
++      btn.disabled = false;
++    }
++  });
++
++  $("#addBlankBuildBtn")?.addEventListener("click", () => {
++    builds.push(buildFromProduct(null));
++    saveBuilds(builds);
++    renderBuilds();
++  });
++
++  $("#clearBuildsBtn")?.addEventListener("click", () => {
++    if (!builds.length) return;
++    if (!window.confirm("Удалить все сборки?")) return;
++    builds = [];
++    saveBuilds(builds);
++    renderBuilds();
++    void renderChart();
++  });
++
++  // --- Рабочая точка -------------------------------------------------------
++  $("#buildsPointForm")?.addEventListener("submit", (event) => {
++    event.preventDefault();
++    const point = currentPoint();
++    if (!point) {
++      showError("Укажите расход Q и давление P — оба больше нуля.");
++      return;
++    }
++    hideError();
++    if (typeof saveWorkingPoint === "function") saveWorkingPoint(point);
++    void renderChart();
++  });
++
++  $("#buildsPointResetBtn")?.addEventListener("click", () => {
++    if ($("#buildsPointQ")) $("#buildsPointQ").value = "";
++    if ($("#buildsPointP")) $("#buildsPointP").value = "";
++    if ($("#buildsPointTol")) $("#buildsPointTol").value = "";
++    if (typeof saveWorkingPoint === "function") saveWorkingPoint(null);
++    void renderChart();
++  });
++
++  // --- Экспорт в PDF: тот же конвейер, что у сравнения ---------------------
++  $("#exportBuildsPdfBtn")?.addEventListener("click", () => {
++    if (!builds.length) {
++      showError("Добавьте хотя бы одну сборку.");
++      return;
++    }
++    hideError();
++    if (typeof openPdfMaker !== "function") return;
++    openPdfMaker({
++      filename: "ventsearch-sborka.pdf",
++      // Моделей каталога в документе нет — только сборки
++      getIds: () => [],
++      getBuilds: () =>
++        builds.map((b) => ({
++          title: b.title || "Сборка",
++          base_id: b.baseId || null,
++          base_model: b.baseModel || null,
++          motor: b.motor || null,
++          power_kw: b.powerKw || null,
++          rpm: b.rpm || null,
++          dimensions: b.dimensions || {},
++          notes: b.notes || null,
++        })),
++      getChart: () => chart,
++    });
++  });
++
++  // --- Инициализация -------------------------------------------------------
++  function restorePoint() {
++    if (typeof loadWorkingPoint !== "function") return;
++    const stored = loadWorkingPoint();
++    if (!stored) return;
++    if ($("#buildsPointQ")) $("#buildsPointQ").value = String(stored.q);
++    if ($("#buildsPointP")) $("#buildsPointP").value = String(stored.p);
++    if ($("#buildsPointTol") && stored.tol) $("#buildsPointTol").value = String(stored.tol);
++  }
++
++  // Раздел рабочий, а не клиентский: гостю показываем подсказку вместо
++  // конструктора. Данные сборок всё равно локальные, но лишний интерфейс
++  // клиенту ни к чему (доступ к самим API проверяет сервер).
++  function applyStaffGuard() {
++    const role = document.body.dataset.role;
++    const staff = role === "admin" || role === "moderator";
++    $("#buildsStaffOnly")?.classList.toggle("d-none", staff);
++    const workspace = $("#buildsWorkspace");
++    if (workspace) workspace.classList.toggle("d-none", !staff);
++    return staff;
++  }
++
++  document.addEventListener("DOMContentLoaded", () => {
++    restorePoint();
++    renderBuilds();
++    void renderChart();
++    applyStaffGuard();
++    // Роль приходит асинхронно (проверка токена) — реагируем на её появление
++    const observer = new MutationObserver(() => applyStaffGuard());
++    observer.observe(document.body, { attributes: true, attributeFilter: ["data-role"] });
++  });
++})();
+diff --git a/frontend/compare.html b/frontend/compare.html
+index 771b07b..11fca1e 100644
+--- a/frontend/compare.html
++++ b/frontend/compare.html
+@@ -38,13 +38,17 @@
+           <img src="../photos/logo.png" alt="VENTSEARCH" height="40" class="me-2" style="object-fit: contain;">
+           <span style="color: var(--vs-accent);">VENT</span><span style="color: var(--vs-text);">SEARCH</span>
+         </a>
+-        <div class="d-flex align-items-center gap-2" id="nav">
+-          <ul class="navbar-nav flex-row align-items-center gap-2 ms-auto mb-0">
+-            <li class="nav-item d-none d-md-block">
+-              <a class="nav-link" href="index.html">Каталог</a>
++        <div class="d-flex align-items-center gap-2 flex-grow-1" id="nav">
++          <ul class="navbar-nav flex-row align-items-center gap-2 mb-0 vs-nav-primary">
++            <li class="nav-item">
++              <a class="nav-link" href="index.html">
++                Каталог
++              </a>
+             </li>
+-            <li class="nav-item d-none d-md-block">
+-              <a class="nav-link" href="delivery.html">Доставка</a>
++            <li class="nav-item">
++              <a class="nav-link" href="delivery.html">
++                Доставка
++              </a>
+             </li>
+             <li class="nav-item">
+               <a class="nav-link nav-link-project" href="project.html">
+@@ -58,6 +62,14 @@
+                 <span id="navCompareBadge" class="nav-compare-badge d-none">0</span>
+               </a>
+             </li>
++            <li class="nav-item">
++              <a class="nav-link nav-link-compare vs-nav-staff d-none" href="builds.html">
++                Сборки
++                <span id="navBuildsBadge" class="nav-compare-badge d-none">0</span>
++              </a>
++            </li>
++          </ul>
++          <ul class="navbar-nav flex-row align-items-center gap-2 mb-0 ms-auto vs-nav-account">
+             <li class="nav-item d-none" id="navAdminMenuItem">
+               <a class="nav-link vs-admin-link" href="admin.html" target="_blank" rel="noopener noreferrer">⚙ Админ-панель</a>
+             </li>
+@@ -70,6 +82,8 @@
+                 <span class="d-md-none">ЛК</span>
+               </a>
+               <ul class="dropdown-menu dropdown-menu-end position-absolute">
++                <li><span class="dropdown-item-text small text-secondary" id="navAuthRole">Клиент</span></li>
++                <li><hr class="dropdown-divider"></li>
+                 <li><button class="dropdown-item" type="button" id="navLogoutBtn">Выйти</button></li>
+               </ul>
+             </li>
+diff --git a/frontend/delivery.html b/frontend/delivery.html
+index 0ca59b2..a707df2 100644
+--- a/frontend/delivery.html
++++ b/frontend/delivery.html
+@@ -22,13 +22,17 @@
+           <img src="../photos/logo.png" alt="VENTSEARCH" height="40" class="me-2" style="object-fit: contain;">
+           <span style="color: var(--vs-accent);">VENT</span><span style="color: var(--vs-text);">SEARCH</span>
+         </a>
+-        <div class="d-flex align-items-center gap-2" id="nav">
+-          <ul class="navbar-nav flex-row align-items-center gap-2 ms-auto mb-0">
+-            <li class="nav-item d-none d-md-block">
+-              <a class="nav-link" href="index.html">Каталог</a>
++        <div class="d-flex align-items-center gap-2 flex-grow-1" id="nav">
++          <ul class="navbar-nav flex-row align-items-center gap-2 mb-0 vs-nav-primary">
++            <li class="nav-item">
++              <a class="nav-link" href="index.html">
++                Каталог
++              </a>
+             </li>
+-            <li class="nav-item d-none d-md-block">
+-              <a class="nav-link active" href="delivery.html" aria-current="page">Доставка</a>
++            <li class="nav-item">
++              <a class="nav-link active" href="delivery.html" aria-current="page">
++                Доставка
++              </a>
+             </li>
+             <li class="nav-item">
+               <a class="nav-link nav-link-project" href="project.html">
+@@ -42,6 +46,14 @@
+                 <span id="navCompareBadge" class="nav-compare-badge d-none">0</span>
+               </a>
+             </li>
++            <li class="nav-item">
++              <a class="nav-link nav-link-compare vs-nav-staff d-none" href="builds.html">
++                Сборки
++                <span id="navBuildsBadge" class="nav-compare-badge d-none">0</span>
++              </a>
++            </li>
++          </ul>
++          <ul class="navbar-nav flex-row align-items-center gap-2 mb-0 ms-auto vs-nav-account">
+             <li class="nav-item d-none" id="navAdminMenuItem">
+               <a class="nav-link vs-admin-link" href="admin.html" target="_blank" rel="noopener noreferrer">⚙ Админ-панель</a>
+             </li>
+@@ -61,6 +73,8 @@
+                 <span class="d-md-none">ЛК</span>
+               </a>
+               <ul class="dropdown-menu dropdown-menu-end position-absolute">
++                <li><span class="dropdown-item-text small text-secondary" id="navAuthRole">Клиент</span></li>
++                <li><hr class="dropdown-divider"></li>
+                 <li><button class="dropdown-item" type="button" id="navLogoutBtn">Выйти</button></li>
+               </ul>
+             </li>
+diff --git a/frontend/index.html b/frontend/index.html
+index 3cc17a3..e1084f3 100644
+--- a/frontend/index.html
++++ b/frontend/index.html
+@@ -38,7 +38,7 @@
+           <img src="../photos/logo.png" alt="VENTSEARCH" height="40" class="me-2" style="object-fit: contain;">
+           <span style="color: var(--vs-accent);">VENT</span><span style="color: var(--vs-text);">SEARCH</span>
+         </a>
+-        <form class="d-none d-md-flex align-items-center flex-grow-1 mx-3" role="search">
++        <form class="d-none d-md-flex align-items-center mx-3 vs-header-search" role="search">
+           <input
+             id="headerSearchInput"
+             class="form-control form-control-sm"
+@@ -48,13 +48,17 @@
+           />
+           <button id="headerSearchBtn" class="btn btn-sm btn-dark ms-2" type="button">Найти</button>
+         </form>
+-        <div class="d-flex align-items-center gap-2" id="nav">
+-          <ul class="navbar-nav flex-row align-items-center gap-2 ms-auto mb-0">
+-            <li class="nav-item d-none d-md-block">
+-              <a class="nav-link active" href="index.html">Каталог</a>
++        <div class="d-flex align-items-center gap-2 flex-grow-1" id="nav">
++          <ul class="navbar-nav flex-row align-items-center gap-2 mb-0 vs-nav-primary">
++            <li class="nav-item">
++              <a class="nav-link active" href="index.html" aria-current="page">
++                Каталог
++              </a>
+             </li>
+-            <li class="nav-item d-none d-md-block">
+-              <a class="nav-link" href="delivery.html">Доставка</a>
++            <li class="nav-item">
++              <a class="nav-link" href="delivery.html">
++                Доставка
++              </a>
+             </li>
+             <li class="nav-item">
+               <a class="nav-link nav-link-project" href="project.html">
+@@ -68,6 +72,14 @@
+                 <span id="navCompareBadge" class="nav-compare-badge d-none">0</span>
+               </a>
+             </li>
++            <li class="nav-item">
++              <a class="nav-link nav-link-compare vs-nav-staff d-none" href="builds.html">
++                Сборки
++                <span id="navBuildsBadge" class="nav-compare-badge d-none">0</span>
++              </a>
++            </li>
++          </ul>
++          <ul class="navbar-nav flex-row align-items-center gap-2 mb-0 ms-auto vs-nav-account">
+             <li class="nav-item d-none" id="navAdminMenuItem">
+               <a class="nav-link vs-admin-link" href="admin.html" target="_blank" rel="noopener noreferrer">⚙ Админ-панель</a>
+             </li>
+@@ -87,6 +99,8 @@
+                 <span class="d-md-none">ЛК</span>
+               </a>
+               <ul class="dropdown-menu dropdown-menu-end position-absolute">
++                <li><span class="dropdown-item-text small text-secondary" id="navAuthRole">Клиент</span></li>
++                <li><hr class="dropdown-divider"></li>
+                 <li><button class="dropdown-item" type="button" id="navLogoutBtn">Выйти</button></li>
+               </ul>
+             </li>
+diff --git a/frontend/product.html b/frontend/product.html
+index d946b03..4513c3b 100644
+--- a/frontend/product.html
++++ b/frontend/product.html
+@@ -55,13 +55,17 @@
+           <img src="../photos/logo.png" alt="VENTSEARCH" height="40" class="me-2" style="object-fit: contain;">
+           <span style="color: var(--vs-accent);">VENT</span><span style="color: var(--vs-text);">SEARCH</span>
+         </a>
+-        <div class="d-flex align-items-center gap-2" id="nav">
+-          <ul class="navbar-nav flex-row align-items-center gap-2 ms-auto mb-0">
+-            <li class="nav-item d-none d-md-block">
+-              <a class="nav-link" href="index.html">Каталог</a>
++        <div class="d-flex align-items-center gap-2 flex-grow-1" id="nav">
++          <ul class="navbar-nav flex-row align-items-center gap-2 mb-0 vs-nav-primary">
++            <li class="nav-item">
++              <a class="nav-link" href="index.html">
++                Каталог
++              </a>
+             </li>
+-            <li class="nav-item d-none d-md-block">
+-              <a class="nav-link" href="delivery.html">Доставка</a>
++            <li class="nav-item">
++              <a class="nav-link" href="delivery.html">
++                Доставка
++              </a>
+             </li>
+             <li class="nav-item">
+               <a class="nav-link nav-link-project" href="project.html">
+@@ -75,6 +79,14 @@
+                 <span id="navCompareBadge" class="nav-compare-badge d-none">0</span>
+               </a>
+             </li>
++            <li class="nav-item">
++              <a class="nav-link nav-link-compare vs-nav-staff d-none" href="builds.html">
++                Сборки
++                <span id="navBuildsBadge" class="nav-compare-badge d-none">0</span>
++              </a>
++            </li>
++          </ul>
++          <ul class="navbar-nav flex-row align-items-center gap-2 mb-0 ms-auto vs-nav-account">
+             <li class="nav-item d-none" id="navAdminMenuItem">
+               <a class="nav-link vs-admin-link" href="admin.html" target="_blank" rel="noopener noreferrer">⚙ Админ-панель</a>
+             </li>
+@@ -87,6 +99,8 @@
+                 <span class="d-md-none">ЛК</span>
+               </a>
+               <ul class="dropdown-menu dropdown-menu-end position-absolute">
++                <li><span class="dropdown-item-text small text-secondary" id="navAuthRole">Клиент</span></li>
++                <li><hr class="dropdown-divider"></li>
+                 <li><button class="dropdown-item" type="button" id="navLogoutBtn">Выйти</button></li>
+               </ul>
+             </li>
+diff --git a/frontend/project.html b/frontend/project.html
+index e602fe0..75219fc 100644
+--- a/frontend/project.html
++++ b/frontend/project.html
+@@ -37,13 +37,17 @@
+           <img src="../photos/logo.png" alt="VENTSEARCH" height="40" class="me-2" style="object-fit: contain;">
+           <span style="color: var(--vs-accent);">VENT</span><span style="color: var(--vs-text);">SEARCH</span>
+         </a>
+-        <div class="d-flex align-items-center gap-2" id="nav">
+-          <ul class="navbar-nav flex-row align-items-center gap-2 ms-auto mb-0">
+-            <li class="nav-item d-none d-md-block">
+-              <a class="nav-link" href="index.html">Каталог</a>
++        <div class="d-flex align-items-center gap-2 flex-grow-1" id="nav">
++          <ul class="navbar-nav flex-row align-items-center gap-2 mb-0 vs-nav-primary">
++            <li class="nav-item">
++              <a class="nav-link" href="index.html">
++                Каталог
++              </a>
+             </li>
+-            <li class="nav-item d-none d-md-block">
+-              <a class="nav-link" href="delivery.html">Доставка</a>
++            <li class="nav-item">
++              <a class="nav-link" href="delivery.html">
++                Доставка
++              </a>
+             </li>
+             <li class="nav-item">
+               <a class="nav-link nav-link-project active" href="project.html" aria-current="page">
+@@ -57,6 +61,14 @@
+                 <span id="navCompareBadge" class="nav-compare-badge d-none">0</span>
+               </a>
+             </li>
++            <li class="nav-item">
++              <a class="nav-link nav-link-compare vs-nav-staff d-none" href="builds.html">
++                Сборки
++                <span id="navBuildsBadge" class="nav-compare-badge d-none">0</span>
++              </a>
++            </li>
++          </ul>
++          <ul class="navbar-nav flex-row align-items-center gap-2 mb-0 ms-auto vs-nav-account">
+             <li class="nav-item d-none" id="navAdminMenuItem">
+               <a class="nav-link vs-admin-link" href="admin.html" target="_blank" rel="noopener noreferrer">⚙ Админ-панель</a>
+             </li>
+@@ -69,6 +81,8 @@
+                 <span class="d-md-none">ЛК</span>
+               </a>
+               <ul class="dropdown-menu dropdown-menu-end position-absolute">
++                <li><span class="dropdown-item-text small text-secondary" id="navAuthRole">Клиент</span></li>
++                <li><hr class="dropdown-divider"></li>
+                 <li><button class="dropdown-item" type="button" id="navLogoutBtn">Выйти</button></li>
+               </ul>
+             </li>
+diff --git a/frontend/script.js b/frontend/script.js
+index 814152e..72da1ad 100644
+--- a/frontend/script.js
++++ b/frontend/script.js
+@@ -1330,6 +1330,7 @@ async function fetchClientPdfBlob(ids, options = {}) {
+       show_title: !!options.showTitle,
+       letterhead: !!options.letterhead,
+       letterhead_all_pages: !!options.letterheadAllPages,
++      builds: Array.isArray(options.builds) ? options.builds : [],
+     }),
+   });
+   if (!response.ok) {
+@@ -1504,6 +1505,7 @@ function ensurePdfMakerModal() {
+       showTitle: !!modalEl.querySelector("#pdfMakerShowTitle")?.checked,
+       letterhead: !!modalEl.querySelector("#pdfMakerLetterhead")?.checked,
+       letterheadAllPages: modalEl.querySelector("#pdfMakerLetterheadPages")?.value === "all",
++      builds: typeof ctx.getBuilds === "function" ? ctx.getBuilds() : [],
+     };
+   }
+ 
+@@ -1511,8 +1513,11 @@ function ensurePdfMakerModal() {
+     alertBox.classList.add("d-none");
+     const ctx = _pdfMakerContext || {};
+     const ids = (typeof ctx.getIds === "function" ? ctx.getIds() : []).map(String).filter(Boolean);
+-    if (!ids.length) {
+-      showModalError("Нет выбранных моделей для документа.");
++    const builds = typeof ctx.getBuilds === "function" ? ctx.getBuilds() : [];
++    // Документ может состоять из одних кастомных сборок — тогда моделей
++    // каталога в нём нет вовсе (вкладка «Сборки»)
++    if (!ids.length && !builds.length) {
++      showModalError("Нет выбранных моделей или сборок для документа.");
+       return null;
+     }
+     statusEl.textContent = "Формируем PDF…";
+diff --git a/frontend/site-auth.js b/frontend/site-auth.js
+index 93bbc44..6be4906 100644
+--- a/frontend/site-auth.js
++++ b/frontend/site-auth.js
+@@ -43,11 +43,36 @@
+ 
+ 
+ 
++  // Сотрудники завода: администратор и модератор (менеджер). Им доступны
++  // рабочие разделы — «Сборки» и админ-панель; клиент их не видит.
++  const STAFF_ROLES = ["admin", "moderator"];
++  const ROLE_LABELS = { admin: "Администратор", moderator: "Менеджер", user: "Клиент" };
++
++  function isStaff(user) {
++    return !!user && STAFF_ROLES.includes(user.role);
++  }
++
++  function setStaffUi(user) {
++    const staff = isStaff(user);
++    // Вкладка «Сборки»: держим её в разметке всегда, класс-переключатель
++    // не влияет на положение соседних вкладок (см. .vs-nav-primary в CSS)
++    document.querySelectorAll(".vs-nav-staff").forEach((el) => {
++      el.classList.toggle("d-none", !staff);
++      el.classList.toggle("is-staff", staff);
++    });
++    const adminItem = $("navAdminMenuItem");
++    if (adminItem) adminItem.classList.toggle("d-none", !staff);
++    const shareBtn = $("shareLinkBtn");
++    if (shareBtn) shareBtn.style.display = staff ? "inline-block" : "none";
++    const roleEl = $("navAuthRole");
++    if (roleEl) roleEl.textContent = ROLE_LABELS[user?.role] || "Клиент";
++    document.body.dataset.role = user?.role || "guest";
++  }
++
+   function renderNavGuest() {
+     $("navAuthGuest")?.classList.remove("d-none");
+     $("navAuthUser")?.classList.add("d-none");
+-    const shareBtn = $("shareLinkBtn");
+-    if (shareBtn) shareBtn.style.display = "none";
++    setStaffUi(null);
+   }
+ 
+   function renderNavUser(user) {
+@@ -56,10 +81,7 @@
+     navUser?.classList.remove("d-none");
+     const emailEl = $("navAuthEmail");
+     if (emailEl) emailEl.textContent = user.email || "";
+-    const adminItem = $("navAdminMenuItem");
+-    if (adminItem) adminItem.classList.toggle("d-none", user.role !== "admin");
+-    const shareBtn = $("shareLinkBtn");
+-    if (shareBtn) shareBtn.style.display = user.role === "admin" ? "inline-block" : "none";
++    setStaffUi(user);
+   }
+ 
+ 
+@@ -124,7 +146,7 @@
+ 
+     syncProjectProfileFromUser(user);
+ 
+-    if (user.role === "admin") {
++    if (isStaff(user)) {
+ 
+       maybeOpenAdminTab();
+ 
+@@ -204,7 +226,7 @@
+ 
+         bootstrap.Modal.getInstance($("authModal"))?.hide();
+ 
+-        if (data.user.role === "admin") {
++        if (isStaff(data.user)) {
+ 
+           sessionStorage.setItem("ventsearch.openAdmin", "1");
+ 
+@@ -216,7 +238,7 @@
+ 
+         } else {
+ 
+-          window.location.href = data.user.role === "admin" ? ADMIN_URL : "index.html";
++          window.location.href = isStaff(data.user) ? ADMIN_URL : "index.html";
+ 
+         }
+ 
+diff --git a/frontend/style.css b/frontend/style.css
+index bb389bb..b62d0dc 100644
+--- a/frontend/style.css
++++ b/frontend/style.css
+@@ -1692,3 +1692,57 @@ body[data-page="product"] .tabs-card .card-body {
+   border-radius: 4px;
+   margin-right: 0.35rem;
+ }
++
++/* --- Навбар: стабильные вкладки ------------------------------------------
++   Раньше все пункты жили в одном правом (ms-auto) списке: стоило появиться
++   «Админ-панели», бейджу или кнопке «Поделиться» — и ВСЕ вкладки уезжали в
++   сторону. Теперь разделы слева (vs-nav-primary) стоят на месте всегда, а
++   аккаунт и служебные кнопки живут в правой группе (vs-nav-account). */
++.vs-nav-primary {
++  flex-wrap: nowrap;
++}
++
++/* Пункты не сжимаются и не переносят содержимое: без этого при нехватке
++   ширины (появилась вкладка «Сборки») бейдж счётчика уезжал на вторую
++   строку внутри ссылки, она становилась выше и уже — соседние вкладки
++   съезжали. */
++.vs-nav-primary > .nav-item,
++.vs-nav-account > .nav-item {
++  flex: 0 0 auto;
++}
++
++.vs-nav-primary > .nav-item > .nav-link {
++  white-space: nowrap;
++}
++
++/* Поиск в шапке — фиксированной ширины. Пока он «тянулся» вместе с блоком
++   навигации, они делили свободное место контейнера: стоило навигации стать
++   шире (появилась вкладка «Сборки») — и весь блок уезжал влево. */
++.vs-header-search {
++  flex: 0 0 260px;
++  max-width: 260px;
++}
++
++@media (max-width: 1200px) {
++  .vs-header-search {
++    flex-basis: 180px;
++    max-width: 180px;
++  }
++}
++
++.vs-nav-account {
++  flex-wrap: nowrap;
++}
++
++/* Бейджи счётчиков не выкидываем из потока, а прячем «на месте»: иначе
++   появление первой позиции в проекте сдвигало соседние вкладки. */
++.navbar .nav-project-badge.d-none,
++.navbar .nav-compare-badge.d-none {
++  display: inline-flex !important;
++  visibility: hidden;
++}
++
++/* Раздел только для сотрудников (менеджер/админ) — показывается из JS */
++.vs-nav-staff.is-staff {
++  display: block !important;
++}

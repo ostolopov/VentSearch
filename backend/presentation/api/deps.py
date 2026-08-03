@@ -51,3 +51,16 @@ def require_admin(
     if user.get("role") != "admin":
         raise HTTPException(status_code=403, detail={"error": "Admin access required"})
     return user
+
+
+def require_staff(
+    user: Annotated[dict, Depends(get_current_user)],
+) -> dict:
+    """Сотрудник: администратор ИЛИ модератор.
+
+    Модератор ведёт каталог (правка карточек, синхронизация CSV, диагностика),
+    но НЕ управляет людьми — учётные записи, роли и удаление пользователей
+    остаются только за администратором (см. require_admin)."""
+    if user.get("role") not in ("admin", "moderator"):
+        raise HTTPException(status_code=403, detail={"error": "Staff access required"})
+    return user

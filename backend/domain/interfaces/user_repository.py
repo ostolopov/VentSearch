@@ -26,10 +26,13 @@ class AbstractUserRepository(ABC):
         self,
         *,
         q: Optional[str] = None,
+        role: Optional[str] = None,
         limit: int = 50,
         offset: int = 0,
     ) -> Tuple[List[Dict[str, Any]], int]:
-        """Список пользователей с поиском; возвращает (строки, total)."""
+        """Список пользователей с поиском; возвращает (строки, total).
+
+        role: 'staff' — только админы и модераторы, либо конкретная роль."""
 
     @abstractmethod
     def count_admins(self) -> int:
@@ -43,6 +46,7 @@ class AbstractUserRepository(ABC):
         password_hash: str,
         name: str = "",
         company: str = "",
+        position: str = "",
         phone: str = "",
         role: str = "user",
     ) -> Dict[str, Any]:
@@ -57,6 +61,7 @@ class AbstractUserRepository(ABC):
         password_hash: Optional[str] = None,
         name: Optional[str] = None,
         company: Optional[str] = None,
+        position: Optional[str] = None,
         phone: Optional[str] = None,
         role: Optional[str] = None,
         is_active: Optional[bool] = None,

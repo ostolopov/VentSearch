@@ -39,7 +39,7 @@ from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfgen import canvas as rl_canvas
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from config import CORS_ORIGINS, CSV_PATH, PORT
+from config import APP_ENV, CORS_ORIGINS, CSV_PATH, IS_PRODUCTION, PORT
 from infrastructure.db.connection import get_connection, put_connection, init_pool, close_pool
 from infrastructure.db.init_db import init_db
 from infrastructure.db.bootstrap_admin import ensure_default_admin
@@ -104,8 +104,22 @@ def _startup_db() -> None:
 
 
 def _warn_insecure_defaults() -> None:
-    """Громко предупредить, если секреты не изменены с дефолтных значений."""
+    """Проверить секреты. В production — отказ запуска, в разработке — warning."""
     from config import ADMIN_PASSWORD, JWT_SECRET
+
+    problems = []
+    if JWT_SECRET == "change-me-in-production":
+        problems.append("JWT_SECRET")
+    if ADMIN_PASSWORD == "admin123":
+        problems.append("ADMIN_PASSWORD")
+    if problems and IS_PRODUCTION:
+        # Публичный сервер с дефолтным секретом — это не «предупреждение»,
+        # а открытая дверь: любой подделает админский токен. Падаем сразу.
+        raise RuntimeError(
+            "APP_ENV=production, но секреты остались по умолчанию: "
+            + ", ".join(problems)
+            + ". Задайте их в secrets/.env.prod и перезапустите."
+        )
 
     if JWT_SECRET == "change-me-in-production":
         logger.warning(
@@ -375,6 +389,7 @@ def _find_product_blueprint(product: dict[str, Any]) -> Optional[Path]:
 def _build_compare_pdf(
     products: list[dict[str, Any]],
     chart_png: Optional[bytes] = None,
+    builds: Optional[list[dict[str, Any]]] = None,
     header_text: Optional[str] = None,
     watermark_path: Optional[Path] = None,
     letterhead: bool = False,
@@ -577,7 +592,8 @@ def _build_compare_pdf(
             pdf.drawString(x + 1.2 * mm, y - 4.8 * mm, (_normalize_ws(text))[:36] or "—")
         y -= row_h
 
-    single = len(products) == 1
+    builds = builds or []
+    single = len(products) == 1 and not builds
     pdf.setAuthor("VENTSEARCH API")
     pdf.setTitle("VENTSEARCH Карточка модели" if single else "VENTSEARCH Сравнение моделей")
     draw_watermark()
@@ -606,6 +622,21 @@ def _build_compare_pdf(
         except Exception:
             line("Не удалось встроить график Q-P.", step=6.5 * mm, color=c_muted, size=9)
 
+    def wrap_to_width(text, font_name, font_size, max_width):
+        """Разбивает текст на строки по ширине (в пунктах reportlab), не обрезая."""
+        words = text.split(" ")
+        lines, cur = [], ""
+        for w in words:
+            candidate = f"{cur} {w}".strip()
+            if pdf.stringWidth(candidate, font_name, font_size) <= max_width or not cur:
+                cur = candidate
+            else:
+                lines.append(cur)
+                cur = w
+        if cur:
+            lines.append(cur)
+        return lines
+
     models = [_normalize_ws(p.get("model") or p.get("id") or "—") for p in products]
     types = [_normalize_ws(p.get("type") or "—") for p in products]
     sizes = [_normalize_ws(p.get("size") or "—") for p in products]
@@ -624,34 +655,21 @@ def _build_compare_pdf(
     noises = [f"{_format_num(p.get('noise_level'))} дБ" if p.get("noise_level") is not None else "—" for p in products]
     prices = [f"{_format_num(p.get('price'))} ₽" if p.get("price") is not None else "по запросу" for p in products]
 
-    line("Технические характеристики:", step=6.5 * mm, bold=True, size=10)
-    draw_row("Модель", models)
-    draw_row("Тип", types)
-    draw_row("Электродвигатель", sizes)
-    draw_row("Диаметр", diameters)
-    draw_row("Расход", airflows)
-    draw_row("Давление", pressures)
-    draw_row("Мощность", powers)
-    draw_row("Шум", noises)
-    draw_row("Цена", prices)
+    if products:
+        line("Технические характеристики:", step=6.5 * mm, bold=True, size=10)
+        draw_row("Модель", models)
+        draw_row("Тип", types)
+        draw_row("Электродвигатель", sizes)
+        draw_row("Диаметр", diameters)
+        draw_row("Расход", airflows)
+        draw_row("Давление", pressures)
+        draw_row("Мощность", powers)
+        draw_row("Шум", noises)
+        draw_row("Цена", prices)
 
-    def wrap_to_width(text, font_name, font_size, max_width):
-        """Разбивает текст на строки по ширине (в пунктах reportlab), не обрезая."""
-        words = text.split(" ")
-        lines, cur = [], ""
-        for w in words:
-            candidate = f"{cur} {w}".strip()
-            if pdf.stringWidth(candidate, font_name, font_size) <= max_width or not cur:
-                cur = candidate
-            else:
-                lines.append(cur)
-                cur = w
-        if cur:
-            lines.append(cur)
-        return lines
-
-    y -= 4 * mm
-    line("Подробно по моделям:", step=6.5 * mm, bold=True)
+    if products:
+        y -= 4 * mm
+        line("Подробно по моделям:", step=6.5 * mm, bold=True)
     for idx, p in enumerate(products, start=1):
         dims = p.get("dimensions") or {}
         dims_size = 7.5
@@ -703,6 +721,91 @@ def _build_compare_pdf(
                 pdf.drawString(left + 3 * mm, y - (29.5 + i * 4) * mm, dl)
         y -= card_h + 3.5 * mm
 
+    # --- Кастомные сборки -----------------------------------------------
+    # Менеджер собирает исполнение на базе каталожной модели: правит название,
+    # двигатель, габариты и добавляет примечания. Печатаем каждую сборку
+    # отдельной карточкой: шапка, параметры, таблица размеров, примечания.
+    if builds:
+        if products:
+            y -= 2 * mm
+        line("Состав сборки:", step=6.5 * mm, bold=True, size=10)
+
+    for b_idx, build in enumerate(builds, start=1):
+        title = _normalize_ws(build.get("title") or f"Сборка {b_idx}")
+        base_model = _normalize_ws(build.get("base_model") or "")
+        motor = _normalize_ws(build.get("motor") or "")
+        power_kw = _normalize_ws(build.get("power_kw") or "")
+        rpm_val = _normalize_ws(build.get("rpm") or "")
+        dims = build.get("dimensions") or {}
+        notes = _normalize_ws(build.get("notes") or "")
+
+        params: list[str] = []
+        if motor:
+            params.append(f"Электродвигатель: {motor}")
+        if power_kw:
+            params.append(f"Мощность: {power_kw} кВт")
+        if rpm_val:
+            params.append(f"Частота вращения: {rpm_val} об/мин")
+        params_line = "   |   ".join(params)
+
+        dims_lines: list[str] = []
+        if dims:
+            dims_text = "Размеры (мм): " + "   ·   ".join(
+                f"{_normalize_ws(k)}={_normalize_ws(v)}" for k, v in dims.items() if str(v).strip()
+            )
+            dims_lines = wrap_to_width(dims_text, font_r, 7.5, width - 6 * mm)
+        notes_lines = wrap_to_width(notes, font_r, 8.5, width - 6 * mm) if notes else []
+
+        # высота карточки: шапка + база + параметры + размеры + примечания
+        card_h = 9 * mm
+        if base_model:
+            card_h += 4.5 * mm
+        if params_line:
+            card_h += 4.5 * mm
+        if dims_lines:
+            card_h += (len(dims_lines) * 4 + 1.5) * mm
+        if notes_lines:
+            card_h += (len(notes_lines) * 4.4 + 5) * mm
+        if y - card_h < 14 * mm:
+            new_page()
+
+        pdf.setStrokeColor(c_border)
+        pdf.setFillColor(colors.white)
+        pdf.roundRect(left, y - card_h, width, card_h, 2 * mm, stroke=1, fill=1)
+        cy = y - 6 * mm
+        pdf.setFillColor(c_text)
+        pdf.setFont(font_b, 10)
+        pdf.drawString(left + 3 * mm, cy, f"{b_idx}. {title}"[:95])
+        cy -= 4.5 * mm
+        if base_model:
+            pdf.setFillColor(c_muted)
+            pdf.setFont(font_r, 8.5)
+            pdf.drawString(left + 3 * mm, cy, f"На базе каталожной модели: {base_model}"[:110])
+            cy -= 4.5 * mm
+        if params_line:
+            pdf.setFillColor(c_muted)
+            pdf.setFont(font_r, 8.5)
+            pdf.drawString(left + 3 * mm, cy, params_line[:110])
+            cy -= 4.5 * mm
+        if dims_lines:
+            pdf.setFillColor(c_text)
+            pdf.setFont(font_r, 7.5)
+            for dl in dims_lines:
+                pdf.drawString(left + 3 * mm, cy, dl)
+                cy -= 4 * mm
+        if notes_lines:
+            cy -= 1.5 * mm
+            pdf.setFillColor(c_text)
+            pdf.setFont(font_b, 8.5)
+            pdf.drawString(left + 3 * mm, cy, "Примечания:")
+            cy -= 4.4 * mm
+            pdf.setFont(font_r, 8.5)
+            pdf.setFillColor(c_muted)
+            for nl in notes_lines:
+                pdf.drawString(left + 3 * mm, cy, nl)
+                cy -= 4.4 * mm
+        y -= card_h + 3.5 * mm
+
     # Чертёж из каталога печатаем ОДИН РАЗ (общий для ряда), крупно, во всю
     # ширину страницы. Одинаковые для разных моделей файлы не дублируем.
     # Таблицу присоединительных размеров (blueprintVals) в PDF не выводим —
@@ -733,7 +836,12 @@ def _build_compare_pdf(
             pass
 
     seen_bp: set[str] = set()
-    for p in products:
+    # Чертёж ищем и для каталожных моделей, и для базовых моделей сборок
+    bp_sources = list(products) + [
+        {"model": b.get("base_model") or b.get("title") or "", "_meta": {}}
+        for b in builds
+    ]
+    for p in bp_sources:
         bp_path = _find_product_blueprint(p)
         if not bp_path or str(bp_path) in seen_bp:
             continue
@@ -759,9 +867,11 @@ def create_app() -> FastAPI:
         ),
         version="0.3.0",
         lifespan=lifespan,
-        docs_url="/docs",
-        redoc_url="/redoc",
-        openapi_url="/openapi.json",
+        # В production схему API наружу не отдаём: она перечисляет все
+        # админские маршруты и формы запросов — лишняя карта для чужих.
+        docs_url=None if IS_PRODUCTION else "/docs",
+        redoc_url=None if IS_PRODUCTION else "/redoc",
+        openapi_url=None if IS_PRODUCTION else "/openapi.json",
     )
 
     app.add_middleware(
@@ -771,6 +881,25 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    @app.middleware("http")
+    async def security_headers(request: Request, call_next):
+        """Базовые защитные заголовки для публичного доступа.
+
+        nosniff — браузер не «додумывает» тип файла; DENY во фрейме — защита
+        от кликджекинга (чужой сайт не вставит панель в невидимый iframe);
+        Referrer-Policy — адрес страницы с параметрами не утекает на сторону;
+        HSTS — только в production, где сайт уже за HTTPS."""
+        response = await call_next(request)
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+        response.headers.setdefault("Permissions-Policy", "geolocation=(), microphone=(), camera=()")
+        if IS_PRODUCTION:
+            response.headers.setdefault(
+                "Strict-Transport-Security", "max-age=31536000; includeSubDomains"
+            )
+        return response
 
     if PHOTOS_DIR.exists():
         app.mount("/photos", StaticFiles(directory=str(PHOTOS_DIR)), name="photos")
@@ -911,10 +1040,11 @@ def create_app() -> FastAPI:
         _ensure_catalog_sync(CSV_PATH)
 
         ids = [_normalize_ws(v) for v in payload.ids if _normalize_ws(v)]
-        if not ids:
+        builds_list = [b.model_dump() for b in payload.builds]
+        if not ids and not builds_list:
             raise HTTPException(
                 status_code=422,
-                detail={"detail": [{"loc": ["body", "ids"], "msg": "ids must not be empty", "type": "value_error"}]},
+                detail={"detail": [{"loc": ["body", "ids"], "msg": "ids or builds required", "type": "value_error"}]},
             )
         products_list: list[dict[str, Any]] = []
         missing: list[str] = []
@@ -948,6 +1078,7 @@ def create_app() -> FastAPI:
         pdf_bytes = _build_compare_pdf(
             products_list,
             chart_png=chart_png,
+            builds=builds_list,
             header_text=payload.header_text,
             watermark_path=watermark_path,
             letterhead=payload.letterhead,
@@ -968,10 +1099,10 @@ def create_app() -> FastAPI:
 
     for name in [
         "index.html", "product.html", "compare.html", "project.html",
-        "admin.html", "auth.html", "delivery.html",
+        "admin.html", "auth.html", "delivery.html", "builds.html",
         "admin-page.js", "auth-page.js", "site-auth.js",
         "admin.js", "auth.js", "style.css", "script.js", "config.js",
-        "site-layout.js",
+        "site-layout.js", "builds.js",
         # Иконки сайта: без явных маршрутов браузер получал 404 даже при
         # правильно сгенерированных файлах в frontend/ (список — белый)
         "favicon.ico", "favicon-16x16.png", "favicon-32x32.png",

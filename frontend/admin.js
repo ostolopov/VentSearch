@@ -1002,8 +1002,140 @@ function openUserModal(user, isCreate) {
   userModal.show();
 }
 
+
+// ---------------------------------------------------------------------------
+// Вкладка «Команда»: кто из коллег имеет рабочий доступ
+// ---------------------------------------------------------------------------
+
+const ROLE_TITLES = { admin: "Администратор", moderator: "Менеджер", user: "Клиент" };
+
+function roleBadge(role) {
+  const cls = role === "admin" ? "bg-dark" : role === "moderator" ? "bg-primary" : "bg-secondary";
+  return `<span class="badge ${cls}">${escapeHtml(ROLE_TITLES[role] || role)}</span>`;
+}
+
+async function loadTeam() {
+  const tbody = $("#teamTableBody");
+  if (!tbody) return;
+  const params = new URLSearchParams({ role: "staff", limit: "200" });
+  const q = String($("#teamSearch")?.value || "").trim();
+  if (q) params.set("q", q);
+  const data = await va().apiAuthFetch(`/api/admin/users?${params}`);
+  const items = Array.isArray(data?.items) ? data.items : [];
+  const meta = $("#teamMeta");
+  if (meta) meta.textContent = items.length ? `Сотрудников: ${items.length}` : "";
+  if (!items.length) {
+    tbody.innerHTML = '<tr><td colspan="8" class="text-secondary text-center py-3">Сотрудники не найдены.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = items
+    .map((u) => {
+      // Защищённый системный админ и понижение последнего админа —
+      // на сервере тоже запрещены, здесь просто не рисуем кнопку
+      const actions = u.is_protected
+        ? '<span class="text-secondary small">системный аккаунт</span>'
+        : u.role === "admin"
+          ? `<button type="button" class="btn btn-outline-secondary btn-sm" data-action="set-role" data-id="${u.id}" data-role="moderator">Сделать менеджером</button>`
+          : `<button type="button" class="btn btn-outline-dark btn-sm me-1" data-action="set-role" data-id="${u.id}" data-role="admin">Сделать админом</button>
+             <button type="button" class="btn btn-outline-danger btn-sm" data-action="set-role" data-id="${u.id}" data-role="user">Снять доступ</button>`;
+      return `<tr>
+        <td class="text-secondary">${u.id}</td>
+        <td class="fw-semibold">${escapeHtml(u.name || "—")}</td>
+        <td>${escapeHtml(u.position || "—")}</td>
+        <td>${escapeHtml(u.email)}</td>
+        <td>${escapeHtml(u.phone || "—")}</td>
+        <td>${roleBadge(u.role)}</td>
+        <td>${u.is_active ? '<span class="text-success small">активен</span>' : '<span class="text-danger small">отключён</span>'}</td>
+        <td class="text-end">${actions}</td>
+      </tr>`;
+    })
+    .join("");
+}
+
+async function loadTeamCandidates() {
+  const tbody = $("#teamCandidatesBody");
+  if (!tbody) return;
+  const q = String($("#teamCandidateSearch")?.value || "").trim();
+  if (!q) {
+    tbody.innerHTML = '<tr><td colspan="5" class="text-secondary text-center py-3">Введите запрос выше…</td></tr>';
+    return;
+  }
+  const params = new URLSearchParams({ role: "user", limit: "50", q });
+  const data = await va().apiAuthFetch(`/api/admin/users?${params}`);
+  const items = Array.isArray(data?.items) ? data.items : [];
+  if (!items.length) {
+    tbody.innerHTML = '<tr><td colspan="5" class="text-secondary text-center py-3">Никого не найдено.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = items
+    .map(
+      (u) => `<tr>
+      <td class="text-secondary">${u.id}</td>
+      <td class="fw-semibold">${escapeHtml(u.name || "—")}</td>
+      <td>${escapeHtml(u.position || "—")}</td>
+      <td>${escapeHtml(u.email)}</td>
+      <td class="text-end">
+        <button type="button" class="btn btn-dark btn-sm" data-action="set-role" data-id="${u.id}" data-role="moderator">Назначить менеджером</button>
+      </td>
+    </tr>`,
+    )
+    .join("");
+}
+
+async function setUserRole(userId, role) {
+  hideAdminMessages();
+  const titles = { admin: "администратором", moderator: "менеджером", user: "клиентом (доступ снят)" };
+  if (!window.confirm(`Сделать пользователя ${titles[role] || role}?`)) return;
+  try {
+    await va().apiAuthFetch(`/api/admin/users/${encodeURIComponent(userId)}/role`, {
+      method: "POST",
+      body: JSON.stringify({ role }),
+    });
+    showAdminSuccess("Роль обновлена.");
+    await loadTeam();
+    await loadTeamCandidates();
+    if (document.getElementById("usersTableBody")) await loadUsers();
+  } catch (err) {
+    showAdminError(err.message || "Не удалось изменить роль.");
+  }
+}
+
+
+let teamEventsBound = false;
+function bindTeamEvents() {
+  if (teamEventsBound) return;
+  teamEventsBound = true;
+  $("#teamTabBtn")?.addEventListener("shown.bs.tab", () => {
+    void loadTeam().catch((err) => showAdminError(err.message || "Не удалось загрузить команду."));
+  });
+  $("#teamSearchBtn")?.addEventListener("click", () => {
+    void loadTeam().catch((err) => showAdminError(err.message || "Ошибка поиска."));
+  });
+  $("#teamSearch")?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      void loadTeam().catch(() => {});
+    }
+  });
+  $("#teamCandidateSearchBtn")?.addEventListener("click", () => {
+    void loadTeamCandidates().catch((err) => showAdminError(err.message || "Ошибка поиска."));
+  });
+  $("#teamCandidateSearch")?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      void loadTeamCandidates().catch(() => {});
+    }
+  });
+  document.addEventListener("click", (e) => {
+    const btn = e.target.closest('button[data-action="set-role"]');
+    if (!btn) return;
+    void setUserRole(btn.dataset.id, btn.dataset.role);
+  });
+}
+
 async function bootAdmin(user) {
   bindAdminEvents();
+  bindTeamEvents();
   ensureAdminModals();
   const label = $("#adminUserLabel");
   if (label) label.textContent = user?.email || "—";
@@ -1012,14 +1144,16 @@ async function bootAdmin(user) {
   }
   try {
     await loadProducts();
-    await loadUsers();
+    // Список учётных записей — только для администратора: у менеджера
+    // этот запрос вернул бы 403 и «сломал» бы загрузку панели
+    if (user?.role === "admin") await loadUsers();
   } catch (err) {
     console.error(err);
     showAdminError(err.message || "Не удалось загрузить данные. Проверьте вход и API.");
   }
 }
 
-window.VentAdmin = { boot: bootAdmin, ensureAdminModals, bindAdminEvents };
+window.VentAdmin = { boot: bootAdmin, ensureAdminModals, bindAdminEvents, loadTeam };
 
 document.addEventListener("DOMContentLoaded", () => {
   if (document.body.dataset.page === "admin") {

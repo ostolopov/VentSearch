@@ -1,0 +1,214 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Сборки — VENTSEARCH</title>
+    <link rel="icon" type="image/x-icon" href="favicon.ico">
+    <link rel="icon" type="image/png" sizes="32x32" href="favicon-32x32.png">
+    <link rel="icon" type="image/png" sizes="16x16" href="favicon-16x16.png">
+    <link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png">
+    <link
+      href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css"
+      rel="stylesheet"
+      crossorigin="anonymous"
+    />
+    <link rel="stylesheet" href="style.css?v=20260717-4" />
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript">
+    (function(m,e,t,r,i,k,a){
+        m[i]=m[i]||function(){(m[i].a=m[i].a||[]).push(arguments)};
+        m[i].l=1*new Date();
+        for (var j = 0; j < document.scripts.length; j++) {if (document.scripts[j].src === r) { return; }}
+        k=e.createElement(t),a=e.getElementsByTagName(t)[0],k.async=1,k.src=r,a.parentNode.insertBefore(k,a)
+    })(window, document,'script','https://mc.yandex.ru/metrika/tag.js?id=109006784', 'ym');
+
+    ym(109006784, 'init', {ssr:true, webvisor:true, clickmap:true, ecommerce:"dataLayer", referrer: document.referrer, url: location.href, accurateTrackBounce:true, trackLinks:true});
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/109006784" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+<!-- /Yandex.Metrika counter -->
+
+
+  </head>
+  <body data-page="builds">
+    <nav class="navbar navbar-expand-lg sticky-top">
+      <div class="container-fluid px-3 px-lg-4">
+        <a class="navbar-brand fw-semibold d-flex align-items-center" href="index.html">
+          <img src="../photos/logo.png" alt="VENTSEARCH" height="40" class="me-2" style="object-fit: contain;">
+          <span style="color: var(--vs-accent);">VENT</span><span style="color: var(--vs-text);">SEARCH</span>
+        </a>
+        <div class="d-flex align-items-center gap-2 flex-grow-1" id="nav">
+          <ul class="navbar-nav flex-row align-items-center gap-2 mb-0 vs-nav-primary">
+            <li class="nav-item">
+              <a class="nav-link" href="index.html">
+                Каталог
+              </a>
+            </li>
+            <li class="nav-item">
+              <a class="nav-link" href="delivery.html">
+                Доставка
+              </a>
+            </li>
+            <li class="nav-item">
+              <a class="nav-link nav-link-project" href="project.html">
+                Мой проект
+                <span id="navProjectBadge" class="nav-project-badge d-none">0</span>
+              </a>
+            </li>
+            <li class="nav-item">
+              <a class="nav-link nav-link-compare" href="compare.html">
+                Сравнение
+                <span id="navCompareBadge" class="nav-compare-badge d-none">0</span>
+              </a>
+            </li>
+            <li class="nav-item">
+              <a class="nav-link nav-link-compare vs-nav-staff d-none active" href="builds.html" aria-current="page">
+                Сборки
+                <span id="navBuildsBadge" class="nav-compare-badge d-none">0</span>
+              </a>
+            </li>
+          </ul>
+          <ul class="navbar-nav flex-row align-items-center gap-2 mb-0 ms-auto vs-nav-account">
+            <li class="nav-item d-none" id="navAdminMenuItem">
+              <a class="nav-link vs-admin-link" href="admin.html" target="_blank" rel="noopener noreferrer">⚙ Админ-панель</a>
+            </li>
+            <li class="nav-item" id="navAuthGuest">
+              <a class="nav-link btn btn-link border-0 py-2 text-decoration-none" href="auth.html">Вход</a>
+            </li>
+            <li class="nav-item dropdown d-none" id="navAuthUser">
+              <a class="nav-link dropdown-toggle" href="#" role="button" data-bs-toggle="dropdown" aria-expanded="false">
+                <span id="navAuthEmail" class="d-none d-md-inline">Аккаунт</span>
+                <span class="d-md-none">ЛК</span>
+              </a>
+              <ul class="dropdown-menu dropdown-menu-end position-absolute">
+                <li><span class="dropdown-item-text small text-secondary" id="navAuthRole">Клиент</span></li>
+                <li><hr class="dropdown-divider"></li>
+                <li><button class="dropdown-item" type="button" id="navLogoutBtn">Выйти</button></li>
+              </ul>
+            </li>
+            <li class="nav-item d-none d-md-block">
+              <button id="shareLinkBtn" class="btn btn-sm btn-dark" type="button">Поделиться</button>
+            </li>
+          </ul>
+        </div>
+      </div>
+    </nav>
+
+    <header class="page-hero mb-3">
+      <div class="container-fluid px-3 px-lg-4 d-flex flex-wrap justify-content-between align-items-center gap-3">
+        <div style="max-width: 820px;">
+          <h1 class="h3 mb-1">Сборки под заказчика</h1>
+          <div id="buildsMeta" class="hero-subtitle">
+            Возьмите модель каталога за основу, поправьте название, двигатель и размеры, добавьте примечания — и выгрузите в PDF.
+          </div>
+        </div>
+        <div class="d-flex gap-2">
+          <button id="clearBuildsBtn" class="btn btn-outline-danger btn-sm" type="button">Очистить</button>
+          <button id="exportBuildsPdfBtn" class="btn btn-pdf btn-sm px-3" type="button">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline></svg>
+            Просмотр PDF
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <main class="container-fluid px-3 px-lg-4 py-4">
+      <div id="alertBox" class="alert alert-danger d-none mb-3" role="alert"></div>
+
+      <div class="alert alert-secondary d-none" id="buildsStaffOnly" role="alert">
+        Раздел доступен сотрудникам завода. Войдите под учётной записью менеджера или администратора.
+      </div>
+
+      <div id="buildsWorkspace">
+        <div class="card shadow-sm border-0 mb-4" style="border-radius: 20px;">
+          <div class="card-body p-4">
+            <h2 class="h6 fw-bold mb-3">Взять модель за основу</h2>
+            <input id="buildBaseSearch" class="form-control mb-2" type="search"
+                   placeholder="Поиск по модели, типу, размеру…" />
+            <div class="table-responsive" style="max-height: 280px; overflow-y: auto;">
+              <table class="table table-hover table-sm align-middle mb-0 compare-mini-table">
+                <thead class="bg-light">
+                  <tr>
+                    <th>Модель</th><th>Тип</th><th class="text-end">Расход</th>
+                    <th class="text-end">Давление</th><th class="text-end">Мощность</th><th></th>
+                  </tr>
+                </thead>
+                <tbody id="buildBaseResults">
+                  <tr><td colspan="6" class="text-secondary text-center py-3">Введите запрос выше…</td></tr>
+                </tbody>
+              </table>
+            </div>
+            <div class="mt-3">
+              <button id="addBlankBuildBtn" class="btn btn-outline-secondary btn-sm" type="button">
+                + Пустая сборка (без базовой модели)
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div class="row g-4 align-items-stretch mb-4">
+          <div class="col-12 col-xxl-7">
+            <div class="card shadow-sm border-0 h-100" style="border-radius: 20px; overflow: hidden;">
+              <div class="card-header bg-white border-bottom-0 pt-4 px-4 pb-0">
+                <h2 class="h5 fw-bold mb-0">Аэродинамика базовых моделей (Q–P)</h2>
+              </div>
+              <div class="card-body p-4">
+                <div class="chart-canvas-wrap bg-light rounded-4 p-3 border h-100">
+                  <div id="buildsQpChart" class="qp-chart-box"></div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="col-12 col-xxl-5">
+            <div class="card shadow-sm border-0 h-100" style="border-radius: 20px;">
+              <div class="card-body p-4">
+                <h2 class="h6 fw-bold mb-3">Рабочая точка</h2>
+                <form id="buildsPointForm" class="row g-2 align-items-end">
+                  <div class="col-6">
+                    <label for="buildsPointQ" class="form-label text-secondary small mb-1 fw-medium">Расход Q, м³/ч</label>
+                    <input id="buildsPointQ" type="number" min="1" step="any" class="form-control" placeholder="м³/ч" />
+                  </div>
+                  <div class="col-6">
+                    <label for="buildsPointP" class="form-label text-secondary small mb-1 fw-medium">Давление P, Па</label>
+                    <input id="buildsPointP" type="number" min="1" step="any" class="form-control" placeholder="Па" />
+                  </div>
+                  <div class="col-6">
+                    <label for="buildsPointTol" class="form-label text-secondary small mb-1 fw-medium">Допуск, %</label>
+                    <input id="buildsPointTol" type="number" min="0" max="50" step="any" class="form-control" placeholder="± %" />
+                  </div>
+                  <div class="col-6 d-flex gap-2">
+                    <button type="submit" class="btn btn-primary flex-grow-1">Показать</button>
+                    <button type="button" id="buildsPointResetBtn" class="btn btn-outline-secondary">Сброс</button>
+                  </div>
+                </form>
+                <hr class="my-3">
+                <p class="small text-secondary mb-0">
+                  На графике — паспортные кривые базовых моделей выбранных сборок.
+                  Изменённые вручную размеры и примечания на кривую не влияют:
+                  аэродинамика остаётся заводской.
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <h2 class="h6 fw-bold mb-3">Состав сборки <span id="buildsCount" class="text-secondary fw-normal"></span></h2>
+        <div id="buildsList" class="vstack gap-3"></div>
+      </div>
+
+      <div id="siteFooterMount" class="container-fluid px-0 mt-5"></div>
+    </main>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
+    <script src="config.js?v=20260424-1"></script>
+    <script src="auth.js?v=20260524-10"></script>
+    <script src="site-auth.js?v=20260524-10"></script>
+    <script src="script.js?v=20260717-4"></script>
+    <script src="builds.js?v=20260802-1"></script>
+    <script src="site-layout.js?v=20260709-1"></script>
+  </body>
+</html>
+

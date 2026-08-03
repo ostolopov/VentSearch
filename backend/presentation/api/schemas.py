@@ -229,6 +229,7 @@ class UserOut(BaseModel):
     email: str
     name: str = ""
     company: str = ""
+    position: str = ""
     phone: str = ""
     role: str = "user"
     is_active: bool = True
@@ -255,8 +256,9 @@ class AdminUserIn(BaseModel):
     password: str = Field(..., min_length=6, max_length=128)
     name: str = Field(default="", max_length=200)
     company: str = Field(default="", max_length=200)
+    position: str = Field(default="", max_length=120)
     phone: str = Field(default="", max_length=50)
-    role: str = Field(default="user", pattern="^(user|admin)$")
+    role: str = Field(default="user", pattern="^(user|moderator|admin)$")
 
 
 class AdminUserUpdateIn(BaseModel):
@@ -264,9 +266,16 @@ class AdminUserUpdateIn(BaseModel):
     password: Optional[str] = Field(default=None, min_length=6, max_length=128)
     name: Optional[str] = Field(default=None, max_length=200)
     company: Optional[str] = Field(default=None, max_length=200)
+    position: Optional[str] = Field(default=None, max_length=120)
     phone: Optional[str] = Field(default=None, max_length=50)
-    role: Optional[str] = Field(default=None, pattern="^(user|admin)$")
+    role: Optional[str] = Field(default=None, pattern="^(user|moderator|admin)$")
     is_active: Optional[bool] = None
+
+
+class AdminUserRoleIn(BaseModel):
+    """Назначение роли сотруднику (вкладка «Команда»)."""
+
+    role: str = Field(..., pattern="^(user|moderator|admin)$")
 
 
 class BulkDeleteProductsIn(BaseModel):
@@ -336,6 +345,32 @@ class AdminProductIn(BaseModel):
         return self
 
 
+class PdfBuildIn(BaseModel):
+    """Кастомная сборка: карточка из каталога, доработанная менеджером.
+
+    Название, двигатель и габариты предзаполняются на фронтенде из базовой
+    модели и остаются обычными строками — их можно свободно править под
+    исполнение заказчика, а base_id нужен лишь для кривой Q-P на графике."""
+
+    title: str = Field(..., min_length=1, max_length=200)
+    base_id: Optional[str] = Field(default=None, max_length=120)
+    base_model: Optional[str] = Field(default=None, max_length=200)
+    motor: Optional[str] = Field(default=None, max_length=120)
+    power_kw: Optional[str] = Field(default=None, max_length=40)
+    rpm: Optional[str] = Field(default=None, max_length=40)
+    dimensions: Dict[str, str] = Field(default_factory=dict)
+    notes: Optional[str] = Field(default=None, max_length=4000)
+
+    @model_validator(mode="after")
+    def _limit_dimensions(self):
+        if len(self.dimensions) > 60:
+            raise ValueError("dimensions: слишком много позиций (максимум 60)")
+        for key, value in self.dimensions.items():
+            if len(str(key)) > 40 or len(str(value)) > 80:
+                raise ValueError("dimensions: слишком длинный ключ или значение")
+        return self
+
+
 class PdfExportRequest(BaseModel):
     model_config = ConfigDict(
         json_schema_extra={
@@ -348,10 +383,14 @@ class PdfExportRequest(BaseModel):
     )
 
     ids: List[str] = Field(
-        ...,
-        min_length=1,
+        default_factory=list,
         max_length=20,
-        description="Список id/моделей для включения в PDF (1-20 элементов).",
+        description="Список id/моделей каталога для включения в PDF (до 20 элементов).",
+    )
+    builds: List[PdfBuildIn] = Field(
+        default_factory=list,
+        max_length=20,
+        description="Кастомные сборки (вкладка «Сборки»); можно вместе с ids или отдельно.",
     )
     filename: Optional[str] = Field(
         default=None,
@@ -382,3 +421,9 @@ class PdfExportRequest(BaseModel):
         default=False,
         description="Шапка на каждой странице (по умолчанию — только на первой, как у бланка).",
     )
+
+    @model_validator(mode="after")
+    def _require_content(self):
+        if not self.ids and not self.builds:
+            raise ValueError("Нужно передать хотя бы одну модель (ids) или сборку (builds)")
+        return self

@@ -43,11 +43,36 @@
 
 
 
+  // Сотрудники завода: администратор и модератор (менеджер). Им доступны
+  // рабочие разделы — «Сборки» и админ-панель; клиент их не видит.
+  const STAFF_ROLES = ["admin", "moderator"];
+  const ROLE_LABELS = { admin: "Администратор", moderator: "Менеджер", user: "Клиент" };
+
+  function isStaff(user) {
+    return !!user && STAFF_ROLES.includes(user.role);
+  }
+
+  function setStaffUi(user) {
+    const staff = isStaff(user);
+    // Вкладка «Сборки»: держим её в разметке всегда, класс-переключатель
+    // не влияет на положение соседних вкладок (см. .vs-nav-primary в CSS)
+    document.querySelectorAll(".vs-nav-staff").forEach((el) => {
+      el.classList.toggle("d-none", !staff);
+      el.classList.toggle("is-staff", staff);
+    });
+    const adminItem = $("navAdminMenuItem");
+    if (adminItem) adminItem.classList.toggle("d-none", !staff);
+    const shareBtn = $("shareLinkBtn");
+    if (shareBtn) shareBtn.style.display = staff ? "inline-block" : "none";
+    const roleEl = $("navAuthRole");
+    if (roleEl) roleEl.textContent = ROLE_LABELS[user?.role] || "Клиент";
+    document.body.dataset.role = user?.role || "guest";
+  }
+
   function renderNavGuest() {
     $("navAuthGuest")?.classList.remove("d-none");
     $("navAuthUser")?.classList.add("d-none");
-    const shareBtn = $("shareLinkBtn");
-    if (shareBtn) shareBtn.style.display = "none";
+    setStaffUi(null);
   }
 
   function renderNavUser(user) {
@@ -56,10 +81,7 @@
     navUser?.classList.remove("d-none");
     const emailEl = $("navAuthEmail");
     if (emailEl) emailEl.textContent = user.email || "";
-    const adminItem = $("navAdminMenuItem");
-    if (adminItem) adminItem.classList.toggle("d-none", user.role !== "admin");
-    const shareBtn = $("shareLinkBtn");
-    if (shareBtn) shareBtn.style.display = user.role === "admin" ? "inline-block" : "none";
+    setStaffUi(user);
   }
 
 
@@ -124,7 +146,7 @@
 
     syncProjectProfileFromUser(user);
 
-    if (user.role === "admin") {
+    if (isStaff(user)) {
 
       maybeOpenAdminTab();
 
@@ -204,7 +226,7 @@
 
         bootstrap.Modal.getInstance($("authModal"))?.hide();
 
-        if (data.user.role === "admin") {
+        if (isStaff(data.user)) {
 
           sessionStorage.setItem("ventsearch.openAdmin", "1");
 
@@ -216,7 +238,7 @@
 
         } else {
 
-          window.location.href = data.user.role === "admin" ? ADMIN_URL : "index.html";
+          window.location.href = isStaff(data.user) ? ADMIN_URL : "index.html";
 
         }
 

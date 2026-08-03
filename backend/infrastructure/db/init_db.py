@@ -121,7 +121,8 @@ CREATE TABLE IF NOT EXISTS users (
     name TEXT NOT NULL DEFAULT '',
     company TEXT NOT NULL DEFAULT '',
     phone TEXT NOT NULL DEFAULT '',
-    role TEXT NOT NULL DEFAULT 'user' CHECK (role IN ('user', 'admin')),
+    position TEXT NOT NULL DEFAULT '',
+    role TEXT NOT NULL DEFAULT 'user' CHECK (role IN ('user', 'moderator', 'admin')),
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -129,6 +130,29 @@ CREATE TABLE IF NOT EXISTS users (
 
 CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
 CREATE INDEX IF NOT EXISTS idx_users_role ON users(role);
+
+-- Миграции для БД, созданных прежними версиями: CREATE TABLE IF NOT EXISTS
+-- не меняет уже существующую таблицу, поэтому колонку «должность» и роль
+-- «модератор» добавляем отдельными идемпотентными шагами.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS position TEXT NOT NULL DEFAULT '';
+
+DO $$
+DECLARE
+    con_name TEXT;
+BEGIN
+    SELECT conname INTO con_name
+    FROM pg_constraint
+    WHERE conrelid = 'users'::regclass
+      AND contype = 'c'
+      AND pg_get_constraintdef(oid) ILIKE '%role%'
+      AND pg_get_constraintdef(oid) NOT ILIKE '%moderator%'
+    LIMIT 1;
+    IF con_name IS NOT NULL THEN
+        EXECUTE format('ALTER TABLE users DROP CONSTRAINT %I', con_name);
+        ALTER TABLE users ADD CONSTRAINT users_role_check
+            CHECK (role IN ('user', 'moderator', 'admin'));
+    END IF;
+END $$;
 
 DO $$
 BEGIN

@@ -1330,6 +1330,7 @@ async function fetchClientPdfBlob(ids, options = {}) {
       show_title: !!options.showTitle,
       letterhead: !!options.letterhead,
       letterhead_all_pages: !!options.letterheadAllPages,
+      builds: Array.isArray(options.builds) ? options.builds : [],
     }),
   });
   if (!response.ok) {
@@ -1504,6 +1505,7 @@ function ensurePdfMakerModal() {
       showTitle: !!modalEl.querySelector("#pdfMakerShowTitle")?.checked,
       letterhead: !!modalEl.querySelector("#pdfMakerLetterhead")?.checked,
       letterheadAllPages: modalEl.querySelector("#pdfMakerLetterheadPages")?.value === "all",
+      builds: typeof ctx.getBuilds === "function" ? ctx.getBuilds() : [],
     };
   }
 
@@ -1511,8 +1513,11 @@ function ensurePdfMakerModal() {
     alertBox.classList.add("d-none");
     const ctx = _pdfMakerContext || {};
     const ids = (typeof ctx.getIds === "function" ? ctx.getIds() : []).map(String).filter(Boolean);
-    if (!ids.length) {
-      showModalError("Нет выбранных моделей для документа.");
+    const builds = typeof ctx.getBuilds === "function" ? ctx.getBuilds() : [];
+    // Документ может состоять из одних кастомных сборок — тогда моделей
+    // каталога в нём нет вовсе (вкладка «Сборки»)
+    if (!ids.length && !builds.length) {
+      showModalError("Нет выбранных моделей или сборок для документа.");
       return null;
     }
     statusEl.textContent = "Формируем PDF…";

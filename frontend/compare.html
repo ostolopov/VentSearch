@@ -38,13 +38,17 @@
           <img src="../photos/logo.png" alt="VENTSEARCH" height="40" class="me-2" style="object-fit: contain;">
           <span style="color: var(--vs-accent);">VENT</span><span style="color: var(--vs-text);">SEARCH</span>
         </a>
-        <div class="d-flex align-items-center gap-2" id="nav">
-          <ul class="navbar-nav flex-row align-items-center gap-2 ms-auto mb-0">
-            <li class="nav-item d-none d-md-block">
-              <a class="nav-link" href="index.html">Каталог</a>
+        <div class="d-flex align-items-center gap-2 flex-grow-1" id="nav">
+          <ul class="navbar-nav flex-row align-items-center gap-2 mb-0 vs-nav-primary">
+            <li class="nav-item">
+              <a class="nav-link" href="index.html">
+                Каталог
+              </a>
             </li>
-            <li class="nav-item d-none d-md-block">
-              <a class="nav-link" href="delivery.html">Доставка</a>
+            <li class="nav-item">
+              <a class="nav-link" href="delivery.html">
+                Доставка
+              </a>
             </li>
             <li class="nav-item">
               <a class="nav-link nav-link-project" href="project.html">
@@ -58,6 +62,14 @@
                 <span id="navCompareBadge" class="nav-compare-badge d-none">0</span>
               </a>
             </li>
+            <li class="nav-item">
+              <a class="nav-link nav-link-compare vs-nav-staff d-none" href="builds.html">
+                Сборки
+                <span id="navBuildsBadge" class="nav-compare-badge d-none">0</span>
+              </a>
+            </li>
+          </ul>
+          <ul class="navbar-nav flex-row align-items-center gap-2 mb-0 ms-auto vs-nav-account">
             <li class="nav-item d-none" id="navAdminMenuItem">
               <a class="nav-link vs-admin-link" href="admin.html" target="_blank" rel="noopener noreferrer">⚙ Админ-панель</a>
             </li>
@@ -70,6 +82,8 @@
                 <span class="d-md-none">ЛК</span>
               </a>
               <ul class="dropdown-menu dropdown-menu-end position-absolute">
+                <li><span class="dropdown-item-text small text-secondary" id="navAuthRole">Клиент</span></li>
+                <li><hr class="dropdown-divider"></li>
                 <li><button class="dropdown-item" type="button" id="navLogoutBtn">Выйти</button></li>
               </ul>
             </li>

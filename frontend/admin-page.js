@@ -107,9 +107,20 @@
     try {
       const me = await apiAuthFetch("/api/auth/me");
       setAuthSession(token, me);
-      if (me.role !== "admin") {
-        showGateError("Доступ только для администраторов.");
+      // Менеджера (модератора) в панель пускаем — он ведёт каталог, но
+      // вкладки с учётными записями ему не показываем (сервер их всё равно
+      // закрывает: см. require_admin в backend/presentation/api/deps.py)
+      const STAFF = ["admin", "moderator"];
+      if (!STAFF.includes(me.role)) {
+        showGateError("Доступ только для сотрудников завода.");
         return;
+      }
+      document.body.dataset.role = me.role;
+      if (me.role !== "admin") {
+        for (const sel of ['button[data-bs-target="#tabUsers"]', "#teamTabItem"]) {
+          document.querySelector(sel)?.closest("li")?.classList.add("d-none");
+          document.querySelector(sel)?.classList.add("d-none");
+        }
       }
       $("adminGate")?.classList.add("d-none");
       const section = $("adminAppSection");
